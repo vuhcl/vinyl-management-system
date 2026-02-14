@@ -1,0 +1,70 @@
+# NLP Vinyl Condition Classifier – Base Config
+# Reproducibility
+seed: 42
+
+# Paths (relative to nlp_condition_classifier/)
+paths:
+  raw_data: "data/raw"
+  processed_data: "data/processed"
+  artifacts: "artifacts"
+
+# Discogs API – fetch seller notes / listings for training (optional)
+discogs:
+  use_api: false
+  # token: "${DISCOGS_USER_TOKEN}"
+  # When use_api is false, labeled data is read from CSV in paths.raw_data
+
+# Condition labels (sleeve and media)
+condition_labels:
+  - Mint
+  - "Near Mint"
+  - "Very Good Plus"
+  - "Very Good"
+  - Good
+
+# Text preprocessing
+preprocess:
+  min_tokens: 2
+  max_length_chars: 2000
+  lowercase: true
+  remove_urls: true
+  strip_whitespace: true
+
+# Baseline: TF-IDF + Logistic Regression
+baseline:
+  tfidf:
+    max_features: 10000
+    min_df: 2
+    max_df: 0.95
+    ngram_range: [1, 2]
+  logistic:
+    C: 1.0
+    max_iter: 1000
+    class_weight: "balanced"
+
+# Advanced: Transformer (Phase 2)
+transformer:
+  model_name: "distilbert-base-uncased"
+  max_length: 128
+  batch_size: 16
+  epochs: 3
+  learning_rate: 2.0e-5
+
+# Train/val/test split
+split:
+  val_fraction: 0.15
+  test_fraction: 0.15
+  stratify: true
+
+# Evaluation
+evaluation:
+  primary_metric: "macro_f1"
+  metrics:
+    - macro_f1
+    - accuracy
+  calibration_bins: 10
+
+# Experiment tracking
+mlflow:
+  experiment_name: "nlp_condition_classifier"
+  tracking_uri: null  # default local ./mlruns

@@ -1,0 +1,5 @@
+# Optional for Phase 2 (transformer fine-tuning)
+# Install after main project: pip install -r requirements.txt
+transformers>=4.30.0
+torch>=2.0.0
+datasets>=2.14.0

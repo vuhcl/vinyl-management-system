@@ -1,0 +1,50 @@
+# Virtual env
+.venv/
+venv/
+env/
+
+# Python
+__pycache__/
+*.py[cod]
+*.so
+.Python
+*.egg-info/
+.eggs/
+dist/
+build/
+
+# Data and artifacts (skeletal repo: no data)
+data/raw/*
+!data/raw/.gitkeep
+data/processed/*
+!data/processed/.gitkeep
+data/aoty_scraped/
+artifacts/*
+!artifacts/.gitkeep
+*.csv
+*.parquet
+*.npz
+*.pkl
+*.npy
+
+# Config secrets
+.env
+.env.local
+*.local.yaml
+
+# IDE
+.idea/
+.vscode/
+*.swp
+.DS_Store
+
+# MLflow
+mlruns/
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+
+# Logs
+*.log
+logs/

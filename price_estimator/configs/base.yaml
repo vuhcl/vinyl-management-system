@@ -1,0 +1,21 @@
+# Price estimator – base config (stub)
+seed: 42
+
+paths:
+  raw_data: "data/raw"
+  processed_data: "data/processed"
+  artifacts: "artifacts/price_estimator"
+
+# Discogs – price suggestions / marketplace (shared discogs_api)
+discogs:
+  use_api: false
+  # token: "${DISCOGS_USER_TOKEN}"
+
+# Optional: condition from NLP classifier (sleeve/media grades)
+nlp_condition:
+  artifact_dir: "artifacts"  # where nlp_condition_classifier saves models
+
+# Model (stub)
+model:
+  type: "quantile_regression"  # or "point", "ensemble"
+  quantiles: [0.25, 0.5, 0.75]
