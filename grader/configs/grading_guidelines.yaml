@@ -1,0 +1,504 @@
+# ============================================================
+# grader/configs/grading_guidelines.yaml
+#
+# Rule engine grading criteria and eBay JP harmonization.
+# Derived from official Discogs grading guidelines and
+# eBay JP seller conventions.
+#
+# Canonical schema extended with:
+#   - Excellent (EX) grade — collector-aligned, between NM and VG+
+#   - Generic grade — sleeve only, record has no original cover
+#
+# Deliberate deviations from official standards are
+# documented inline. This file is the single source of
+# truth for all grading logic.
+# ============================================================
+
+# ------------------------------------------------------------
+# Canonical Grade Schema
+# ------------------------------------------------------------
+# Sleeve grades (8): includes Generic
+# Media grades  (7): excludes Generic — never applies to media
+#
+# Generic is not ordinal — it describes sleeve type, not
+# condition. It sits outside the condition scale and is
+# excluded from grade_ordinal_map.
+#
+# Good corresponds to Discogs G/G+ (merged).
+# Poor corresponds to Discogs P/F (merged).
+# Japanese sellers do not list records below Very Good —
+# Good and Poor grades will only appear in Discogs data.
+# Excellent will only appear in eBay JP data.
+# ------------------------------------------------------------
+sleeve_grades:
+  - Mint           # 1 — best
+  - Near Mint      # 2
+  - Excellent      # 3 — between NM and VG+, collector-aligned
+  - Very Good Plus # 4
+  - Very Good      # 5
+  - Good           # 6 — corresponds to Discogs G/G+
+  - Poor           # 7 — worst, includes Fair
+  - Generic        # sleeve only — no original cover present
+
+media_grades:
+  - Mint           # 1 — best
+  - Near Mint      # 2
+  - Excellent      # 3
+  - Very Good Plus # 4
+  - Very Good      # 5
+  - Good           # 6
+  - Poor           # 7 — worst, includes Fair
+
+# Ordinal map for condition grades only.
+# Generic is intentionally excluded — it is not a condition.
+grade_ordinal_map:
+  Mint:           0
+  Near Mint:      1
+  Excellent:      2
+  Very Good Plus: 3
+  Very Good:      4
+  Good:           5
+  Poor:           6
+
+grade_owners:
+  Mint:           rule_engine   # deterministic: sealed
+  Near Mint:      model
+  Excellent:      model
+  Very Good Plus: model
+  Very Good:      model
+  Good:           model
+  Poor:           rule_engine   # deterministic: catastrophic condition
+  Generic:        rule_engine   # deterministic: sleeve only, keyword-driven
+
+# ------------------------------------------------------------
+# eBay JP Grade Harmonization
+# ------------------------------------------------------------
+# Japanese sellers do not list records below Very Good.
+# Good and Poor will not appear in eBay JP training data —
+# these classes are sourced from Discogs only.
+# Excellent will not appear in Discogs marketplace data —
+# sourced from eBay JP only.
+#
+# label_confidence: trust in this mapping (0.0–1.0).
+# Used as a sample weight signal during training.
+# flagged: true = non-obvious or ambiguous mapping.
+# ------------------------------------------------------------
+ebay_jp_harmonization:
+  S:
+    canonical: Mint
+    flagged: false
+    label_confidence: 1.00
+    note: "Still sealed — unambiguous Mint by our convention"
+
+  M-:
+    canonical: Near Mint
+    flagged: false
+    label_confidence: 1.00
+    note: "Unsealed, unused — clean Near Mint mapping"
+
+  E+:
+    canonical: Near Mint
+    flagged: false
+    label_confidence: 0.95
+    note: "Flawless used item — Near Mint by any standard"
+
+  E:
+    canonical: Excellent
+    flagged: false
+    label_confidence: 0.95
+    note: >
+      Minor cosmetic wear only, sound unaffected.
+      Maps to Excellent — sits between Near Mint and VG+
+      in the collector-aligned canonical schema.
+
+  E-:
+    canonical: Excellent
+    flagged: true
+    label_confidence: 0.85
+    note: >
+      Maps to Excellent alongside E. Japanese sellers grade
+      strictly and conservatively — E- describes very minor
+      cosmetic wear that in practice sits closer to Near Mint
+      than to Very Good Plus. Monitor during evaluation —
+      if E- samples cluster with Near Mint predictions,
+      consider splitting into separate mappings.
+
+  VG+:
+    canonical: Very Good Plus
+    flagged: false
+    label_confidence: 0.95
+    note: >
+      Direct equivalent to canonical Very Good Plus.
+      Japanese sellers use VG+ to mean the same cosmetic-only
+      defects that do not affect playback — consistent with
+      the Discogs VG+ definition.
+
+  VG:
+    canonical: Very Good
+    flagged: false
+    label_confidence: 0.95
+    note: >
+      Direct equivalent to canonical Very Good.
+      Note: Japanese sellers do not list records below Very Good.
+      Good and Poor grades will not appear in eBay JP training
+      data — these classes are Discogs-sourced only.
+
+# ------------------------------------------------------------
+# OBI Strip Handling
+# ------------------------------------------------------------
+# OBI strips (Japanese paper spine bands) are graded
+# separately by JP sellers. Tracked as metadata only —
+# not a grading target. OBI presence/condition affects
+# collector value but is outside the sleeve/media schema.
+# ------------------------------------------------------------
+obi:
+  track_as_metadata: true
+  metadata_field: obi_condition
+  grade_target: false
+
+# ------------------------------------------------------------
+# Grade Definitions and Rule Engine Signals
+# ------------------------------------------------------------
+# Structure per grade:
+#   hard_signals:      any one triggers override (Mint/Poor/Generic)
+#   supporting_signals: positive indicators for this grade
+#   forbidden_signals: any one blocks a rule override TO this grade
+#   min_supporting:    minimum supporting signals to fire override
+#   rule_confidence_threshold:
+#     model confidence below which rule override can fire.
+#     At 1.0 (Poor, Generic), rule always fires regardless of model.
+#
+# Sleeve and media are graded independently.
+# No cross-target logic — Poor sleeve does not affect media.
+# Generic only applies to sleeve — never to media.
+# ------------------------------------------------------------
+
+grades:
+  Mint:
+    applies_to: [sleeve, media]
+    description: >
+      Sealed record. Media condition unverifiable without opening.
+      INTENTIONAL DEVIATION FROM OFFICIAL DISCOGS STANDARD:
+      Official guidelines state sealed does not guarantee Mint.
+      We override this by convention — sealed records are graded
+      Mint since media condition cannot be assessed without
+      opening the record. This is a known, documented design
+      decision for this system.
+    hard_signals:
+      - sealed
+      - factory sealed
+      - still sealed
+      - shrink wrapped
+      - shrink intact
+      - shrink
+    supporting_signals:
+      - unplayed
+      - unopened
+    forbidden_signals:
+      - damaged
+      - split
+      - crack
+      - worn
+      - writing
+      - sticker
+      - water damage
+    min_supporting: 0
+    rule_confidence_threshold: 0.90
+
+  Near Mint:
+    applies_to: [sleeve, media]
+    description: >
+      Nearly perfect. More than likely never played, or played
+      once with no imperfections during playback. No obvious
+      signs of wear. No folds, seam splits, scratches, or
+      noticeable defects on cover or inserts.
+    hard_signals: []
+    supporting_signals:
+      - never played
+      - barely played
+      - one play
+      - no marks
+      - no defects
+      - no wear
+      - excellent condition
+      - perfect condition
+      - mint minus
+      - like new
+    forbidden_signals:
+      - seam split
+      - scratch
+      - scratches
+      - fold
+      - surface noise
+      - crackle
+      - worn
+      - writing
+      - tape
+      - sticker
+      - warp
+      - skip
+      - skipping
+      - scuff
+      - mold
+      - stain
+      - ringwear
+    min_supporting: 2
+    rule_confidence_threshold: 0.85
+
+  Excellent:
+    applies_to: [sleeve, media]
+    description: >
+      Collector-aligned grade between Near Mint and Very Good Plus.
+      Shows minor signs of careful previous ownership. Cosmetic
+      wear present but minimal — minor scuffs, very light marks.
+      Sound unaffected. Better than most VG+ but not quite NM.
+      Corresponds to eBay JP E and E- grades.
+    hard_signals: []
+    supporting_signals:
+      - minor scuff
+      - slight scuff
+      - very minor wear
+      - light marks
+      - carefully handled
+      - well cared for
+      - excellent
+    forbidden_signals:
+      - seam split
+      - scratch
+      - surface noise
+      - crackle
+      - worn
+      - writing
+      - tape
+      - sticker
+      - warp
+      - skip
+      - skipping
+      - mold
+      - stain
+      - ringwear
+    min_supporting: 1
+    rule_confidence_threshold: 0.85
+
+  Very Good Plus:
+    applies_to: [sleeve, media]
+    description: >
+      Shows signs of careful previous ownership. Defects
+      cosmetic only — does not affect playback. Plays
+      perfectly. May have slight scuffs, very light scratches,
+      slight warp not affecting sound. Sleeve may have
+      slightly turned-up corners or small seam split.
+    hard_signals: []
+    supporting_signals:
+      - plays perfectly
+      - plays great
+      - light scuff
+      - slight scuff
+      - very light scratch
+      - minor wear
+      - cosmetic wear
+      - turned-up corners
+      - small seam split
+      - light wear
+    forbidden_signals:
+      - surface noise
+      - deep scratch
+      - skipping
+      - skip
+      - crackle
+      - writing
+      - tape
+      - sticker
+      - significant wear
+      - heavy wear
+      - warp
+      - mold
+      - stain
+      - ringwear
+      - groove wear
+    min_supporting: 2
+    rule_confidence_threshold: 0.85
+
+  Very Good:
+    applies_to: [sleeve, media]
+    description: >
+      More pronounced defects. Surface noise evident especially
+      in soft passages, intro, and fade. Light scratches deep
+      enough to feel with a fingernail affect the sound.
+      Labels may have writing, tape, or stickers.
+      Will not have all defects simultaneously.
+    hard_signals: []
+    supporting_signals:
+      - surface noise
+      - audible noise
+      - noticeable wear
+      - plays with noise
+      - light scratches
+      - writing on label
+      - tape
+      - sticker residue
+      - visible scratches
+      - groove wear
+    forbidden_signals:
+      - skipping
+      - skip
+      - heavily worn
+      - heavy scratches
+      - crackling
+      - badly warped
+      - significant groove wear
+      - seam split
+      - spine split
+    min_supporting: 1
+    rule_confidence_threshold: 0.80
+
+  Good:
+    applies_to: [sleeve, media]
+    description: >
+      Significant surface noise, scratches, crackling, or
+      visible wear. Can be played through without skipping.
+      Covers and sleeves have scratches or seam splits
+      especially at bottom or spine. Tape, writing, or
+      other defects present.
+      Corresponds to Discogs G and G+ (merged into one class).
+    hard_signals: []
+    supporting_signals:
+      - significant surface noise
+      - heavy scratches
+      - crackling
+      - crackle
+      - visible wear
+      - heavy wear
+      - seam split
+      - spine split
+      - writing
+      - tape
+      - plays through
+    forbidden_signals:
+      - skipping
+      - skip
+      - badly warped
+      - cracked
+      - water damage
+      - water damaged
+      - won't play
+      - does not play
+      - unplayable
+    min_supporting: 2
+    rule_confidence_threshold: 0.80
+
+  Poor:
+    applies_to: [sleeve, media]
+    description: >
+      Catastrophic condition. Cracked, badly warped, skipping,
+      or otherwise unplayable. Cover may be water damaged,
+      heavily marred, or fully split. Includes Fair (F) grade.
+      Rule engine owns this grade entirely — any single hard
+      signal is sufficient. Sleeve and media graded
+      independently. Poor sleeve does not imply Poor media.
+    hard_signals:
+      - skipping
+      - skip
+      - won't play
+      - does not play
+      - unplayable
+      - cracked
+      - badly warped
+      - water damaged
+      - water damage
+      - heavily scratched
+      - deep gouges
+      - groove damage
+      - label peeling
+      - fully split
+      - completely split
+      - broken
+    supporting_signals: []
+    forbidden_signals: []
+    min_supporting: 0
+    rule_confidence_threshold: 1.0   # always overrides regardless of model confidence
+
+  Generic:
+    applies_to: [sleeve]             # never applies to media
+    description: >
+      Sleeve only. The record has no original cover — it is
+      housed in a generic, plain, white, or die-cut sleeve,
+      or a company/promo sleeve. Common for DJ copies, promos,
+      and records where the original cover has been lost.
+      Generic describes the sleeve type, not its condition.
+      Rule engine owns this grade — any single hard signal
+      is sufficient to override to Generic.
+      Note: a Generic sleeve can still have a condition
+      sub-note in the seller text (e.g. "generic sleeve, VG+")
+      — in that case, Generic is the sleeve grade. The
+      condition sub-note is preserved in seller notes only.
+    hard_signals:
+      - generic sleeve
+      - generic cover
+      - white sleeve
+      - plain sleeve
+      - die-cut sleeve
+      - die cut sleeve
+      - promo sleeve
+      - promotional sleeve
+      - company sleeve
+      - inner sleeve only
+      - no original sleeve
+      - no original cover
+      - no cover
+      - without cover
+      - missing cover
+      - plain white
+      - blank sleeve
+    supporting_signals: []
+    forbidden_signals: []
+    min_supporting: 0
+    rule_confidence_threshold: 1.0   # always overrides regardless of model confidence
+
+# ------------------------------------------------------------
+# Discogs Marketplace Condition String Mapping
+# ------------------------------------------------------------
+# Maps raw Discogs API condition strings to canonical grades.
+# Used in ingest_discogs.py — do not modify without updating
+# ingestion logic.
+# "Generic Sleeve" is a valid Discogs sleeve condition value
+# and maps directly to our Generic grade.
+# ------------------------------------------------------------
+discogs_condition_map:
+  "Mint (M)":                  Mint
+  "Near Mint (NM or M-)":      Near Mint
+  "Very Good Plus (VG+)":      Very Good Plus
+  "Very Good (VG)":            Very Good
+  "Good Plus (G+)":            Good
+  "Good (G)":                  Good
+  "Fair (F)":                  Poor
+  "Poor (P)":                  Poor
+  "Generic Sleeve":            Generic   # sleeve only
+
+# ------------------------------------------------------------
+# Contradiction Detection
+# ------------------------------------------------------------
+# When contradictory signals appear in the same description,
+# rule overrides are suppressed and model prediction is
+# returned with contradiction_detected: true in metadata.
+# Checked independently for sleeve and media.
+# Generic contradictions are not checked — Generic is
+# always deterministic when a hard signal is present.
+# ------------------------------------------------------------
+contradictions:
+  - [sealed, surface noise]
+  - [sealed, scratches]
+  - [sealed, scratch]
+  - [mint, surface noise]
+  - [mint, scratches]
+  - [never played, surface noise]
+  - [never played, crackling]
+  - [unplayed, surface noise]
+  - [plays perfectly, skipping]
+  - [plays perfectly, surface noise]
+  - [near mint, seam split]
+  - [near mint, writing]
+  - [near mint, surface noise]
+  - [excellent condition, surface noise]
+  - [no marks, scratches]
+  - [no defects, surface noise]
