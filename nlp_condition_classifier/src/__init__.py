@@ -1,1 +1,0 @@
-# NLP Vinyl Condition Classifier
