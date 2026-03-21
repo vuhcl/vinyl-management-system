@@ -1,0 +1,215 @@
+# ============================================================
+# grader/configs/grader.yaml
+#
+# Grader module configuration.
+# Inherits shared project config from configs/base.yaml.
+#
+# Grade schema, rule engine signals, and eBay JP harmonization
+# live in grader/configs/grading_guidelines.yaml.
+# Do not duplicate label or rule definitions here.
+#
+# All secrets (API tokens) are read from environment variables.
+# Never hardcode credentials in this file.
+# ============================================================
+
+inherits: configs/base.yaml
+
+# ------------------------------------------------------------
+# Guidelines Reference
+# ------------------------------------------------------------
+# Single source of truth for grade schema, rule engine signals,
+# eBay JP harmonization, and contradiction detection.
+# All modules must load this file — never hardcode grade lists.
+# ------------------------------------------------------------
+guidelines_path: grader/configs/grading_guidelines.yaml
+
+# ------------------------------------------------------------
+# Paths
+# ------------------------------------------------------------
+paths:
+  raw:          grader/data/raw/
+  processed:    grader/data/processed/
+  splits:       grader/data/splits/
+  artifacts:    grader/artifacts/
+  reports:      grader/reports/
+
+# ------------------------------------------------------------
+# Discogs API
+# ------------------------------------------------------------
+discogs:
+  base_url:               https://api.discogs.com
+  token:                  ${DISCOGS_TOKEN}       # environment variable
+  rate_limit_per_minute:  60
+  marketplace_endpoint:   /marketplace/search
+
+# ------------------------------------------------------------
+# eBay API
+# ------------------------------------------------------------
+ebay:
+  base_url:               https://api.ebay.com/buy/browse/v1
+  token_url:              https://api.ebay.com/identity/v1/oauth2/token
+  client_id:              ${EBAY_CLIENT_ID}      # environment variable
+  client_secret:          ${EBAY_CLIENT_SECRET}  # environment variable
+  rate_limit_per_minute:  45                     # conservative — eBay Browse API
+
+# ------------------------------------------------------------
+# Data Ingestion
+# ------------------------------------------------------------
+data:
+  harmonization:
+    min_samples_per_class: 50      # warn if any class falls below this
+    output_path: grader/data/processed/unified.jsonl
+    report_path: grader/reports/class_distribution.txt
+
+  sources:
+    - discogs
+    - ebay_jp
+
+  discogs:
+    format_filter:      Vinyl
+    target_per_grade:   500        # max listings to fetch per canonical grade
+                                   # grades: Mint, Near Mint, VG+, VG, Good, Poor
+                                   # Excellent excluded — Discogs has no EX grade
+                                   # Generic excluded — not a searchable condition
+
+  ebay:
+    min_text_length:    3          # lower than Discogs — JP seller notes are sparse
+    trusted_sellers:
+      facerecords:
+        sleeve_field:   "Sleeve Grading"
+        media_field:    "Record Grading"
+        obi_field:      "OBI_Grading"
+        grade_format:   clean      # bare grade value e.g. "VG+", "E-"
+      ellarecords2005:
+        sleeve_field:   "Cover Condition"
+        media_field:    "Vinyl Condition"
+        obi_field:      "OBI Condition"
+        grade_format:   annotated  # grade + inline defect codes
+                                   # e.g. "E (Excellent) S (Stain) cornerbump"
+
+  # Train/val/test split ratios — must sum to 1.0
+  # Stratified by sleeve_label and media_label jointly
+  splits:
+    train:        0.70
+    val:          0.15
+    test:         0.15
+    stratify_by:  [sleeve_label, media_label]
+    random_seed:  42               # overrides base.yaml seed for reproducibility
+
+# ------------------------------------------------------------
+# Preprocessing
+# ------------------------------------------------------------
+preprocessing:
+  lowercase:              true
+  normalize_whitespace:   true
+
+  # Abbreviation expansion — applied before any feature extraction.
+  # Order matters: longest/most specific patterns first to avoid
+  # partial matches (e.g. "vg++" must come before "vg+").
+  # Protected terms (see grading_guidelines.yaml) are never stripped.
+  abbreviation_map:
+    "m-":     "mint minus"
+    "nm":     "near mint"
+    "n.m.":   "near mint"
+    "vg++":   "very good plus"
+    "vg+":    "very good plus"
+    "vg":     "very good"
+    "g+":     "good plus"
+    "ex+":    "excellent plus"
+    "ex-":    "excellent minus"
+    "ex":     "excellent"
+    "e+":     "excellent plus"
+    "e-":     "excellent minus"
+
+  # Minimum text length after cleaning — listings below this are dropped.
+  # Discogs: 10 chars (seller notes expected to be descriptive)
+  # eBay JP: handled per-source in ingest_ebay.py (min 3 chars)
+  min_text_length_discogs:  10
+
+# ------------------------------------------------------------
+# Rule Engine
+# ------------------------------------------------------------
+# Rule logic and all signal lists live in grading_guidelines.yaml.
+# This section controls runtime behavior only.
+# ------------------------------------------------------------
+rules:
+  guidelines_path:        grader/configs/grading_guidelines.yaml
+  confidence_threshold:   0.85     # global fallback if not set per grade
+  flag_contradictions:    true
+  contradiction_action:   return_model_prediction   # suppress override on contradiction
+
+# ------------------------------------------------------------
+# Models
+# ------------------------------------------------------------
+models:
+  baseline:
+    name:   tfidf_logreg
+    tfidf:
+      max_features:   10000
+      ngram_range:    [1, 2]
+      sublinear_tf:   true
+      min_df:         2
+    logistic_regression:
+      C:              1.0
+      max_iter:       1000
+      class_weight:   balanced     # handles class imbalance
+      solver:         lbfgs
+      random_state:   42
+
+  transformer:
+    name:                   distilbert_two_head
+    base_model:             distilbert-base-uncased
+    freeze_encoder:         true   # default for small dataset (~1K-5K samples)
+                                   # set to false to ablate full fine-tuning
+    max_length:             128
+    dropout:                0.3
+    learning_rate:          2.0e-4
+    batch_size:             16
+    epochs:                 20
+    early_stopping_patience: 3
+    class_weight:           balanced
+    random_state:           42
+
+# ------------------------------------------------------------
+# Evaluation
+# ------------------------------------------------------------
+evaluation:
+  primary_metric:   macro_f1
+  metrics:
+    - macro_f1
+    - accuracy
+    - calibration_error
+  calibration:
+    method:     isotonic           # isotonic regression post-hoc calibration
+    cv_folds:   5
+
+# ------------------------------------------------------------
+# MLflow
+# ------------------------------------------------------------
+mlflow:
+  experiment_name:    vinyl_grader
+  tracking_uri:       grader/experiments/mlruns
+  tags:
+    project:  vinyl_collector_ai
+    module:   grader
+
+# ------------------------------------------------------------
+# Inference
+# ------------------------------------------------------------
+inference:
+  model: transformer
+
+
+# ------------------------------------------------------------
+# Export
+# ------------------------------------------------------------
+# Paths for serialized model artifacts.
+# All artifacts must be saved here for reproducibility —
+# never save models to ad-hoc locations.
+# ------------------------------------------------------------
+export:
+  onnx_path:                  grader/artifacts/model.onnx
+  coreml_path:                grader/artifacts/VinylGrader.mlpackage
+  preprocessing_pipeline_path: grader/artifacts/preprocessor.pkl
+  label_encoder_path:         grader/artifacts/label_encoder.pkl
+  tfidf_vectorizer_path:      grader/artifacts/tfidf_vectorizer.pkl
