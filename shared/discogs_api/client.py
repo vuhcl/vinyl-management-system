@@ -1,7 +1,10 @@
 """
 Discogs API client – shared by all subprojects.
-Uses Discogs REST API with a user token (Settings → Developers → Generate token).
+
+Uses Discogs REST API with a user token (Settings → Developers →
+Generate token).
 """
+
 from typing import Any
 
 import pandas as pd
@@ -26,7 +29,9 @@ class DiscogsClient:
         self._session = requests.Session()
         self._session.headers["User-Agent"] = user_agent
         if user_token:
-            self._session.headers["Authorization"] = f"Discogs token={user_token}"
+            self._session.headers["Authorization"] = (
+                f"Discogs token={user_token}"
+            )
 
     def _get(
         self, path: str, params: dict[str, Any] | None = None
@@ -36,7 +41,9 @@ class DiscogsClient:
         r.raise_for_status()
         return r.json()
 
-    def _paginate(self, path: str, key: str = "releases", per_page: int = 100) -> list[Any]:
+    def _paginate(
+        self, path: str, key: str = "releases", per_page: int = 100
+    ) -> list[Any]:
         out: list[Any] = []
         page = 1
         while True:
@@ -64,13 +71,18 @@ class DiscogsClient:
         """
         Fetch all releases in a user's collection folder.
         folder_id=0 is typically the main collection.
-        Returns list of dicts with 'id' (release_id), optionally 'basic_information'.
+        Returns list of dicts with 'id' (release_id),
+        optionally 'basic_information'.
         """
+
         path = f"/users/{username}/collection/folders/{folder_id}/releases"
         return self._paginate(path, "releases")
 
     def get_user_wantlist(self, username: str) -> list[dict[str, Any]]:
-        """Fetch user's wantlist. Returns list of dicts with 'id' (release_id)."""
+        """Fetch user's wantlist.
+
+        Returns list of dicts with 'id' (release_id).
+        """
         path = f"/users/{username}/wants"
         return self._paginate(path, "wants")
 
@@ -106,8 +118,12 @@ def get_user_collection(
     user_token: str | None = None,
     folder_id: int = 0,
 ) -> pd.DataFrame:
-    """Fetch one user's collection as DataFrame. Token from arg or DISCOGS_USER_TOKEN."""
+    """Fetch one user's collection as DataFrame.
+
+    Token from arg or DISCOGS_USER_TOKEN.
+    """
     import os
+
     token = user_token or os.environ.get("DISCOGS_USER_TOKEN")
     if not token:
         return pd.DataFrame(columns=["user_id", "album_id"])
@@ -118,8 +134,12 @@ def get_user_collection(
 def get_user_wantlist(
     username: str, user_token: str | None = None
 ) -> pd.DataFrame:
-    """Fetch one user's wantlist as DataFrame. Token from arg or env."""
+    """Fetch one user's wantlist as DataFrame.
+
+    Token from arg or env.
+    """
     import os
+
     token = user_token or os.environ.get("DISCOGS_USER_TOKEN")
     if not token:
         return pd.DataFrame(columns=["user_id", "album_id"])

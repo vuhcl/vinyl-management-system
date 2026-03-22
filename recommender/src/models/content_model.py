@@ -1,10 +1,11 @@
 """
 Content-based model: cosine similarity or user-profile scoring.
 """
+
 import numpy as np
 import pandas as pd
 
-from ...features.content_features import album_feature_matrix, cosine_similarity_matrix
+from ..features.content_features import album_feature_matrix, cosine_similarity_matrix
 
 
 def build_content_similarity(album_features: pd.DataFrame) -> np.ndarray:
