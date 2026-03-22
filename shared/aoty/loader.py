@@ -3,9 +3,6 @@ Load AOTY scraped data from a directory produced by the project's scrapers.
 Expected: ratings CSV (user_id, album_id, rating), and albums CSV (album_id,
 artist, ...).
 If your scraper output differs, add an adapter or set column mapping in config.
-
-Prefer importing from ``shared.aoty.loader`` in new code; this module mirrors it
-for backwards compatibility.
 """
 from pathlib import Path
 
