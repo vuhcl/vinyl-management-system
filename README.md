@@ -1,6 +1,6 @@
 # Vinyl Management System
 
-A monorepo for vinyl collection tooling: **Discogs integration**, **data ingest**, and **three ML components**—recommender, NLP condition classifier, and price estimator—plus a **web interface** to log in with Discogs and sync your data.
+A monorepo for vinyl collection tooling: **Discogs integration**, **data ingest**, and **three ML components**—recommender, vinyl condition grader, and price estimator—plus a **web interface** to log in with Discogs and sync your data.
 
 ---
 
@@ -10,7 +10,7 @@ A monorepo for vinyl collection tooling: **Discogs integration**, **data ingest*
 |-----------|-------------|
 | **Web app** | Log in with your Discogs token, sync collection & wantlist to the app, and call ML APIs (recommendations, condition, price). |
 | **Recommender** | Hybrid (ALS + content-based) recommendations using your Discogs collection/wantlist and optional AOTY ratings. |
-| **NLP condition classifier** | Predicts sleeve and media condition from seller notes (e.g. Discogs listings). |
+| **Vinyl condition grader** | Predicts sleeve and media condition from seller notes (e.g. Discogs listings). |
 | **Price estimator** | Estimates fair market value for releases (stub; pipeline and API in place). |
 
 Shared infrastructure: **Discogs API** client and **AOTY** scraped-data loader used across components.
@@ -43,11 +43,11 @@ Open **http://127.0.0.1:8000** → [Log in with Discogs](http://127.0.0.1:8000/a
 vinyl_management_system/
 ├── configs/base.yaml       # Shared config (paths, Discogs, AOTY, model params)
 ├── core/                   # Config loader, auth, ingest jobs
-├── discogs_api/            # Shared Discogs API client
-├── aoty/                   # AOTY scraped data loader
+├── shared/discogs_api/    # Shared Discogs API client
+├── shared/aoty/           # AOTY scraped data loader
 ├── recommender/            # ML: hybrid recommendations
-├── nlp_condition_classifier/  # ML: condition from seller notes
-├── price_estimator/       # ML: price estimation (stub)
+├── grader/                   # ML: sleeve/media condition grader from notes
+├── price_estimator/       # ML: price estimation
 ├── web/                    # Web UI and API
 ├── data/raw, data/processed
 └── artifacts/
@@ -118,33 +118,92 @@ python -m recommender.pipeline --config configs/base.yaml --data-dir data/raw --
 
 See **`recommender/README.md`** for details.
 
-### NLP condition classifier
+### Vinyl condition grader (personal use)
+
+This component (and the `/api/condition` endpoint) is intended for **personal use**. It loads the **baseline** model on the server and applies the rule engine, but it is not hardened for public traffic yet.
+
+#### Run the grader locally (baseline)
 
 ```bash
 export PYTHONPATH=/path/to/vinyl_management_system
-python -m nlp_condition_classifier.src.pipeline --phase baseline
+python -m grader.src.pipeline train --baseline-only
 ```
 
-See **`nlp_condition_classifier/README.md`** for data format and options.
+For inference from the CLI, use:
+
+```bash
+python -m grader.src.pipeline predict --text "factory sealed, never opened" --model baseline
+```
+
+For mobile/React Native use, call the existing FastAPI endpoint: `POST /api/condition` with JSON `{ "seller_notes": "..." }`.
+
+API contract (baseline + rule engine applied):
+
+Request:
+```json
+{
+  "seller_notes": "raw seller notes text",
+  "item_id": "optional id echoed back",
+  "metadata": { "optional": "free-form metadata for rule signals" }
+}
+```
+
+Response:
+```json
+{
+  "item_id": "optional id echoed back",
+  "predicted_sleeve_condition": "Mint|Near Mint|Excellent|Very Good Plus|Very Good|Good|Poor|Generic",
+  "predicted_media_condition":  "Mint|Near Mint|Excellent|Very Good Plus|Very Good|Good|Poor",
+  "confidence_scores": {
+    "sleeve": { "Mint": 0.1, "Near Mint": 0.4, "...": 0.5 },
+    "media":  { "Mint": 0.2, "Near Mint": 0.3, "...": 0.5 }
+  },
+  "metadata": {
+    "source": "unknown|discogs|ebay_jp|user_input",
+    "media_verifiable": true,
+    "rule_override_applied": true,
+    "rule_override_target": "Mint|Poor|Generic|...",
+    "contradiction_detected": false
+  }
+}
+```
+
+#### Changes required for a wider release
+
+Before turning this into a public-facing product, I recommend addressing:
+- **Auth & rate limiting** on `POST /api/condition` (currently option A / no per-user auth).
+- **CORS + mobile-friendly deployment config** (base URL handling, HTTPS, allowed origins).
+- **Model lifecycle management** (clear artifact versioning, warmup, and safe concurrent loading).
+- **Operational monitoring** (request latency/failures, calibration drift, and rule override frequency).
+- **Dataset and label governance** (document label mappings/contradictions; add regression tests for harmonization).
+- **CI/CD and reproducible training** (locked dependencies, deterministic splits, artifact checks).
 
 ### Price estimator
 
-Stub only; entrypoint:
+1. Add `price_estimator/data/raw/sales.csv` and `metadata.csv` (see `price_estimator/README.md`).
+2. Train:
 
 ```bash
-python -m price_estimator.src.pipeline
+PYTHONPATH=. python -m price_estimator.src.pipeline --phase baseline
+# or --phase gradient_boosting for LightGBM + prediction intervals
 ```
 
-See **`price_estimator/README.md`** for the planned interface.
+3. Use `estimate(release_id, ..., features_row=...)` in code or via web `/api/price` when a model is trained.
+
+See **`price_estimator/README.md`** for data format and options.
 
 ---
 
 ## Discogs API (shared)
 
-All components use the same **`discogs_api`** package:
+All components use the same **`shared.discogs_api`** package:
 
 ```python
-from discogs_api import DiscogsClient, get_user_collection, get_user_wantlist
+from shared.discogs_api import (
+    DiscogsClient,
+    get_user_collection,
+    get_user_wantlist,
+)
 
 # Uses env DISCOGS_USER_TOKEN
 df = get_user_collection("username")
@@ -169,7 +228,7 @@ The recommender can use **Album of the Year** scraped data for ratings and album
 Loader API:
 
 ```python
-from aoty import load_ratings_from_scraped, load_album_metadata_from_scraped
+from shared.aoty import load_ratings_from_scraped, load_album_metadata_from_scraped
 from pathlib import Path
 ratings = load_ratings_from_scraped(Path("path/to/scraped"))
 albums = load_album_metadata_from_scraped(Path("path/to/scraped"))
@@ -182,7 +241,7 @@ albums = load_album_metadata_from_scraped(Path("path/to/scraped"))
 | Subproject | README |
 |------------|--------|
 | Recommender | [recommender/README.md](recommender/README.md) |
-| NLP condition classifier | [nlp_condition_classifier/README.md](nlp_condition_classifier/README.md) |
+| Vinyl condition grader | [grader/README.md](grader/README.md) |
 | Price estimator | [price_estimator/README.md](price_estimator/README.md) |
 | Web app | [web/README.md](web/README.md) |
 | Structure & coordination | [PROJECT_STRUCTURE.md](PROJECT_STRUCTURE.md) |
