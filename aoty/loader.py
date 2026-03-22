@@ -1,7 +1,11 @@
 """
 Load AOTY scraped data from a directory produced by the project's scrapers.
-Expected: ratings CSV (user_id, album_id, rating), albums CSV (album_id, artist, ...).
+Expected: ratings CSV (user_id, album_id, rating), and albums CSV (album_id,
+artist, ...).
 If your scraper output differs, add an adapter or set column mapping in config.
+
+Prefer importing from ``shared.aoty.loader`` in new code; this module mirrors it
+for backwards compatibility.
 """
 from pathlib import Path
 
@@ -18,7 +22,8 @@ def load_ratings_from_scraped(
 ) -> pd.DataFrame:
     """
     Load user ratings from AOTY scraped dir.
-    Expects user_id, album_id, rating (1–5 or 0–100; normalized to 1–5 if needed).
+    Expects user_id, album_id, rating (1–5 or 0–100; normalized to 1–5 if
+    needed).
     """
     path = Path(scraped_data_dir) / ratings_file
     if not path.exists():
@@ -64,9 +69,32 @@ def load_album_metadata_from_scraped(
     """
     path = Path(scraped_data_dir) / albums_file
     if not path.exists():
-        return pd.DataFrame(columns=["album_id", "artist", "genre", "year", "avg_rating"])
+        return pd.DataFrame(
+            columns=[
+                "album_id",
+                "artist",
+                "genre",
+                "year",
+                "avg_rating",
+                "album_title",
+                "release_date",
+                "priority_score",
+            ]
+        )
     df = pd.read_csv(path)
     df = df.rename(columns={c: c.strip().lower() for c in df.columns})
+
+    # Normalize expected/optional title column name.
+    album_title_candidates = ("album", "album_title", "title", "name")
+    if "album_title" not in df.columns:
+        found_title_col = None
+        for cand in album_title_candidates:
+            if cand in df.columns:
+                found_title_col = cand
+                break
+        if found_title_col is not None:
+            df = df.rename(columns={found_title_col: "album_title"})
+
     col_map = {
         album_col.lower(): "album_id",
         artist_col.lower(): "artist",
@@ -77,6 +105,24 @@ def load_album_metadata_from_scraped(
     for old, new in col_map.items():
         if old in df.columns:
             df = df.rename(columns={old: new})
-    want = ["album_id", "artist", "genre", "year", "avg_rating"]
+
+    if "album_title" not in df.columns:
+        df["album_title"] = ""
+
+    optional = ("release_date", "priority_score")
+    for col in optional:
+        if col not in df.columns:
+            df[col] = "" if col == "release_date" else 0.0
+
+    want = [
+        "album_id",
+        "artist",
+        "genre",
+        "year",
+        "avg_rating",
+        "album_title",
+        "release_date",
+        "priority_score",
+    ]
     have = [c for c in want if c in df.columns]
     return df[have].copy() if have else pd.DataFrame(columns=want)
