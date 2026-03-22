@@ -24,15 +24,16 @@ def train_als(
     """
     if AlternatingLeastSquares is None:
         raise ImportError("Install 'implicit' for ALS: pip install implicit")
-    # implicit expects item-user (items rows, users cols)
-    item_user = user_item.T.tocsr()
+    # `implicit` expects USER-ITEM matrix for fit:
+    # rows=users, cols=items.
+    user_items = user_item.tocsr()
     model = AlternatingLeastSquares(
         factors=factors,
         regularization=regularization,
         iterations=iterations,
         random_state=random_state,
     )
-    model.fit(item_user, show_progress=False)
+    model.fit(user_items, show_progress=False)
     return model
 
 
@@ -51,9 +52,14 @@ def predict_als(
     # recommend method returns (item_indices, scores) for the user
     ids, scores = model.recommend(
         user_idx,
-        user_item.T.tocsr(),
+        # `implicit` expects a USER-ITEM matrix for `recommend`:
+        # rows=users, cols=items.
+        user_item.tocsr(),
         N=top_k + len(exclude_item_idxs),
-        filter_already_liked_items=True,
+        # We handle already-seen items ourselves (via exclude_item_idxs),
+        # which avoids strict shape requirements inside `implicit` when
+        # calling recommend with a scalar userid.
+        filter_already_liked_items=False,
     )
     ids = np.asarray(ids)
     scores = np.asarray(scores).astype(np.float64)
@@ -63,6 +69,42 @@ def predict_als(
     return ids, scores
 
 
+def predict_als_in_candidates(
+    model,
+    user_idx: int,
+    user_item: sparse.csr_matrix,
+    exclude_item_idxs: np.ndarray,
+    candidate_item_idxs: np.ndarray,
+    top_k: int = 10,
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Score only items in ``candidate_item_idxs`` via latent dot products.
+
+    Faster than full-catalog ``recommend`` when |candidates| << n_items.
+    """
+    if candidate_item_idxs.size == 0:
+        return np.array([], dtype=np.int64), np.array([], dtype=np.float64)
+    exclude_set = set(int(x) for x in np.asarray(exclude_item_idxs).ravel())
+    uf = np.asarray(model.user_factors[user_idx], dtype=np.float64)
+    inds = np.asarray(candidate_item_idxs, dtype=np.int64)
+    IF = np.asarray(model.item_factors[inds], dtype=np.float64)
+    scores = IF @ uf
+    order = np.argsort(-scores)
+    picked: list[int] = []
+    picked_scores: list[float] = []
+    for j in order:
+        idx = int(inds[j])
+        if idx in exclude_set:
+            continue
+        picked.append(idx)
+        picked_scores.append(float(scores[j]))
+        if len(picked) >= top_k:
+            break
+    return np.asarray(picked, dtype=np.int64), np.asarray(
+        picked_scores, dtype=np.float64
+    )
+
+
 def als_scores_for_user(
     model,
     user_idx: int,
@@ -70,7 +112,7 @@ def als_scores_for_user(
     n_items: int,
     exclude_item_idxs: np.ndarray,
 ) -> np.ndarray:
-    """Return score vector of length n_items for one user (for hybrid blending)."""
+    """Score vector for one user (for hybrid blending)."""
     item_user = user_item.T.tocsr()
     # get all item scores
     user_factors = model.user_factors[user_idx]

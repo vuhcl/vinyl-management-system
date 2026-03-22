@@ -19,6 +19,8 @@ data/raw/*
 data/processed/*
 !data/processed/.gitkeep
 data/aoty_scraped/
+# Discogs ↔ AOTY matching HTTP cache (release→master, search JSON)
+**/.discogs_cache/
 artifacts/*
 !artifacts/.gitkeep
 *.csv
@@ -38,9 +40,6 @@ artifacts/*
 *.swp
 .DS_Store
 
-# MLflow
-mlruns/
-
 # Jupyter
 .ipynb_checkpoints/
 *.ipynb_checkpoints
@@ -48,3 +47,19 @@ mlruns/
 # Logs
 *.log
 logs/
+
+.env.*.local
+ 
+# MLflow runs
+mlruns/
+grader/experiments/
+ 
+# Model artifacts (large files)
+grader/artifacts/*.pkl
+grader/artifacts/*.pt
+grader/artifacts/*.onnx
+grader/artifacts/*.mlpackage
+ 
+# Coverage reports
+grader/reports/coverage/
+ 
