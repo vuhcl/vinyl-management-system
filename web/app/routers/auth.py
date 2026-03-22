@@ -1,14 +1,11 @@
 """
 Discogs authentication: token-based login and session.
 """
-import os
-from typing import Annotated
-
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel
 
-from core.auth import set_user_token, get_user_token, get_token_for_request
+from core.auth import set_user_token
 
 router = APIRouter()
 
@@ -34,15 +31,24 @@ async def submit_token(
     if not token:
         raise HTTPException(status_code=400, detail="Token required")
     try:
-        from discogs_api import DiscogsClient
+        from shared.discogs_api import DiscogsClient
         client = DiscogsClient(user_token=token)
         username = client.get_username()
         if not username:
-            raise HTTPException(status_code=401, detail="Invalid token or Discogs API error")
+            raise HTTPException(
+                status_code=401,
+                detail="Invalid token or Discogs API error",
+            )
         set_user_token(username, token)
         request.state.username = username
         response = JSONResponse(content={"username": username, "message": "Logged in"})
-        response.set_cookie(key="username", value=username, httponly=True, samesite="lax", max_age=86400 * 7)
+        response.set_cookie(
+            key="username",
+            value=username,
+            httponly=True,
+            samesite="lax",
+            max_age=86400 * 7,
+        )
         return response
     except Exception as e:
         raise HTTPException(status_code=401, detail=f"Discogs auth failed: {e}")
@@ -51,7 +57,9 @@ async def submit_token(
 @router.get("/me")
 async def me(request: Request):
     """Return current username if logged in (from cookie, set by middleware)."""
-    username = getattr(request.state, "username", None) or request.cookies.get("username")
+    username = getattr(
+        request.state, "username", None
+    ) or request.cookies.get("username")
     return {"username": username, "logged_in": username is not None}
 
 

@@ -1,21 +1,48 @@
-# Price estimator – base config (stub)
+# Price estimator – base config
+# Paths relative to price_estimator/
 seed: 42
 
 paths:
   raw_data: "data/raw"
   processed_data: "data/processed"
-  artifacts: "artifacts/price_estimator"
+  artifacts: "artifacts"
 
-# Discogs – price suggestions / marketplace (shared discogs_api)
 discogs:
   use_api: false
   # token: "${DISCOGS_USER_TOKEN}"
 
-# Optional: condition from NLP classifier (sleeve/media grades)
-nlp_condition:
-  artifact_dir: "artifacts"  # where nlp_condition_classifier saves models
+features:
+  historical_years: 3
+  time_decay_halflife_days: 365
+  rolling_window_days: 180
+  genre_top_k: 50
+  condition_encode: "one_hot"
 
-# Model (stub)
-model:
-  type: "quantile_regression"  # or "point", "ensemble"
-  quantiles: [0.25, 0.5, 0.75]
+baseline:
+  fit_intercept: true
+  positive: false
+
+gradient_boosting:
+  n_estimators: 200
+  max_depth: 6
+  learning_rate: 0.05
+  subsample: 0.8
+  colsample_bytree: 0.8
+  min_child_samples: 20
+  prediction_interval_quantiles: [0.1, 0.9]
+
+split:
+  val_fraction: 0.15
+  test_fraction: 0.15
+  time_column: "sale_date"
+
+evaluation:
+  primary_metric: "mae"
+  metrics:
+    - mae
+    - mape
+  prediction_interval_coverage: 0.8
+
+mlflow:
+  experiment_name: "price_estimator"
+  tracking_uri: null

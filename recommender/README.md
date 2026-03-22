@@ -5,7 +5,7 @@ Hybrid vinyl recommendation system: **Discogs** (shared API) + **AOTY scraped da
 This subproject is part of **vinyl_management_system**. It uses:
 
 - **Shared Discogs API** (`shared.discogs_api`) for collection and wantlist when `configs/base.yaml` has `discogs.use_api` and usernames/token.
-- **AOTY scraped data** (`shared.aoty` loader) when `aoty_scraped.dir` points to your scraped data directory.
+- **AOTY scraped data** (`shared.aoty`) when `aoty_scraped.dir` points to your scraped data directory.
 - **CSV fallback** in `data/raw/` when Discogs or AOTY is not configured.
 
 ---
@@ -49,8 +49,15 @@ Evaluation and smoke scripts can **restrict ALS scoring** to a candidate pool bu
 
 - **Genre expansion**: albums sharing any genre with the user’s train albums.
 - **Same-artist expansion**: other albums by those artists.
-- **Quality floors**: `min_avg_rating`, `min_train_count` (global train counts).
-- **Cap**: `max_candidates` (deterministic: highest train count first).
+- **Quality floors**: `min_avg_rating`, `min_train_count`, `min_distinct_users`,
+  `min_rating_rows` (rating-source rows only, needs `source` on interactions),
+  optional `min_priority_score` (from album `priority_score`).
+- **Year band**: quantiles of the user’s train-album `year` values, always expanded
+  to include min/max train year; optional `year_window_years` slack. Albums with
+  `year == 0` are not excluded by the band. **`release_date`** is stored on
+  albums (Mongo/CSV) for traceability; filtering uses integer **`year`**.
+- **Cap**: `max_candidates` (sort: train count, then priority, distinct users,
+  rating rows, year).
 
 Enable in YAML under `retrieval.enabled: true` (see `configs/smoke_pipeline.yaml`) or:
 
@@ -95,17 +102,6 @@ From **project root** (vinyl_management_system):
 pip install -r requirements.txt
 python -m recommender.pipeline --config configs/base.yaml --data-dir data/raw --processed-dir data/processed --artifacts-dir artifacts
 ```
-
-### Try ingest on real Discogs + Mongo (smoke test)
-
-Before training the full pipeline, run:
-
-```bash
-export DISCOGS_USER_TOKEN=your_token
-python scripts/smoke_recommender_ingest.py --username your_discogs_username
-```
-
-See `scripts/smoke_recommender_ingest.py --help` for Mongo URI/DB flags and CSV-only AOTY.
 
 Use `--skip-ingest` to reuse existing processed data.
 

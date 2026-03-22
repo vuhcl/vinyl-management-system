@@ -16,16 +16,17 @@ Speed / API limits:
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 import difflib
 import hashlib
 import json
 import time
-from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 import pandas as pd
 import requests
+
 
 DISCogs_BASE_URL = "https://api.discogs.com"
 _RELEASE_CACHE_NAME = "release_master.json"
@@ -79,7 +80,9 @@ def _load_json_dict(path: Path) -> dict[str, Any]:
 
 
 def _search_cache_key(params: dict[str, Any]) -> str:
-    blob = json.dumps(params, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    blob = json.dumps(params, sort_keys=True, separators=(",", ":")).encode(
+        "utf-8"
+    )
     return hashlib.sha256(blob).hexdigest()
 
 
@@ -111,7 +114,9 @@ class DiscogsHttpHelper:
     cfg: DiscogsMatchConfig
     cache_dir: Path | None = None
     _last_request_mono: float = field(default=0.0, repr=False)
-    _release_master: dict[str, str | None] = field(default_factory=dict, repr=False)
+    _release_master: dict[str, str | None] = field(
+        default_factory=dict, repr=False
+    )
     _search_payloads: dict[str, dict[str, Any]] = field(
         default_factory=dict, repr=False
     )
@@ -153,7 +158,9 @@ class DiscogsHttpHelper:
         if self.cfg.min_request_interval_s <= 0:
             return
         now = time.monotonic()
-        wait = self.cfg.min_request_interval_s - (now - self._last_request_mono)
+        wait = self.cfg.min_request_interval_s - (
+            now - self._last_request_mono
+        )
         if wait > 0:
             time.sleep(wait)
 
@@ -179,7 +186,9 @@ class DiscogsHttpHelper:
         self.session.headers["Authorization"] = f"Discogs token={self.token}"
         attempt = 0
         while True:
-            resp = self.session.get(url, params=params or {}, timeout=timeout_s)
+            resp = self.session.get(
+                url, params=params or {}, timeout=timeout_s
+            )
             self._last_request_mono = time.monotonic()
             if resp.status_code == 429 and attempt < self.cfg.max_429_retries:
                 ra = resp.headers.get("Retry-After", "60")
@@ -289,7 +298,9 @@ def build_discogs_master_to_aoty_album_id_map(
     required_cols = {"album_id", "artist", "album_title", "year"}
     missing = required_cols - set(aoty_albums.columns)
     if missing:
-        raise ValueError(f"AOTY albums missing required columns: {sorted(missing)}")
+        raise ValueError(
+            f"AOTY albums missing required columns: {sorted(missing)}"
+        )
 
     own_http = http is None
     if http is None:
@@ -341,7 +352,9 @@ def build_discogs_master_to_aoty_album_id_map(
                     continue
 
                 year_match = (
-                    1 if aoty_year is not None and cand_year == aoty_year else 0
+                    1
+                    if aoty_year is not None and cand_year == aoty_year
+                    else 0
                 )
                 key = (
                     year_match,
@@ -397,7 +410,9 @@ def map_discogs_release_ids_to_aoty_album_ids(
     if df.empty:
         return df
     if "album_id" not in df.columns:
-        raise ValueError("Expected df with an `album_id` column (Discogs release_id).")
+        raise ValueError(
+            "Expected df with an `album_id` column (Discogs release_id)."
+        )
 
     own_http = http is None
     if http is None:

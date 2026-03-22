@@ -21,11 +21,11 @@ vinyl_management_system/
 │   ├── auth.py                    # Discogs token storage (web sessions)
 │   └── jobs.py                    # Ingest jobs: Discogs → data/raw
 │
-├── discogs_api/                   # Shared Discogs API client
+├── shared/discogs_api/           # Shared Discogs API client
 │   ├── __init__.py
 │   └── client.py
 │
-├── aoty/                          # AOTY scraped data loader
+├── shared/aoty/                  # AOTY scraped data loader
 │   ├── __init__.py
 │   └── loader.py
 │
@@ -38,7 +38,7 @@ vinyl_management_system/
 │   ├── pipeline.py                 # run_pipeline, recommend, load_pipeline_artifacts
 │   └── README.md
 │
-├── nlp_condition_classifier/       # ML component 2: sleeve/media condition from notes
+├── grader/                        # ML component 2: sleeve/media condition grader from notes
 │   ├── src/
 │   │   ├── data/
 │   │   ├── features/
@@ -48,9 +48,14 @@ vinyl_management_system/
 │   ├── pipeline.py
 │   └── README.md
 │
-├── price_estimator/               # ML component 3: price estimation (stub)
+├── price_estimator/               # ML component 3: price estimation
+│   ├── data/raw/                   # sales.csv, metadata.csv
 │   ├── src/
-│   │   └── pipeline.py             # estimate(), run_pipeline() stub
+│   │   ├── data/                   # ingest, preprocess
+│   │   ├── features/               # historical_price, condition_features, embeddings
+│   │   ├── models/                  # baseline (linear), gradient_boosting (LightGBM)
+│   │   ├── evaluation/             # metrics, prediction_interval
+│   │   └── pipeline.py             # run_pipeline(), estimate()
 │   ├── configs/base.yaml
 │   └── README.md
 │
@@ -78,8 +83,8 @@ vinyl_management_system/
 | Concern | Where it lives | How it’s used |
 |--------|----------------|----------------|
 | **Config** | `configs/base.yaml` + `core/config.py` | All components and web app load config via `core.config.load_config()`. Paths are resolved relative to project root. |
-| **Discogs** | `discogs_api/` | Recommender ingest, web ingest, and (future) price_estimator use the same client. Token comes from env or from web login (stored in `core.auth`). |
-| **AOTY data** | `aoty/` | Recommender reads ratings/albums from a scraped directory or CSV fallback. |
+| **Discogs** | `shared/discogs_api/` | Recommender ingest, web ingest, and (future) price_estimator use the same client. Token comes from env or from web login (stored in `core.auth`). |
+| **AOTY data** | `shared/aoty/` | Recommender reads ratings/albums from a scraped directory or CSV fallback. |
 | **Ingest** | `core/jobs.py` | Web app calls `run_discogs_ingest(username, token)` or `run_full_ingest(...)` after login; writes to `data/raw/`. |
 | **Auth** | `core/auth.py` + `web/.../auth.py` | User pastes Discogs token → app verifies with Discogs, stores token per username, sets cookie. Ingest and API use stored token. |
 
@@ -90,7 +95,7 @@ vinyl_management_system/
 1. **User logs in** (web): submits Discogs token → `/auth/token` → token stored, cookie set.
 2. **User triggers ingest** (web): POST `/ingest/sync` or `/ingest/full` → `core.jobs` fetches collection/wantlist (and optionally AOTY) → writes CSVs to `data/raw/`.
 3. **Recommender**: Run `python -m recommender.pipeline` (reads `data/raw/`, writes `data/processed/` and `artifacts/`). Web API `/api/recommendations` loads artifacts and returns recommendations for the logged-in user.
-4. **NLP classifier**: Run from project root (see `nlp_condition_classifier/README.md`). Web API `/api/condition` can call it for seller-notes → condition (stub in place).
+4. **Vinyl condition grader**: Run from project root (see `grader/README.md`). Web API `/api/condition` calls it for seller-notes → condition.
 5. **Price estimator**: Stub; pipeline and `/api/price/{release_id}` are in place for future implementation.
 
 ---
@@ -98,16 +103,16 @@ vinyl_management_system/
 ## Running the stack
 
 - **Install**: From project root, `pip install -r requirements.txt` and `pip install -r web/requirements.txt`.
-- **Web app**: `uvicorn web.app.main:app --reload` (from project root, so `core`, `discogs_api`, `recommender`, etc. are on `PYTHONPATH`).
+- **Web app**: `uvicorn web.app.main:app --reload` (from project root, so `core`, `shared`, `recommender`, etc. are on `PYTHONPATH`).
 - **Ingest**: Use the web UI (Login → Ingest) or call POST `/ingest/sync` with a logged-in session.
 - **Recommender**: After ingest, run `python -m recommender.pipeline --config configs/base.yaml`.
-- **NLP classifier**: `python -m nlp_condition_classifier.src.pipeline --phase baseline`.
-- **Price estimator**: `python -m price_estimator.src.pipeline` (stub).
+- **Vinyl condition grader**: `python -m grader.src.pipeline train --baseline-only`.
+- **Price estimator**: `python -m price_estimator.src.pipeline --phase baseline` (or `--phase gradient_boosting`).
 
 ---
 
 ## Adding a new ML component
 
 1. Add a top-level package (e.g. `my_component/`) with `src/`, `configs/`, and a `pipeline` or main entrypoint.
-2. Use `core.config.load_config()` for paths and shared settings; use `discogs_api` for any Discogs data.
+2. Use `core.config.load_config()` for paths and shared settings; use `shared.discogs_api` for any Discogs data.
 3. Expose an HTTP API under `web/app/routers/ml.py` (or a new router) and document in this file.

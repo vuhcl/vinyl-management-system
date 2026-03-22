@@ -96,6 +96,7 @@ def test_load_album_metadata_from_mongo_handles_missing_critic_and_user_score() 
             "user_score": 72,
             "release_date": "2026-01-30T00:00:00.000Z",
             "genres": ["Doomgaze", "Heavy Psych"],
+            "priority_score": 0.02,
         },
         {
             "album_id": 1680483,
@@ -125,12 +126,17 @@ def test_load_album_metadata_from_mongo_handles_missing_critic_and_user_score() 
         df = mongo_loader_mod.load_album_metadata_from_mongo(cfg)
 
     assert "album_title" in df.columns
+    assert "release_date" in df.columns
+    assert "priority_score" in df.columns
     assert set(df["album_id"].tolist()) == {"1549049", "1680483"}
 
     row_1 = df[df["album_id"] == "1549049"].iloc[0].to_dict()
     assert row_1["album_title"] == "Not Here Not Gone"
+    assert "2026" in str(row_1["release_date"])
+    assert abs(row_1["priority_score"] - 0.02) < 1e-9
     # avg = (79 + 72) / 2 = 75.5; 75.5 > 10 => /20 => 3.775
     assert abs(row_1["avg_rating"] - (75.5 / 20.0)) < 1e-6
 
     row_2 = df[df["album_id"] == "1680483"].iloc[0].to_dict()
     assert row_2["avg_rating"] == 0.0
+    assert row_2["priority_score"] == 0.0

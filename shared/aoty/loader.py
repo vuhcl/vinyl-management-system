@@ -74,6 +74,8 @@ def load_album_metadata_from_scraped(
                 "year",
                 "avg_rating",
                 "album_title",
+                "release_date",
+                "priority_score",
             ]
         )
     df = pd.read_csv(path)
@@ -104,6 +106,20 @@ def load_album_metadata_from_scraped(
     if "album_title" not in df.columns:
         df["album_title"] = ""
 
-    want = ["album_id", "artist", "genre", "year", "avg_rating", "album_title"]
+    optional = ("release_date", "priority_score")
+    for col in optional:
+        if col not in df.columns:
+            df[col] = "" if col == "release_date" else 0.0
+
+    want = [
+        "album_id",
+        "artist",
+        "genre",
+        "year",
+        "avg_rating",
+        "album_title",
+        "release_date",
+        "priority_score",
+    ]
     have = [c for c in want if c in df.columns]
     return df[have].copy() if have else pd.DataFrame(columns=want)

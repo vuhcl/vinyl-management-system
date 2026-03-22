@@ -105,6 +105,15 @@ def load_ratings_from_mongo(
     return df.astype({"user_id": str, "album_id": str, "rating": float})
 
 
+def _format_release_date(value: Any) -> str:
+    """Stable string for storage (ISO when possible)."""
+    if value is None:
+        return ""
+    if isinstance(value, datetime):
+        return value.isoformat()
+    return str(value).strip()
+
+
 def _extract_year(value: Any) -> int | None:
     """Convert release date-like values to a year integer."""
     if value is None:
@@ -142,17 +151,15 @@ def load_album_metadata_from_mongo(
         "avg_score",
         "avg_reviewer_score",
     ),
+    priority_score_field: str = "priority_score",
 ) -> pd.DataFrame:
     """
     Load AOTY album metadata from MongoDB.
 
-    Output columns match our recommender content feature expectations:
-      - album_id (str)
-      - artist (str)
-      - album_title (str)
-      - genre (string with comma-separated genres)
-      - year (int)
-      - avg_rating (float)
+    Output columns:
+      - album_id, artist, album_title, genre, year, avg_rating
+      - release_date (str, from Mongo release field; may be empty)
+      - priority_score (float; 0.0 if missing)
     """
     client = MongoClient(mongo.mongo_uri)
     try:
@@ -172,6 +179,7 @@ def load_album_metadata_from_mongo(
         # compute an avg rating if explicit avg_rating isn't present.
         projection[critic_score_field] = 1
         projection[user_score_field] = 1
+        projection[priority_score_field] = 1
 
         cursor = coll.find({}, projection=projection)
         if limit is not None:
@@ -188,7 +196,9 @@ def load_album_metadata_from_mongo(
                     album_title = str(val)
                     break
             genres_val = doc.get(genres_field) or []
-            year = _extract_year(doc.get(release_date_field))
+            rd_raw = doc.get(release_date_field)
+            release_date_str = _format_release_date(rd_raw)
+            year = _extract_year(rd_raw)
 
             # avg rating is optional; try explicit avg fields first, then
             # fall back to (critic_score + user_score) / 2.
@@ -231,6 +241,9 @@ def load_album_metadata_from_mongo(
                 avg_rating = float((avg_rating / 20.0))
             avg_rating = float(max(0.0, min(5.0, avg_rating)))
 
+            pri = _maybe_float(doc.get(priority_score_field))
+            priority_score = float(pri) if pri is not None else 0.0
+
             rows.append(
                 {
                     "album_id": str(album_id),
@@ -239,12 +252,23 @@ def load_album_metadata_from_mongo(
                     "genre": genre_str,
                     "year": int(year),
                     "avg_rating": avg_rating,
+                    "release_date": release_date_str,
+                    "priority_score": priority_score,
                 }
             )
     finally:
         client.close()
 
-    want_cols = ["album_id", "artist", "album_title", "genre", "year", "avg_rating"]
+    want_cols = [
+        "album_id",
+        "artist",
+        "album_title",
+        "genre",
+        "year",
+        "avg_rating",
+        "release_date",
+        "priority_score",
+    ]
     df = pd.DataFrame(rows, columns=want_cols)
     if df.empty:
         return pd.DataFrame(columns=want_cols)
@@ -256,5 +280,7 @@ def load_album_metadata_from_mongo(
             "genre": str,
             "year": int,
             "avg_rating": float,
+            "release_date": str,
+            "priority_score": float,
         }
     )

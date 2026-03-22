@@ -1,6 +1,6 @@
 # Web interface
 
-FastAPI app for the Vinyl Management System: **Discogs login**, **data ingest**, and access to the three ML components (recommender, NLP condition classifier, price estimator).
+FastAPI app for the Vinyl Management System: **Discogs login**, **data ingest**, and access to the three ML components (recommender, vinyl condition grader, price estimator).
 
 ## Features
 
@@ -10,7 +10,7 @@ FastAPI app for the Vinyl Management System: **Discogs login**, **data ingest**,
 
 ## Run
 
-From **project root** (so `core`, `discogs_api`, `recommender`, etc. are on PYTHONPATH):
+From **project root** (so `core`, `shared`, `recommender`, etc. are on PYTHONPATH):
 
 ```bash
 pip install -r requirements.txt
