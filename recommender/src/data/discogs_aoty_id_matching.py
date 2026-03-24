@@ -287,6 +287,7 @@ def build_discogs_master_to_aoty_album_id_map(
     session: requests.Session | None = None,
     cache_dir: Path | None = None,
     http: DiscogsHttpHelper | None = None,
+    stats_out: dict[str, int] | None = None,
 ) -> dict[str, str]:
     """
     Return mapping: `discogs_master_id -> aoty_album_id`.
@@ -317,6 +318,18 @@ def build_discogs_master_to_aoty_album_id_map(
     master_to_aoty: dict[str, str] = {}
     master_to_score: dict[str, tuple[int, float, int]] = {}
 
+    if stats_out is not None:
+        stats_out.clear()
+        stats_out.update(
+            {
+                "aoty_album_rows_input": int(len(aoty_albums)),
+                "aoty_rows_skipped_missing_artist_or_title": 0,
+                "aoty_rows_no_discogs_search_results": 0,
+                "aoty_rows_no_discogs_match_after_fuzzy": 0,
+                "discogs_master_to_aoty_entries": 0,
+            }
+        )
+
     try:
         for row in aoty_albums.itertuples(index=False):
             aoty_album_id = str(getattr(row, "album_id"))
@@ -325,6 +338,8 @@ def build_discogs_master_to_aoty_album_id_map(
             aoty_year = _extract_year(getattr(row, "year"))
 
             if not artist or not album_title:
+                if stats_out is not None:
+                    stats_out["aoty_rows_skipped_missing_artist_or_title"] += 1
                 continue
 
             cache_key = (artist, album_title, aoty_year)
@@ -338,6 +353,8 @@ def build_discogs_master_to_aoty_album_id_map(
             candidates = search_memo[cache_key]
 
             if not candidates:
+                if stats_out is not None:
+                    stats_out["aoty_rows_no_discogs_search_results"] += 1
                 continue
 
             best: dict[str, Any] | None = None
@@ -366,6 +383,8 @@ def build_discogs_master_to_aoty_album_id_map(
                     best = {"master_id": cand_master_id, "title": cand_title}
 
             if best is None:
+                if stats_out is not None:
+                    stats_out["aoty_rows_no_discogs_match_after_fuzzy"] += 1
                 continue
 
             master_id = str(best["master_id"])
@@ -377,6 +396,14 @@ def build_discogs_master_to_aoty_album_id_map(
     finally:
         if own_http:
             http.save_disk()
+
+    if stats_out is not None:
+        stats_out["discogs_master_to_aoty_entries"] = len(master_to_aoty)
+        stats_out["aoty_album_rows_not_linked_to_discogs_master"] = (
+            stats_out["aoty_rows_skipped_missing_artist_or_title"]
+            + stats_out["aoty_rows_no_discogs_search_results"]
+            + stats_out["aoty_rows_no_discogs_match_after_fuzzy"]
+        )
 
     return master_to_aoty
 
@@ -402,12 +429,28 @@ def map_discogs_release_ids_to_aoty_album_ids(
     cache_dir: Path | None = None,
     cfg: DiscogsMatchConfig | None = None,
     http: DiscogsHttpHelper | None = None,
+    stats_out: dict[str, int] | None = None,
 ) -> pd.DataFrame:
     """
     Replace Discogs `release_id` values in `df["album_id"]` with canonical
     AOTY `album_id` values.
+
+    If ``stats_out`` is a dict, it is cleared and filled with row/release
+    counts (e.g. ``rows_dropped``, ``unique_releases_no_master``).
     """
+    _empty_stats: dict[str, int] = {
+        "input_rows": 0,
+        "output_rows": 0,
+        "rows_dropped": 0,
+        "unique_discogs_releases": 0,
+        "unique_releases_mapped_to_aoty": 0,
+        "unique_releases_no_master": 0,
+        "unique_releases_master_not_in_aoty_catalog": 0,
+    }
     if df.empty:
+        if stats_out is not None:
+            stats_out.clear()
+            stats_out.update(_empty_stats)
         return df
     if "album_id" not in df.columns:
         raise ValueError(
@@ -431,6 +474,8 @@ def map_discogs_release_ids_to_aoty_album_ids(
 
         unique_release_ids = sorted(out["album_id"].unique())
         release_to_aoty: dict[str, str] = {}
+        no_master: set[str] = set()
+        master_not_in_catalog: set[str] = set()
 
         for rid in unique_release_ids:
             master_id = _get_discogs_release_master_id(
@@ -438,15 +483,38 @@ def map_discogs_release_ids_to_aoty_album_ids(
                 release_id=rid,
             )
             if master_id is None:
+                no_master.add(rid)
                 continue
             aoty_id = discogs_master_to_aoty.get(master_id)
-            if aoty_id is not None:
-                release_to_aoty[rid] = aoty_id
+            if aoty_id is None:
+                master_not_in_catalog.add(rid)
+                continue
+            release_to_aoty[rid] = aoty_id
 
         out["album_id_mapped"] = out["album_id"].map(release_to_aoty)
         out = out.dropna(subset=["album_id_mapped"]).copy()
         out["album_id"] = out["album_id_mapped"].astype(str)
-        return out.drop(columns=["album_id_mapped"])
+        result = out.drop(columns=["album_id_mapped"])
+
+        if stats_out is not None:
+            in_rows = int(len(df))
+            out_rows = int(len(result))
+            stats_out.clear()
+            stats_out.update(
+                {
+                    "input_rows": in_rows,
+                    "output_rows": out_rows,
+                    "rows_dropped": in_rows - out_rows,
+                    "unique_discogs_releases": len(unique_release_ids),
+                    "unique_releases_mapped_to_aoty": len(release_to_aoty),
+                    "unique_releases_no_master": len(no_master),
+                    "unique_releases_master_not_in_aoty_catalog": len(
+                        master_not_in_catalog
+                    ),
+                }
+            )
+
+        return result
     finally:
         if own_http:
             http.save_disk()

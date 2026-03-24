@@ -344,6 +344,16 @@ def recommend(
 
 if __name__ == "__main__":
     import argparse
+    import sys
+    from pathlib import Path
+
+    _repo_root = Path(__file__).resolve().parents[1]
+    if str(_repo_root) not in sys.path:
+        sys.path.insert(0, str(_repo_root))
+    from shared.project_env import load_project_dotenv
+
+    load_project_dotenv()
+
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", default="configs/base.yaml")
     parser.add_argument("--data-dir", default="data/raw")

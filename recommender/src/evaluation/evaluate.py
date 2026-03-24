@@ -12,6 +12,7 @@ from ..features.build_matrix import build_user_item_matrix, get_user_item_mapper
 from ..models.als import predict_als, predict_als_in_candidates, train_als
 from ..retrieval.candidates import (
     CandidateRetrievalConfig,
+    RetrievalMetadata,
     build_retrieval_metadata,
     candidate_item_indices_for_user,
     retrieval_config_from_dict,
@@ -64,6 +65,93 @@ def leave_one_out_split(
     return train, test
 
 
+def evaluate_pretrained_als(
+    model,
+    matrix: sparse.csr_matrix,
+    user_id2idx: dict[str, int],
+    item_id2idx: dict[str, int],
+    item_ids: np.ndarray,
+    train_interactions: pd.DataFrame,
+    test_interactions: pd.DataFrame,
+    k: int,
+    *,
+    meta: RetrievalMetadata | None = None,
+    retrieval_cfg: CandidateRetrievalConfig | None = None,
+) -> dict[str, float]:
+    """
+    Rank with a fitted ALS model without re-training.
+
+    If ``meta`` and ``retrieval_cfg`` are set, uses two-stage candidate pools
+    (``retrieval_cfg.max_candidates`` etc.). Otherwise full-catalog
+    ``predict_als``.
+    """
+    use_two_stage = bool(meta and retrieval_cfg and meta.valid_album_ids)
+    test_by_user = test_interactions.groupby("user_id")["album_id"].apply(set).to_dict()
+    ndcgs, maps, recalls = [], [], []
+    rel_hits: list[int] = []
+    two_stage_used: list[int] = []
+    for uid, relevant in test_by_user.items():
+        if uid not in user_id2idx:
+            continue
+        user_idx = user_id2idx[uid]
+        train_items = set(
+            train_interactions[train_interactions["user_id"] == uid][
+                "album_id"
+            ].astype(str)
+        )
+        exclude_idxs = np.array(
+            [item_id2idx[a] for a in train_items if a in item_id2idx], dtype=int
+        )
+        relevant_idx = {item_id2idx[a] for a in relevant if a in item_id2idx}
+        if not relevant_idx:
+            continue
+        pred_idxs: np.ndarray
+        if use_two_stage and meta is not None and retrieval_cfg is not None:
+            train_albums = {
+                str(x) for x in train_items if str(x) in meta.valid_album_ids
+            }
+            cand = candidate_item_indices_for_user(
+                train_albums,
+                meta,
+                item_id2idx,
+                retrieval_cfg,
+            )
+            cand_set = set(int(x) for x in cand.tolist())
+            rel_hits.append(1 if relevant_idx & cand_set else 0)
+            if cand.size > 0:
+                two_stage_used.append(1)
+                pred_idxs, _ = predict_als_in_candidates(
+                    model,
+                    user_idx,
+                    matrix,
+                    exclude_idxs,
+                    cand,
+                    top_k=k,
+                )
+            else:
+                two_stage_used.append(0)
+                pred_idxs, _ = predict_als(
+                    model, user_idx, matrix, item_ids, exclude_idxs, top_k=k
+                )
+        else:
+            pred_idxs, _ = predict_als(
+                model, user_idx, matrix, item_ids, exclude_idxs, top_k=k
+            )
+        rel_arr = np.array([1 if i in relevant_idx else 0 for i in pred_idxs])
+        ndcgs.append(ndcg_at_k(rel_arr, k))
+        maps.append(ap_at_k(pred_idxs, relevant_idx, k))
+        recalls.append(recall_at_k(pred_idxs, relevant_idx, k))
+    out: dict[str, float] = {
+        f"ndcg@{k}": float(np.mean(ndcgs)) if ndcgs else 0.0,
+        f"map@{k}": float(np.mean(maps)) if maps else 0.0,
+        f"recall@{k}": float(np.mean(recalls)) if recalls else 0.0,
+    }
+    if use_two_stage and rel_hits:
+        out["candidate_relevant_hit_rate"] = float(np.mean(rel_hits))
+        out["two_stage_candidate_nonempty_rate"] = float(np.mean(two_stage_used))
+    return out
+
+
 def run_evaluation(
     train_interactions: pd.DataFrame,
     test_interactions: pd.DataFrame,
@@ -107,76 +195,41 @@ def run_evaluation(
         and albums is not None
         and not albums.empty
     )
-    meta = None
-    rcfg = CandidateRetrievalConfig()
+    meta: RetrievalMetadata | None = None
+    rcfg: CandidateRetrievalConfig | None = None
     if use_two_stage:
         rcfg = retrieval_config_from_dict(retrieval or {})
         meta = build_retrieval_metadata(albums, train_interactions)
         if not meta.valid_album_ids:
             use_two_stage = False
+            meta = None
+            rcfg = None
 
-    test_by_user = test_interactions.groupby("user_id")["album_id"].apply(set).to_dict()
-    ndcgs, maps, recalls = [], [], []
-    rel_hits: list[int] = []
-    two_stage_used: list[int] = []
-    for uid, relevant in test_by_user.items():
-        if uid not in user_id2idx:
-            continue
-        user_idx = user_id2idx[uid]
-        train_items = set(
-            train_interactions[train_interactions["user_id"] == uid]["album_id"].astype(
-                str
-            )
+    if use_two_stage:
+        out = evaluate_pretrained_als(
+            model,
+            matrix,
+            user_id2idx,
+            item_id2idx,
+            item_ids,
+            train_interactions,
+            test_interactions,
+            k,
+            meta=meta,
+            retrieval_cfg=rcfg,
         )
-        exclude_idxs = np.array(
-            [item_id2idx[a] for a in train_items if a in item_id2idx], dtype=int
+    else:
+        out = evaluate_pretrained_als(
+            model,
+            matrix,
+            user_id2idx,
+            item_id2idx,
+            item_ids,
+            train_interactions,
+            test_interactions,
+            k,
+            meta=None,
+            retrieval_cfg=None,
         )
-        relevant_idx = {item_id2idx[a] for a in relevant if a in item_id2idx}
-        if not relevant_idx:
-            continue
-        pred_idxs: np.ndarray
-        if use_two_stage and meta is not None and albums is not None:
-            train_albums = {
-                str(x) for x in train_items if str(x) in meta.valid_album_ids
-            }
-            cand = candidate_item_indices_for_user(
-                train_albums,
-                meta,
-                item_id2idx,
-                rcfg,
-            )
-            cand_set = set(int(x) for x in cand.tolist())
-            rel_hits.append(1 if relevant_idx & cand_set else 0)
-            if cand.size > 0:
-                two_stage_used.append(1)
-                pred_idxs, _ = predict_als_in_candidates(
-                    model,
-                    user_idx,
-                    matrix,
-                    exclude_idxs,
-                    cand,
-                    top_k=k,
-                )
-            else:
-                two_stage_used.append(0)
-                pred_idxs, _ = predict_als(
-                    model, user_idx, matrix, item_ids, exclude_idxs, top_k=k
-                )
-        else:
-            pred_idxs, _ = predict_als(
-                model, user_idx, matrix, item_ids, exclude_idxs, top_k=k
-            )
-        rel_arr = np.array([1 if i in relevant_idx else 0 for i in pred_idxs])
-        ndcgs.append(ndcg_at_k(rel_arr, k))
-        maps.append(ap_at_k(pred_idxs, relevant_idx, k))
-        recalls.append(recall_at_k(pred_idxs, relevant_idx, k))
-    out: dict[str, float] = {
-        f"ndcg@{k}": float(np.mean(ndcgs)) if ndcgs else 0.0,
-        f"map@{k}": float(np.mean(maps)) if maps else 0.0,
-        f"recall@{k}": float(np.mean(recalls)) if recalls else 0.0,
-    }
-    if use_two_stage and rel_hits:
-        out["candidate_relevant_hit_rate"] = float(np.mean(rel_hits))
-        out["two_stage_candidate_nonempty_rate"] = float(np.mean(two_stage_used))
     _maybe_warn_candidate_hit_rate(retrieval, out)
     return out

@@ -254,7 +254,7 @@ def ingest_all(
     *,
     discogs: dict | None = None,
     aoty_scraped: dict | None = None,
-) -> dict[str, pd.DataFrame]:
+) -> dict[str, pd.DataFrame | dict]:
     """
     Load all raw inputs. Uses shared Discogs API and AOTY scraped data when configured.
 
@@ -262,6 +262,11 @@ def ingest_all(
     - aoty_scraped: optional dict with dir (Path), ratings_file (str), albums_file (str).
       When `aoty_scraped.dir` is not set (null), we fall back to loading AOTY data
       from local MongoDB (see `aoty.mongo_loader`) and then fall back to CSV.
+
+    Returns a dict with DataFrames ``collection``, ``wantlist``, ``ratings``, ``albums``
+    plus ``ingest_metadata`` (dict). When Discogs→AOTY ID mapping runs,
+    ``ingest_metadata["discogs_aoty_mapping"]`` includes catalog-build and per-table
+    row/release drop counts.
     """
     data_dir = Path(data_dir)
     discogs = discogs or {}
@@ -332,6 +337,7 @@ def ingest_all(
     # If Discogs data came from the API, `collection`/`wantlist` album_id
     # values are Discogs release IDs. Map them to canonical AOTY album_id so
     # the recommender interactions align across sources.
+    ingest_metadata: dict = {"discogs_aoty_mapping": None}
     if use_discogs and not albums.empty and discogs_token_resolved:
         if "album_title" in albums.columns and (
             albums["album_title"].astype(str).str.strip().ne("").any()
@@ -354,39 +360,62 @@ def ingest_all(
                     match_cfg,
                     cache_dir,
                 )
+                mapping_report: dict = {
+                    "attempted": True,
+                    "catalog_build": {},
+                    "collection_release_map": None,
+                    "wantlist_release_map": None,
+                    "release_mapping_skipped_reason": None,
+                }
+                catalog_stats: dict[str, int] = {}
                 try:
                     discogs_master_to_aoty = (
                         build_discogs_master_to_aoty_album_id_map(
                             albums,
                             http=http,
                             cfg=match_cfg,
+                            stats_out=catalog_stats,
                         )
                     )
+                    mapping_report["catalog_build"] = dict(catalog_stats)
                     if not discogs_master_to_aoty:
-                        pass
+                        mapping_report["release_mapping_skipped_reason"] = (
+                            "empty_discogs_master_to_aoty_map"
+                        )
                     else:
+                        c_stats: dict[str, int] = {}
+                        w_stats: dict[str, int] = {}
                         collection = map_discogs_release_ids_to_aoty_album_ids(
                             collection,
                             discogs_master_to_aoty=discogs_master_to_aoty,
                             http=http,
                             cfg=match_cfg,
+                            stats_out=c_stats,
                         )
                         wantlist = map_discogs_release_ids_to_aoty_album_ids(
                             wantlist,
                             discogs_master_to_aoty=discogs_master_to_aoty,
                             http=http,
                             cfg=match_cfg,
+                            stats_out=w_stats,
                         )
+                        mapping_report["collection_release_map"] = dict(c_stats)
+                        mapping_report["wantlist_release_map"] = dict(w_stats)
                 finally:
                     http.save_disk()
-            except Exception:
+                ingest_metadata["discogs_aoty_mapping"] = mapping_report
+            except Exception as exc:
                 # Mapping is best-effort; downstream preprocess will filter
                 # based on available album metadata.
-                pass
+                ingest_metadata["discogs_aoty_mapping"] = {
+                    "attempted": True,
+                    "error": str(exc),
+                }
 
     return {
         "collection": collection,
         "wantlist": wantlist,
         "ratings": ratings,
         "albums": albums,
+        "ingest_metadata": ingest_metadata,
     }
