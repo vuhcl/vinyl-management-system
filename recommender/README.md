@@ -39,7 +39,7 @@ Config and paths live at project root: `configs/base.yaml`, `data/raw`, `data/pr
 
 Set in `configs/base.yaml`:
 
-- **Discogs**: `discogs.use_api: true`, `discogs.usernames: ["your_username"]`, and `DISCOGS_USER_TOKEN` in env (or `discogs.token`).
+- **Discogs**: `discogs.use_api: true`, `discogs.usernames: ["your_username"]`, and `DISCOGS_USER_TOKEN` in env (or `DISCOGS_TOKEN`), or put either key in the **repo-root `.env`** — `python -m recommender.pipeline` and `scripts/smoke_recommender_ingest.py` load `.env` automatically (via `shared.project_env`).
 - **AOTY**: `aoty_scraped.dir: "data/aoty_scraped"` (or path to your scraped output).
 
 ### Two-stage retrieval (optional)
