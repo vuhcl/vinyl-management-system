@@ -34,6 +34,8 @@ import mlflow
 import requests
 import yaml
 
+from grader.src.project_env import load_project_dotenv
+
 # ---------------------------------------------------------------------------
 # Logging
 # ---------------------------------------------------------------------------
@@ -116,7 +118,9 @@ class EbayIngester:
         self.config = self._load_yaml(config_path)
         self.guidelines = self._load_yaml(guidelines_path)
 
-        # OAuth credentials — from environment variables, never hardcoded
+        load_project_dotenv()
+
+        # OAuth credentials — from environment variables or repo-root .env
         self.client_id = os.environ.get("EBAY_CLIENT_ID")
         self.client_secret = os.environ.get("EBAY_CLIENT_SECRET")
         if not self.client_id or not self.client_secret:
