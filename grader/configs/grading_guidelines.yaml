@@ -61,7 +61,7 @@ grade_ordinal_map:
   Poor:           6
 
 grade_owners:
-  Mint:           rule_engine   # deterministic: sealed
+  Mint:           model         # model-owned; hard override removed (zero net benefit across full dataset)
   Near Mint:      model
   Excellent:      model
   Very Good Plus: model
@@ -161,9 +161,16 @@ obi:
 # ------------------------------------------------------------
 # Structure per grade:
 #   hard_signals:      any one triggers override (Mint/Poor/Generic)
-#   supporting_signals: positive indicators for this grade
-#   forbidden_signals: any one blocks a rule override TO this grade
-#   min_supporting:    minimum supporting signals to fire override
+#   supporting_signals: legacy fallback for both targets when per-target keys omitted
+#   supporting_signals_sleeve / supporting_signals_media:
+#     optional — when both are set, sleeve vs media use separate cue lists.
+#     If only one of sleeve/media is set, the other falls back to supporting_signals.
+#   forbidden_signals: legacy fallback for both targets
+#   forbidden_signals_sleeve / forbidden_signals_media:
+#     optional per-target forbiddens (same fallback rules as supporting).
+#   min_supporting / max_supporting: legacy scalars for both targets
+#   min_supporting_sleeve / min_supporting_media / max_supporting_sleeve /
+#     max_supporting_media: optional per-target caps (override scalars when set).
 #   rule_confidence_threshold:
 #     model confidence below which rule override can fire.
 #     At 1.0 (Poor, Generic), rule always fires regardless of model.
@@ -172,6 +179,13 @@ obi:
 # No cross-target logic — Poor sleeve does not affect media.
 # Generic only applies to sleeve — never to media.
 # ------------------------------------------------------------
+
+# Maximum ordinal steps a soft override may jump upward.
+# An override is an "upgrade" when the candidate grade has a lower ordinal
+# (better condition) than the model's predicted grade.
+# With max_soft_upgrade_steps: 1, Good (5) → VG+ (3) is blocked (Δ=2),
+# but Good (5) → VG (4) is allowed (Δ=1).  Downgrades are never limited.
+max_soft_upgrade_steps: 1
 
 grades:
   Mint:
@@ -190,11 +204,38 @@ grades:
       - still sealed
       - shrink wrapped
       - shrink intact
-      - shrink
     supporting_signals:
       - unplayed
       - unopened
     forbidden_signals:
+      # Boilerplate shrink mention without factory seal (common harmful override)
+      - unsealed
+      # not "opened" alone — matches "never opened" on sealed listings
+      - opened copy
+      - opened to inspect
+      - opened shrink
+      - shrink but opened
+      - resealed
+      - re-sealed
+      - replaced shrink
+      - shrink removed
+      - shrink gone
+      - partial shrink
+      - no shrink
+      # Generic / no original art — Mint priority must not beat Generic
+      - generic sleeve
+      - generic cover
+      - inner sleeve only
+      - no original cover
+      - no original sleeve
+      # Sealed copy but graded sleeve/box damage on Discogs (harmful Mint)
+      - cutout
+      - cut out
+      - hole punch
+      - corner ding
+      - corner dings
+      - notch cut
+      - corner cut
       - damaged
       - split
       - crack
@@ -213,7 +254,15 @@ grades:
       signs of wear. No folds, seam splits, scratches, or
       noticeable defects on cover or inserts.
     hard_signals: []
-    supporting_signals:
+    supporting_signals_sleeve:
+      - no marks
+      - no defects
+      - no wear
+      - excellent condition
+      - perfect condition
+      - mint minus
+      - like new
+    supporting_signals_media:
       - never played
       - barely played
       - one play
@@ -224,7 +273,27 @@ grades:
       - perfect condition
       - mint minus
       - like new
-    forbidden_signals:
+    forbidden_signals_sleeve:
+      - seam split
+      - scratch
+      - scratches
+      - fold
+      - worn
+      - writing
+      - tape
+      - sticker
+      - scuff
+      - mold
+      - stain
+      - ringwear
+      - foggy
+      - cloudy
+      - haze
+      - hazy
+      - clouding
+      - hairline
+      - hairlines
+    forbidden_signals_media:
       - seam split
       - scratch
       - scratches
@@ -242,29 +311,88 @@ grades:
       - mold
       - stain
       - ringwear
-    min_supporting: 2
+      - foggy
+      - cloudy
+      - haze
+      - hazy
+      - clouding
+      - hairline
+      - hairlines
+    min_supporting_sleeve: 1
+    min_supporting_media: 1
     rule_confidence_threshold: 0.85
 
   Excellent:
     applies_to: [sleeve, media]
     description: >
-      Collector-aligned grade between Near Mint and Very Good Plus.
-      Shows minor signs of careful previous ownership. Cosmetic
-      wear present but minimal — minor scuffs, very light marks.
-      Sound unaffected. Better than most VG+ but not quite NM.
-      Corresponds to eBay JP E and E- grades.
+      Collector EX (between Near Mint and Very Good Plus). Media:
+      bright and shiny; may show visible surface wear, very minor
+      marks/scuffs (e.g. from removing the record from a paper
+      innersleeve). A few hairlines only obvious under raking light;
+      nothing that should majorly affect play. Label clean and
+      unmarked aside from light handling. Sleeve: faint corner
+      creases/bumps, faint creases, minor abrasions; artwork clean
+      and unworn. Intentionally cared-for copies. Corresponds to
+      eBay JP E / E- in this project.
     hard_signals: []
-    supporting_signals:
-      - minor scuff
-      - slight scuff
+    # "minor scuff" / "slight scuff" removed: word-boundary "scuff" forbidden below
+    # would fire inside those phrases, so they'd be blocked anyway.
+    supporting_signals_sleeve:
       - very minor wear
       - light marks
       - carefully handled
       - well cared for
-      - excellent
-    forbidden_signals:
-      - seam split
+      - hairline
+      - hairlines
+      - faint corner
+      - faint crease
+      - faint bump
+      - clean and unmarked
+      - minor abrasion
+    supporting_signals_media:
+      - very minor wear
+      - light marks
+      - carefully handled
+      - well cared for
+      - bright and shiny
+      - raking light
+      - hairline
+      - hairlines
+      - faint corner
+      - faint crease
+      - faint bump
+      - clean and unmarked
+      - minor abrasion
+    forbidden_signals_sleeve:
+      - scratches
       - scratch
+      - scuff
+      - scuffs
+      - many hairlines
+      - numerous hairlines
+      - seam split
+      - worn
+      - writing
+      - tape
+      - sticker
+      - mold
+      - stain
+      - stains
+      - ringwear
+      - ring wear
+      - foxing
+      - foggy
+      - cloudy
+      - haze
+      - hazy
+      - clouding
+    forbidden_signals_media:
+      - scratches
+      - scratch
+      - scuff
+      - scuffs
+      - many hairlines
+      - numerous hairlines
       - surface noise
       - crackle
       - worn
@@ -276,20 +404,66 @@ grades:
       - skipping
       - mold
       - stain
+      - stains
       - ringwear
-    min_supporting: 1
-    rule_confidence_threshold: 0.85
+      - ring wear
+      - groove wear
+      - foggy
+      - cloudy
+      - haze
+      - hazy
+      - clouding
+    min_supporting_sleeve: 1
+    min_supporting_media: 1
+    max_supporting_sleeve: 2
+    max_supporting_media: 3
+    # Only downgrade NM → Excellent; never upgrade VG+ or VG up to Excellent.
+    only_downgrade: true
+    # Soft override fires when model_confidence < threshold; lower = fewer rule upgrades
+    rule_confidence_threshold: 0.78
+    # Exception phrases: stripped from text before the forbidden check so they
+    # cannot activate a forbidden signal (e.g. "sticker residue" should not
+    # trigger the "sticker" forbidden — residue only means the sticker is gone).
+    forbidden_exceptions_sleeve:
+      - sticker residue
+    forbidden_exceptions_media:
+      - sticker residue
 
   Very Good Plus:
     applies_to: [sleeve, media]
     description: >
-      Shows signs of careful previous ownership. Defects
-      cosmetic only — does not affect playback. Plays
-      perfectly. May have slight scuffs, very light scratches,
-      slight warp not affecting sound. Sleeve may have
-      slightly turned-up corners or small seam split.
+      Media: visible surface wear; more obvious hairlines/scuffs
+      but still need close inspection; cover only part of the
+      surface; good luster. Labels may have minor imperfections
+      (spindle marks, small bubbling, etc.). May play with light
+      surface noise, intermittent light ticks, occasional light pop —
+      less likely to harm sound quality. Sleeve: more wear than EX —
+      edgewear, corner dings, rubbing/pigment loss, smaller edge
+      creases; no seam splits or cutouts; possible light fading,
+      light foxing, small indentations, light abrasions; light
+      ringwear or disc impressions in raking light only. Not VG+:
+      open seam splits, spine splits, cutouts, heavy foxing, groove
+      wear, or sleeve wrinkles (those trend VG+→VG).
     hard_signals: []
-    supporting_signals:
+    supporting_signals_sleeve:
+      - light scuff
+      - slight scuff
+      - very light scratch
+      - minor wear
+      - cosmetic wear
+      - turned-up corners
+      - light wear
+      - hairline
+      - hairlines
+      - edgewear
+      - edge wear
+      - corner ding
+      - light foxing
+      - light ringwear
+      - light ring wear
+      - smaller creases
+      - light stain
+    supporting_signals_media:
       - plays perfectly
       - plays great
       - light scuff
@@ -298,48 +472,179 @@ grades:
       - minor wear
       - cosmetic wear
       - turned-up corners
-      - small seam split
       - light wear
-    forbidden_signals:
+      # hairline/hairlines removed: too common/weak to confirm VG+ on their own;
+      # "few light hairlines" is normal VG+ and should not trigger an upgrade
+      - good luster
+      - light tick
+      - intermittent
+      - spindle mark
+      - spindle marks
+    forbidden_signals_sleeve:
       - surface noise
       - deep scratch
       - skipping
       - skip
       - crackle
-      - writing
+      - groove wear
+      - tape
+      - sticker
+      - significant wear
+      - heavy wear
+      - mold
+      - foggy
+      - cloudy
+      - haze
+      - hazy
+      - clouding
+      - seam split
+      - spine split
+      - cutout
+      - cut out
+      - promo hole
+      - hole punch
+      - heavy foxing
+      - heavier foxing
+      - wrinkle
+      - wrinkles
+    forbidden_signals_media:
+      - surface noise
+      - deep scratch
+      - skipping
+      - skip
+      - crackle
       - tape
       - sticker
       - significant wear
       - heavy wear
       - warp
       - mold
-      - stain
-      - ringwear
       - groove wear
-    min_supporting: 2
+      - foggy
+      - cloudy
+      - haze
+      - hazy
+      - clouding
+    min_supporting_sleeve: 2
+    min_supporting_media: 2
+    max_supporting_sleeve: 3
+    max_supporting_media: 2
     rule_confidence_threshold: 0.85
+    # "sticker residue" means the sticker was removed — not a full sticker presence —
+    # so it should not trigger the "sticker" forbidden and block a VG+ override.
+    forbidden_exceptions_sleeve:
+      - sticker residue
+    forbidden_exceptions_media:
+      - sticker residue
 
   Very Good:
     applies_to: [sleeve, media]
     description: >
-      More pronounced defects. Surface noise evident especially
-      in soft passages, intro, and fade. Light scratches deep
-      enough to feel with a fingernail affect the sound.
-      Labels may have writing, tape, or stickers.
-      Will not have all defects simultaneously.
+      Media: hairlines/scuffs over much of the surface; possible
+      tiny non-raised scratches; surface may dull; groove wear may
+      show. More than occasional surface noise, pops, ticks, or
+      persistent (but not overpowering) crackle — still no skips.
+      Labels: small tears, tape marks, larger writing, spindle wear.
+      Sleeve: worn; corner damage/creases; scratches/gouges;
+      larger creases/bends; seams starting to split or discreet
+      clear-tape repair; moderate ringwear; heavier foxing,
+      yellowing, larger marks; small-area water waviness. Also
+      covers “in-between” copies: numerous hairlines, handful of
+      non-raised scratches, 1–2 small raised scratches with only
+      light pops — looks rough but not trashed; noise not through
+      the whole record; music still over flaws. Merged Discogs VG
+      in this schema.
     hard_signals: []
-    supporting_signals:
+    supporting_signals_sleeve:
+      - surface noise
+      - audible noise
+      - noticeable wear
+      - light scratches
+      - writing on label
+      - tape mark
+      - tape marks
+      - tape residue
+      - tape on cover
+      - tape on label
+      - tape on spine
+      - tape on back
+      - clear-tape
+      - tape repair
+      # sticker residue omitted — residue only (sticker removed) is VG+, not VG
+      - visible scratches
+      - groove wear
+      # Singular / short seller phrasing (Discogs-style) — rubric VG, not G / VG+
+      - disc has scratch
+      - record has scratch
+      - vinyl has scratch
+      - lp has scratch
+      # Sleeve-only wear (same note often lists disc + jacket)
+      # wrinkle/wrinkles removed — a single wrinkle is VG+ level, not VG
+      - persistent
+      - dull
+      - moderate ringwear
+      - moderate ring wear
+      - heavier foxing
+      - starting to split
+      - unobtrusively repaired
+      - archival
+      - gouge
+      - gouges
+      - larger crease
+      - more than occasional
+      - tiny scratch
+      - seam split
+      - spine split
+      - numerous hairlines
+    # Media: omit jacket-only cues so sleeve defects / "cassette tape" don't move disc grade
+    supporting_signals_media:
       - surface noise
       - audible noise
       - noticeable wear
       - plays with noise
       - light scratches
       - writing on label
-      - tape
-      - sticker residue
+      - tape mark
+      - tape marks
+      - tape residue
+      - tape on cover
+      - tape on label
+      - tape on spine
+      - tape on back
+      - clear-tape
+      - tape repair
+      # sticker residue omitted — residue only (sticker removed) is VG+, not VG
+      # writing on label removed — label writing doesn't affect disc playback (VG+ acceptable)
       - visible scratches
       - groove wear
-    forbidden_signals:
+      - disc has scratch
+      - record has scratch
+      - vinyl has scratch
+      - lp has scratch
+      - persistent
+      - dull
+      - more than occasional
+      - tiny scratch
+      - numerous hairlines
+      - gouge
+      - gouges
+      - heavier foxing
+    forbidden_signals_sleeve:
+      - skipping
+      - skip
+      - heavily worn
+      - heavy scratches
+      - crackling
+      - significant groove wear
+      - surface noise throughout
+      - noise throughout
+      - crackle throughout
+      - foggy
+      - cloudy
+      - haze
+      - hazy
+      - clouding
+    forbidden_signals_media:
       - skipping
       - skip
       - heavily worn
@@ -347,34 +652,80 @@ grades:
       - crackling
       - badly warped
       - significant groove wear
-      - seam split
-      - spine split
-    min_supporting: 1
+      - surface noise throughout
+      - noise throughout
+      - crackle throughout
+      - foggy
+      - cloudy
+      - haze
+      - hazy
+      - clouding
+    min_supporting_sleeve: 1
+    min_supporting_media: 1
+    max_supporting_sleeve: 3
+    max_supporting_media: 4
     rule_confidence_threshold: 0.80
 
   Good:
     applies_to: [sleeve, media]
     description: >
-      Significant surface noise, scratches, crackling, or
-      visible wear. Can be played through without skipping.
-      Covers and sleeves have scratches or seam splits
-      especially at bottom or spine. Tape, writing, or
-      other defects present.
-      Corresponds to Discogs G and G+ (merged into one class).
+      G / G+ merged. Media: many notable marks/scratches; plays
+      through; significant surface noise or groove wear; heavy
+      crackle, pops, clicks — tipping point where noise competes
+      with music; label worn/torn. Sleeve: significant ringwear,
+      heavy writing, failed tape/sticker removal damage; seam splits
+      larger than ~6 inches up to full-side splits; heavy water
+      damage or cover peeling. Also: one or two major sleeve issues
+      or many small ones stacking to “pretty rough”; larger stains.
+      “Foggy/cloudy/hazy” vinyl stays Good-level (or Poor if
+      catastrophic). Discogs G and G+ both map here.
     hard_signals: []
-    supporting_signals:
+    supporting_signals_sleeve:
+      - seam split
+      - spine split
+      - writing
+      - tape
+      - pasted tape
+      - pasted tapes
+      - significant ring
+      - heavy ringwear
+      - heavy ring wear
+      - peeling
+      - heavy water
+      - heavy stain
+      - pretty rough
+      - pretty bad
+      - visible wear
+      - heavy wear
+      - numerous hairlines
+    supporting_signals_media:
       - significant surface noise
+      - surface noise throughout
+      - noise throughout
+      - crackle throughout
       - heavy scratches
       - crackling
       - crackle
       - visible wear
       - heavy wear
-      - seam split
-      - spine split
-      - writing
-      - tape
+      - pasted tape
+      - pasted tapes
       - plays through
-    forbidden_signals:
+      - foggy
+      - cloudy
+      - haze
+      - hazy
+      - clouding
+      - milky
+      - opaque
+      - numerous hairlines
+    forbidden_signals_sleeve:
+      - skipping
+      - skip
+      - cracked
+      - water damage
+      - water damaged
+    forbidden_signals_media:
       - skipping
       - skip
       - badly warped
@@ -384,7 +735,10 @@ grades:
       - won't play
       - does not play
       - unplayable
-    min_supporting: 2
+    min_supporting_sleeve: 2
+    min_supporting_media: 2
+    max_supporting_sleeve: 9
+    max_supporting_media: 7
     rule_confidence_threshold: 0.80
 
   Poor:
@@ -404,17 +758,51 @@ grades:
       - unplayable
       - cracked
       - badly warped
-      - water damaged
-      - water damage
+      # Plain "water damage" appears on VG+ jacket notes — reserve Poor for severe cases
+      - heavy water damage
+      - severe water damage
+      - major water damage
+      - heavily water damaged
       - heavily scratched
       - deep gouges
       - groove damage
       - label peeling
       - fully split
       - completely split
-      - broken
+      # "broken" removed: in seller notes it almost always describes OBI/sticker/seal
+      # packaging rather than the disc itself. Disc breakage is reliably caught by
+      # "cracked". Keeping "broken" caused false Poor overrides on OBI-broken listings.
     supporting_signals: []
-    forbidden_signals: []
+    forbidden_signals:
+      # Negated playback issues — "skip"/"skipping" still matches inside these phrases
+      - no skipping
+      - without skipping
+      - no skip
+      - don't skip
+      - doesnt skip
+      - doesn't skip
+      - never skips
+      - not skipping
+      # Inconsistent / setup-dependent playback — not automatic Poor
+      - depending on the turntable
+      - depending on turntable
+      # Softening qualifiers for cracked — a slightly cracked disc edge or hairline
+      # stress crack is not catastrophic Poor.
+      - slightly cracked
+      - hairline crack
+      # Any "slightly X" qualifier means the defect isn't catastrophic enough for Poor
+      - slightly
+      # Packaging / seal context — "broken seal", "seal is broken", "not been broken"
+      # describes the shrink-wrap, not the disc.
+      - broken seal
+      - seal broken
+      - seal is broken
+      - not been broken
+      - has not been broken
+      - never been broken
+      # Parenthetical "(broken)" almost always describes an accessory (sticker, tab,
+      # OBI flap), not the disc itself — disc breaks use "cracked" or "broken" plainly.
+      - (broken)
     min_supporting: 0
     rule_confidence_threshold: 1.0   # always overrides regardless of model confidence
 
@@ -461,8 +849,8 @@ grades:
 # Maps raw Discogs API condition strings to canonical grades.
 # Used in ingest_discogs.py — do not modify without updating
 # ingestion logic.
-# "Generic Sleeve" is a valid Discogs sleeve condition value
-# and maps directly to our Generic grade.
+# Discogs inventory uses "Generic" for the sleeve-only case.
+# Some older sources also use "Generic Sleeve".
 # ------------------------------------------------------------
 discogs_condition_map:
   "Mint (M)":                  Mint
@@ -474,6 +862,7 @@ discogs_condition_map:
   "Fair (F)":                  Poor
   "Poor (P)":                  Poor
   "Generic Sleeve":            Generic   # sleeve only
+  "Generic":                   Generic   # sleeve only (inventory API)
 
 # ------------------------------------------------------------
 # Contradiction Detection
@@ -499,6 +888,15 @@ contradictions:
   - [near mint, seam split]
   - [near mint, writing]
   - [near mint, surface noise]
+  - [near mint, foggy]
+  - [near mint, cloudy]
+  - [near mint, haze]
   - [excellent condition, surface noise]
+  - [excellent condition, foggy]
+  - [excellent condition, cloudy]
+  - [excellent condition, groove wear]
+  - [plays perfectly, persistent]
+  - [plays perfectly, crackling]
+  - [plays great, crackling]
   - [no marks, scratches]
   - [no defects, surface noise]
