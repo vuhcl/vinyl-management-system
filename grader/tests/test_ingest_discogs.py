@@ -5,11 +5,14 @@ Tests for ingest_discogs.py — grade normalization, drop logic,
 unverified media detection, and output schema.
 """
 
-import os
-
 import pytest
 
-from grader.src.data.ingest_discogs import DiscogsIngester
+from grader.src.data.ingest_discogs import (
+    DiscogsIngester,
+    _DEFAULT_GENERIC_NOTE_PATTERNS,
+    _DEFAULT_ITEM_SPECIFIC_HINTS,
+    _DEFAULT_PRESERVATION_KEYWORDS,
+)
 
 
 @pytest.fixture
@@ -50,6 +53,10 @@ class TestGradeNormalization:
         result = ingester.normalize_grade("Generic Sleeve")
         assert result == "Generic"
 
+    def test_generic_normalizes(self, ingester):
+        result = ingester.normalize_grade("Generic")
+        assert result == "Generic"
+
     def test_unknown_condition_returns_none(self, ingester):
         result = ingester.normalize_grade("Unknown Grade (UG)")
         assert result is None
@@ -81,6 +88,70 @@ class TestDropLogic:
         assert reason is None
 
 
+class TestGenericSellerNotes:
+    """generic_note_filter behavior (enabled on a dedicated ingester)."""
+
+    @pytest.fixture
+    def ingester_generic(self, ingester):
+        ingester.generic_note_filter_enabled = True
+        ingester.generic_note_patterns = [
+            "all records are visually graded under bright light",
+            "please refer to discogs grading",
+        ]
+        ingester.item_specific_hints = ["scuff", "scratch"]
+        ingester.preservation_keywords = ["sealed", "shrink", "brand new"]
+        return ingester
+
+    def test_drops_boilerplate_only(self, ingester_generic):
+        reason = ingester_generic._get_drop_reason(
+            "All records are visually graded under bright light. "
+            "Please see our other listings!",
+            "Near Mint (NM or M-)",
+            "Very Good Plus (VG+)",
+        )
+        assert reason == "generic_seller_notes"
+
+    def test_keeps_when_item_specific_hint_present(self, ingester_generic):
+        reason = ingester_generic._get_drop_reason(
+            "Visually graded under bright light; light scuff on side A only.",
+            "Near Mint (NM or M-)",
+            "Very Good Plus (VG+)",
+        )
+        assert reason is None
+
+    def test_keeps_when_media_mint(self, ingester_generic):
+        reason = ingester_generic._get_drop_reason(
+            "All records are visually graded. Ships within 2 days.",
+            "Near Mint (NM or M-)",
+            "Mint (M)",
+        )
+        assert reason is None
+
+    def test_keeps_when_sleeve_mint(self, ingester_generic):
+        reason = ingester_generic._get_drop_reason(
+            "All records are visually graded.",
+            "Mint (M)",
+            "Very Good Plus (VG+)",
+        )
+        assert reason is None
+
+    def test_keeps_when_sealed_in_comment(self, ingester_generic):
+        reason = ingester_generic._get_drop_reason(
+            "Still factory sealed. All records are visually graded.",  # pattern + sealed
+            "Mint (M)",
+            "Mint (M)",
+        )
+        assert reason is None
+
+    def test_keeps_when_brand_new_in_comment(self, ingester_generic):
+        reason = ingester_generic._get_drop_reason(
+            "Brand new copy. Please refer to discogs grading standards.",
+            "Near Mint (NM or M-)",
+            "Near Mint (NM or M-)",
+        )
+        assert reason is None
+
+
 class TestUnverifiedMediaDetection:
     def test_unplayed_is_unverified(self, ingester):
         result = ingester._detect_media_verifiable("sealed, unplayed")
@@ -93,6 +164,100 @@ class TestUnverifiedMediaDetection:
     def test_normal_notes_are_verifiable(self, ingester):
         result = ingester._detect_media_verifiable("plays perfectly, VG+")
         assert result is True
+
+
+class TestStripBoilerplateNotes:
+    @pytest.fixture
+    def ingester_strip(self, ingester):
+        ingester.strip_boilerplate_enabled = True
+        ingester.generic_note_patterns = list(_DEFAULT_GENERIC_NOTE_PATTERNS)
+        ingester.item_specific_hints = list(_DEFAULT_ITEM_SPECIFIC_HINTS)
+        ingester.preservation_keywords = list(_DEFAULT_PRESERVATION_KEYWORDS)
+        return ingester
+
+    def test_removes_shipping_sentence_keeps_defects(self, ingester_strip):
+        raw = (
+            "Light hairline on side A under bright light. "
+            "We ship within 2 business days."
+        )
+        out = ingester_strip.strip_boilerplate_from_notes(raw)
+        assert "hairline" in out.lower()
+        assert "ship" not in out.lower()
+
+    def test_preservation_sentence_kept_even_with_grading_pattern(
+        self, ingester_strip
+    ):
+        raw = (
+            "Still in shrink. All records are visually graded under bright light."
+        )
+        out = ingester_strip.strip_boilerplate_from_notes(raw)
+        assert "shrink" in out.lower()
+        assert "visually graded" not in out.lower()
+
+    def test_secondhand_profile_policies_then_real_defect(self, ingester_strip):
+        """Real Discogs-style template: boilerplate sentences + condition line."""
+        raw = (
+            "Secondhand item in our store. Please visit our profile for general "
+            "information including shipping prices and policies. "
+            "bottom right corner dinged."
+        )
+        out = ingester_strip.strip_boilerplate_from_notes(raw)
+        assert "dinged" in out.lower()
+        assert "corner" in out.lower()
+        assert "secondhand" not in out.lower()
+        assert "visit our profile" not in out.lower()
+        assert "shipping prices" not in out.lower()
+
+    def test_mixed_segment_strips_policy_substring(self, ingester_strip):
+        raw = (
+            "With Obi and 2-Inserts(mold stains) and Inner Sleeve. "
+            "Accessories (obi, liner notes, etc.) are mentioned in the item "
+            "description only if included. For items over $20, contact us for "
+            "details and pictures."
+        )
+        out = ingester_strip.strip_boilerplate_from_notes(raw).lower()
+        assert "mold stains" in out
+        assert "with obi" in out
+        assert "for items over" not in out
+        assert "details and pictures" not in out
+        assert "mentioned in the item description" not in out
+
+    def test_strips_promo_and_refund_spam_keeps_condition(self, ingester_strip):
+        raw = (
+            "[HALF OFF! Marked for deletion 3/23] [NEW LOW PRICE MARCH 15] "
+            "[From Pittsburgh George's Collection] FROM A REPUTABLE SELLER! "
+            "$6 / additional LP. "
+            "+++++FULL REFUNDS AVAILABLE IF UNHAPPY++BUY WITH CONFIDENCE "
+            "Light corner wear, plays cleanly."
+        )
+        out = ingester_strip.strip_boilerplate_from_notes(raw).lower()
+        assert "corner wear" in out or "plays cleanly" in out
+        assert "half off" not in out
+        assert "marked for deletion" not in out
+        assert "new low price" not in out
+        assert "reputable seller" not in out
+        assert "buy with confidence" not in out
+        assert "refunds available" not in out
+        assert "collection]" not in out
+        assert "$6" not in out
+
+    def test_parse_listing_uses_stripped_text(self, ingester_strip, monkeypatch):
+        monkeypatch.setattr(
+            ingester_strip,
+            "strip_boilerplate_from_notes",
+            lambda t: "plays perfectly, light scuff only",
+        )
+        listing = {
+            "id": 1,
+            "condition": "Near Mint (NM or M-)",
+            "sleeve_condition": "Very Good Plus (VG+)",
+            "comments": "IGNORED BY_PATCH",
+            "release": {"artist": "A", "title": "T"},
+        }
+        ingester_strip._stats = {"drops": {}}
+        r = ingester_strip.parse_listing(listing)
+        assert r is not None
+        assert r["text"] == "plays perfectly, light scuff only"
 
 
 class TestParseListing:
@@ -134,3 +299,48 @@ class TestInitialization:
                 config_path=test_config,
                 guidelines_path=guidelines_path,
             )
+
+    def test_fetch_all_requires_inventory_sellers(self, ingester):
+        ingester.inventory_sellers = []
+        with pytest.raises(ValueError, match="inventory_sellers"):
+            ingester.fetch_all()
+
+
+class TestPublicInventoryPageCap:
+    def test_skips_fetch_above_cap(self, ingester, monkeypatch):
+        called: list[int] = []
+
+        def boom(*_a, **_k):
+            called.append(1)
+            raise AssertionError("_get should not run above page cap")
+
+        monkeypatch.setattr(ingester, "_get", boom)
+        ingester.max_public_inventory_pages = 3
+        out = ingester.fetch_inventory_page("anyone", page=4)
+        assert out["listings"] == []
+        assert called == []
+
+
+class TestCacheOnlyMode:
+    def test_does_not_call_network_when_missing_page(self, ingester, monkeypatch):
+        # Force cache-only mode; tmp dirs are empty so page_001 is missing.
+        ingester.cache_only = True
+
+        def boom(*_a, **_k):
+            raise AssertionError("_get should not be called in cache-only mode")
+
+        monkeypatch.setattr(ingester, "_get", boom)
+        out = ingester.fetch_inventory_page("anyone", page=1)
+        assert out["listings"] == []
+
+
+class TestFormatFilter:
+    def test_vinyl_release_matches(self, ingester):
+        assert ingester._listing_matches_format_filter(
+            {"release": {"format": "(LP, Album)", "description": "Artist - Title"}}
+        )
+
+    def test_cd_release_does_not_match_vinyl_filter(self, ingester):
+        assert not ingester._listing_matches_format_filter(
+            {"release": {"format": "(CD, Album)", "description": "Artist - Title"}}
+        )

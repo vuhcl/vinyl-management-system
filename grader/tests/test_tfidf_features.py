@@ -66,6 +66,15 @@ class TestLabelEncoder:
         encoder = builder.build_encoder(train_labels, target="sleeve")
         assert len(encoder.classes_) > 0
 
+    def test_encoder_includes_guidelines_grades_absent_from_train(
+        self, builder
+    ):
+        """Sleeve schema includes e.g. Excellent even if train is Discogs-only."""
+        train_labels = ["Very Good", "Near Mint", "Mint"]
+        encoder = builder.build_encoder(train_labels, target="sleeve")
+        assert "Excellent" in list(encoder.classes_)
+        assert "Generic" in list(encoder.classes_)
+
     def test_encoder_covers_all_seen_classes(
         self, builder, split_jsonl_paths
     ):

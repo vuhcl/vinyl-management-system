@@ -6,9 +6,10 @@ unified dataset. Validates schema conformance, checks grade
 validity against the canonical schema, deduplicates within and
 across sources, reports class distribution, and flags rare classes.
 
-This module is a merge + validation step only.
-No text cleaning, no feature engineering, no splitting.
-Those responsibilities belong to preprocess.py and pipeline.py.
+This module is a merge + validation step. Optional
+``data.harmonization.exclude_thin_notes`` reuses preprocess description-adequacy
+rules so unified.jsonl can match the training-eligible pool.
+No feature engineering or splitting — those stay in preprocess.py and pipeline.py.
 
 Usage:
     python -m grader.src.data.harmonize_labels
@@ -59,6 +60,7 @@ class LabelHarmonizer:
         data.harmonization.min_samples_per_class
         data.harmonization.output_path
         data.harmonization.report_path
+        data.harmonization.exclude_thin_notes
         mlflow.tracking_uri
         mlflow.experiment_name
 
@@ -68,6 +70,8 @@ class LabelHarmonizer:
     """
 
     def __init__(self, config_path: str, guidelines_path: str) -> None:
+        self._config_path = config_path
+        self._guidelines_path = guidelines_path
         self.config = self._load_yaml(config_path)
         self.guidelines = self._load_yaml(guidelines_path)
 
@@ -82,6 +86,9 @@ class LabelHarmonizer:
         )
         self.output_path = Path(harmonization_cfg["output_path"])
         self.report_path = Path(harmonization_cfg["report_path"])
+        self.exclude_thin_notes: bool = bool(
+            harmonization_cfg.get("exclude_thin_notes", False)
+        )
 
         # Source file paths
         processed_dir = Path(self.config["paths"]["processed"])
@@ -264,6 +271,39 @@ class LabelHarmonizer:
         self._stats["cross_source_duplicates"] = cross_source_dups
         return deduped
 
+    def _filter_thin_notes(self, records: list[dict]) -> tuple[list[dict], int]:
+        """
+        Keep only rows with adequate_for_training per preprocess rules.
+        Returns (filtered_records, excluded_count).
+        """
+        from grader.src.data.preprocess import Preprocessor
+
+        pre = Preprocessor(self._config_path, self._guidelines_path)
+        if not pre.description_adequacy_enabled:
+            logger.warning(
+                "data.harmonization.exclude_thin_notes is true but "
+                "preprocessing.description_adequacy.enabled is false — "
+                "no rows removed; enable adequacy to filter thin notes."
+            )
+            return records, 0
+
+        kept: list[dict] = []
+        for record in records:
+            raw = record.get("text", "") or ""
+            text_clean = pre.clean_text(raw)
+            dq = pre.compute_description_quality(raw, text_clean)
+            if dq["adequate_for_training"]:
+                kept.append(record)
+
+        excluded = len(records) - len(kept)
+        if excluded:
+            logger.info(
+                "Excluded %d thin-note (inadequate) rows — %d remain",
+                excluded,
+                len(kept),
+            )
+        return kept, excluded
+
     # -----------------------------------------------------------------------
     # Class distribution
     # -----------------------------------------------------------------------
@@ -429,17 +469,20 @@ class LabelHarmonizer:
             {
                 "sources": list(self.source_paths.keys()),
                 "min_samples_per_class": self.min_samples,
+                "exclude_thin_notes": self.exclude_thin_notes,
             }
         )
-        mlflow.log_metrics(
-            {
-                "total_saved": self._stats["total_saved"],
-                "total_dropped": self._stats["total_dropped"],
-                "cross_source_duplicates": self._stats[
-                    "cross_source_duplicates"
-                ],
-            }
-        )
+        metrics = {
+            "total_saved": self._stats["total_saved"],
+            "total_dropped": self._stats["total_dropped"],
+            "cross_source_duplicates": self._stats[
+                "cross_source_duplicates"
+            ],
+        }
+        thin_drop = self._stats["drops"].get("thin_note_inadequate", 0)
+        if thin_drop:
+            metrics["thin_notes_excluded"] = thin_drop
+        mlflow.log_metrics(metrics)
         for source, count in self._stats["per_source"].items():
             mlflow.log_metric(f"saved_{source}", count)
         for reason, count in self._stats["drops"].items():
@@ -521,6 +564,17 @@ class LabelHarmonizer:
                 )
 
             all_records = self.deduplicate_cross_source(all_records)
+
+            if self.exclude_thin_notes:
+                all_records, thin_excluded = self._filter_thin_notes(
+                    all_records
+                )
+                if thin_excluded:
+                    self._stats["drops"]["thin_note_inadequate"] = (
+                        thin_excluded
+                    )
+                    self._stats["total_dropped"] += thin_excluded
+
             self._stats["total_saved"] = len(all_records)
 
             logger.info(

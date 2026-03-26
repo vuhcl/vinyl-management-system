@@ -25,6 +25,7 @@ Usage:
 
 import logging
 from pathlib import Path
+from typing import Optional
 
 import matplotlib
 matplotlib.use("Agg")  # non-interactive backend — safe for server/CI use

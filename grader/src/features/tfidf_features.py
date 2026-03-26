@@ -24,6 +24,7 @@ Usage:
 import json
 import logging
 import pickle
+import re
 from pathlib import Path
 
 import mlflow
@@ -70,20 +71,25 @@ class TFIDFFeatureBuilder:
         self.config = self._load_yaml(config_path)
 
         tfidf_cfg = self.config["models"]["baseline"]["tfidf"]
-        self.max_features: int        = tfidf_cfg["max_features"]
-        self.ngram_range: tuple       = tuple(tfidf_cfg["ngram_range"])
-        self.sublinear_tf: bool       = tfidf_cfg["sublinear_tf"]
-        self.min_df: int              = tfidf_cfg["min_df"]
+        self.max_features: int = tfidf_cfg["max_features"]
+        self.ngram_range: tuple = tuple(tfidf_cfg["ngram_range"])
+        self.sublinear_tf: bool = tfidf_cfg["sublinear_tf"]
+        self.min_df: int = tfidf_cfg["min_df"]
+        eng_cfg = self.config["models"]["baseline"].get(
+            "engineered_features", {}
+        )
+        self.engineered_enabled: bool = bool(eng_cfg.get("enabled", False))
 
         # Paths
-        splits_dir        = Path(self.config["paths"]["splits"])
-        artifacts_dir     = Path(self.config["paths"]["artifacts"])
+        splits_dir = Path(self.config["paths"]["splits"])
+        artifacts_dir = Path(self.config["paths"]["artifacts"])
         self.features_dir = artifacts_dir / "features"
 
         self.split_paths = {
             "train": splits_dir / "train.jsonl",
-            "val":   splits_dir / "val.jsonl",
-            "test":  splits_dir / "test.jsonl",
+            "val": splits_dir / "val.jsonl",
+            "test": splits_dir / "test.jsonl",
+            "test_thin": splits_dir / "test_thin.jsonl",
         }
 
         self.vectorizer_paths = {
@@ -100,7 +106,93 @@ class TFIDFFeatureBuilder:
 
         # Fitted objects — populated during run()
         self.vectorizers: dict[str, TfidfVectorizer] = {}
-        self.encoders: dict[str, LabelEncoder]       = {}
+        self.encoders: dict[str, LabelEncoder] = {}
+        self._mild_cues: tuple[str, ...] = (
+            "light",
+            "slight",
+            "tiny",
+            "minor",
+        )
+        self._strong_cues: tuple[str, ...] = (
+            "heavy",
+            "significant",
+            "many",
+            "multiple",
+            "deep",
+            "foggy",
+            "cloudy",
+            "hazy",
+            "warp",
+            "noise",
+            "split",
+        )
+        self._defect_terms: tuple[str, ...] = (
+            "scratch",
+            "scratches",
+            "scuff",
+            "scuffs",
+            "hairline",
+            "hairlines",
+            "noise",
+            "surface noise",
+            "crackle",
+            "warp",
+            "split",
+            "seam split",
+            "ringwear",
+            "ring wear",
+            "foxing",
+            "stain",
+            "stains",
+            "foggy",
+            "cloudy",
+            "haze",
+            "hazy",
+        )
+        self._positive_negation_patterns: tuple[re.Pattern, ...] = (
+            re.compile(r"\bno\s+skip(?:ping)?\b", re.IGNORECASE),
+            re.compile(r"\bplays?\s+perfectly\b", re.IGNORECASE),
+            re.compile(r"\bplays?\s+well\b", re.IGNORECASE),
+            re.compile(r"\bplays?\s+through\b", re.IGNORECASE),
+        )
+        self._self_grade_patterns: dict[str, re.Pattern] = {
+            "self_grade_mint": re.compile(
+                r"(?<!\w)(mint|m-?|factory sealed|sealed)(?!\w)",
+                re.IGNORECASE,
+            ),
+            "self_grade_nm": re.compile(
+                r"(?<!\w)(near mint|nm|m-)(?!\w)",
+                re.IGNORECASE,
+            ),
+            "self_grade_ex": re.compile(
+                r"(?<!\w)(excellent|ex)(?!\w)",
+                re.IGNORECASE,
+            ),
+            "self_grade_vgp": re.compile(
+                r"(?<!\w)(very good plus|vg\+)\b",
+                re.IGNORECASE,
+            ),
+            "self_grade_vg": re.compile(
+                r"(?<!\w)(very good|vg)\b",
+                re.IGNORECASE,
+            ),
+            "self_grade_g": re.compile(
+                r"(?<!\w)(good plus|good|g\+|g)(?!\w)",
+                re.IGNORECASE,
+            ),
+            "self_grade_close_vgp": re.compile(
+                r"(?<!\w)("
+                r"close\s+vg\+|"
+                r"borderline\s+vg\+|"
+                r"close\s+very\s+good\s+plus"
+                r")(?!\w)",
+                re.IGNORECASE,
+            ),
+            "self_grade_vgp_nm": re.compile(
+                r"(?<!\w)(vg\+\s*/\s*nm|very good plus\s*/\s*near mint)(?!\w)",
+                re.IGNORECASE,
+            ),
+        }
 
         # MLflow
         mlflow.set_tracking_uri(self.config["mlflow"]["tracking_uri"])
@@ -133,6 +225,33 @@ class TFIDFFeatureBuilder:
                     records.append(json.loads(line))
         logger.info("Loaded %d records from %s split.", len(records), split)
         return records
+
+    def load_test_thin_optional(self) -> list[dict]:
+        """Thin-note eval split from preprocess; empty if missing or unused."""
+        path = self.split_paths["test_thin"]
+        if not path.exists():
+            return []
+        records: list[dict] = []
+        with open(path, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if line:
+                    records.append(json.loads(line))
+        if records:
+            logger.info(
+                "Loaded %d records from test_thin split.", len(records)
+            )
+        return records
+
+    @staticmethod
+    def remove_test_thin_feature_files(features_dir: Path) -> None:
+        """Drop stale matrices when preprocess did not emit test_thin.jsonl."""
+        for target in TARGETS:
+            for suffix in (f"test_thin_{target}_X.npz", f"test_thin_{target}_y.npy"):
+                p = features_dir / suffix
+                if p.exists():
+                    p.unlink()
+                    logger.info("Removed stale feature file %s", p.name)
 
     def extract_texts(self, records: list[dict]) -> list[str]:
         """
@@ -214,15 +333,168 @@ class TFIDFFeatureBuilder:
         )
         return vectorizer.transform(texts)
 
+    @staticmethod
+    def _count_any(text: str, terms: tuple[str, ...]) -> int:
+        tl = text.lower()
+        return sum(1 for t in terms if t in tl)
+
+    def _engineered_feature_names(self, target: str) -> list[str]:
+        names = [
+            "cue_mild_count",
+            "cue_strong_count",
+            "defect_count",
+            "positive_negation_count",
+            "self_grade_mint",
+            "self_grade_nm",
+            "self_grade_ex",
+            "self_grade_vgp",
+            "self_grade_vg",
+            "self_grade_g",
+            "self_grade_close_vgp",
+            "self_grade_vgp_nm",
+            "media_evidence_none",
+            "media_evidence_weak",
+            "media_evidence_strong",
+            "has_media_subject",
+            "has_media_condition",
+            "is_media_target",
+            "is_sleeve_target",
+        ]
+        return names + [f"{target}_engineered_bias"]
+
+    def _build_engineered_matrix(
+        self,
+        records: list[dict],
+        target: str,
+    ) -> sp.csr_matrix:
+        if not records:
+            return sp.csr_matrix((0, 0), dtype=np.float32)
+
+        rows: list[list[float]] = []
+        for record in records:
+            text = (
+                record.get("text_clean") or record.get("text") or ""
+            ).lower()
+            media_strength = str(
+                record.get("media_evidence_strength", "none")
+            ).lower()
+            has_media_subject = float(
+                any(
+                    t in text for t in ("vinyl", "record", "disc", "lp", "wax")
+                )
+            )
+            has_media_condition = float(
+                any(
+                    t in text
+                    for t in (
+                        "scratch",
+                        "scuff",
+                        "hairline",
+                        "noise",
+                        "warp",
+                        "foggy",
+                        "cloudy",
+                    )
+                )
+            )
+            pos_neg_count = float(
+                sum(
+                    1
+                    for pat in self._positive_negation_patterns
+                    if pat.search(text)
+                )
+            )
+            features = [
+                float(self._count_any(text, self._mild_cues)),
+                float(self._count_any(text, self._strong_cues)),
+                float(self._count_any(text, self._defect_terms)),
+                pos_neg_count,
+                float(
+                    bool(self._self_grade_patterns["self_grade_mint"].search(text))
+                ),
+                float(
+                    bool(self._self_grade_patterns["self_grade_nm"].search(text))
+                ),
+                float(
+                    bool(self._self_grade_patterns["self_grade_ex"].search(text))
+                ),
+                float(
+                    bool(self._self_grade_patterns["self_grade_vgp"].search(text))
+                ),
+                float(
+                    bool(self._self_grade_patterns["self_grade_vg"].search(text))
+                ),
+                float(
+                    bool(self._self_grade_patterns["self_grade_g"].search(text))
+                ),
+                float(
+                    bool(
+                        self._self_grade_patterns["self_grade_close_vgp"].search(
+                            text
+                        )
+                    )
+                ),
+                float(
+                    bool(
+                        self._self_grade_patterns["self_grade_vgp_nm"].search(text)
+                    )
+                ),
+                float(media_strength == "none"),
+                float(media_strength == "weak"),
+                float(media_strength == "strong"),
+                has_media_subject,
+                has_media_condition,
+                float(target == "media"),
+                float(target == "sleeve"),
+                1.0,
+            ]
+            rows.append(features)
+        return sp.csr_matrix(np.asarray(rows, dtype=np.float32))
+
+    def transform_records(
+        self,
+        vectorizer: TfidfVectorizer,
+        records: list[dict],
+        target: str,
+        split: str,
+    ) -> sp.csr_matrix:
+        texts = self.extract_texts(records)
+        X_text = self.transform(vectorizer, texts, split, target)
+        if not self.engineered_enabled:
+            return X_text
+        X_eng = self._build_engineered_matrix(records, target)
+        if X_eng.shape[1] == 0:
+            return X_text
+        return sp.hstack([X_text, X_eng], format="csr")
+
     # -----------------------------------------------------------------------
-    # Label encoder — fit on train only
+    # Label encoder — canonical schema ∪ train labels
     # -----------------------------------------------------------------------
+    def _guidelines_grade_list(self, target: str) -> list[str]:
+        """All canonical grades for target from grading_guidelines.yaml."""
+        gp = self.config.get(
+            "guidelines_path",
+            "grader/configs/grading_guidelines.yaml",
+        )
+        gl = self._load_yaml(gp)
+        key = "sleeve_grades" if target == "sleeve" else "media_grades"
+        if key not in gl:
+            raise KeyError(f"{gp} missing '{key}' for label encoder")
+        return [str(x) for x in gl[key]]
+
     def build_encoder(
         self, train_labels: list[str], target: str
     ) -> LabelEncoder:
         """
-        Fit a LabelEncoder on train labels only.
-        Encodes canonical grade strings to integer indices.
+        Fit a LabelEncoder on the **full canonical grade list** from guidelines
+        plus any train labels not in that list.
+
+        Train-only fitting would drop rare grades (e.g. sleeve ``Excellent``
+        when the train split is Discogs-heavy). The rule engine and eBay
+        harmonization still emit those strings — encoders must cover them.
+
+        After changing this, re-run feature extraction and retrain models so
+        ``y`` indices and classifier heads match the expanded class set.
 
         Args:
             train_labels: grade strings from the train split only
@@ -231,11 +503,22 @@ class TFIDFFeatureBuilder:
         Returns:
             Fitted LabelEncoder.
         """
+        canonical = self._guidelines_grade_list(target)
+        train_set = {str(l) for l in train_labels}
+        extra = train_set - set(canonical)
+        if extra:
+            logger.warning(
+                "Train labels not listed in guidelines %s_grades: %s",
+                target,
+                sorted(extra),
+            )
+        combined = sorted(set(canonical) | train_set)
         encoder = LabelEncoder()
-        encoder.fit(train_labels)
+        encoder.fit(combined)
         logger.info(
-            "Label encoder fitted — target=%s | classes: %s",
+            "Label encoder fitted — target=%s | n_classes=%d | classes: %s",
             target,
+            len(encoder.classes_),
             list(encoder.classes_),
         )
         return encoder
@@ -328,6 +611,10 @@ class TFIDFFeatureBuilder:
             # Mean TF-IDF weight across class samples
             class_X = X_train[mask]
             mean_weights = np.asarray(class_X.mean(axis=0)).flatten()
+            # If engineered features are appended, keep top-terms reporting
+            # scoped to original TF-IDF vocabulary only.
+            if mean_weights.shape[0] > len(feature_names):
+                mean_weights = mean_weights[: len(feature_names)]
 
             # Top N indices by weight
             top_indices = mean_weights.argsort()[-n_terms:][::-1]
@@ -346,7 +633,9 @@ class TFIDFFeatureBuilder:
         Write a human-readable top terms report to artifacts/.
         Logged to MLflow as an artifact.
         """
-        report_path = Path(self.config["paths"]["artifacts"]) / "top_tfidf_terms.txt"
+        report_path = (
+            Path(self.config["paths"]["artifacts"]) / "top_tfidf_terms.txt"
+        )
         lines = [
             "=" * 60,
             "TOP TF-IDF TERMS PER GRADE",
@@ -388,17 +677,19 @@ class TFIDFFeatureBuilder:
                 "tfidf_ngram_range":  str(self.ngram_range),
                 "tfidf_sublinear_tf": self.sublinear_tf,
                 "tfidf_min_df":       self.min_df,
+                "engineered_features_enabled": self.engineered_enabled,
             }
         )
-        mlflow.log_metrics(
-            {
-                "n_train":                split_sizes["train"],
-                "n_val":                  split_sizes["val"],
-                "n_test":                 split_sizes["test"],
-                "vocab_size_sleeve":      vocab_sizes["sleeve"],
-                "vocab_size_media":       vocab_sizes["media"],
-            }
-        )
+        metrics_tf = {
+            "n_train": split_sizes["train"],
+            "n_val": split_sizes["val"],
+            "n_test": split_sizes["test"],
+            "vocab_size_sleeve": vocab_sizes["sleeve"],
+            "vocab_size_media": vocab_sizes["media"],
+        }
+        if split_sizes.get("test_thin", 0):
+            metrics_tf["n_test_thin"] = split_sizes["test_thin"]
+        mlflow.log_metrics(metrics_tf)
         mlflow.log_artifact(str(top_terms_report_path))
 
         # Log fitted vectorizer and encoder artifacts
@@ -412,7 +703,7 @@ class TFIDFFeatureBuilder:
     def run(self, dry_run: bool = False) -> dict:
         """
         Full TF-IDF feature extraction pipeline:
-          1. Load train/val/test splits
+          1. Load train/val/test splits (and test_thin when present)
           2. For each target (sleeve, media):
              a. Fit vectorizer on train texts only
              b. Fit label encoder on train labels only
@@ -438,10 +729,13 @@ class TFIDFFeatureBuilder:
             for split in ["train", "val", "test"]:
                 split_data[split] = self.load_split(split)
 
+            thin_records = self.load_test_thin_optional()
+
             split_sizes = {
                 split: len(records)
                 for split, records in split_data.items()
             }
+            split_sizes["test_thin"] = len(thin_records)
 
             # Extract texts per split — same text regardless of target
             split_texts: dict[str, list[str]] = {
@@ -449,10 +743,14 @@ class TFIDFFeatureBuilder:
                 for split, records in split_data.items()
             }
 
+            feature_split_keys = ["train", "val", "test"]
+            if thin_records:
+                feature_split_keys.append("test_thin")
+
             results: dict = {
                 "vectorizers": {},
                 "encoders":    {},
-                "features":    {split: {} for split in ["train", "val", "test"]},
+                "features": {split: {} for split in feature_split_keys},
             }
             vocab_sizes: dict[str, int] = {}
 
@@ -476,16 +774,35 @@ class TFIDFFeatureBuilder:
 
                 # Transform all splits and encode labels
                 for split in ["train", "val", "test"]:
-                    texts  = split_texts[split]
                     labels = self.extract_labels(split_data[split], target)
-
-                    X = self.transform(vectorizer, texts, split, target)
+                    X = self.transform_records(
+                        vectorizer=vectorizer,
+                        records=split_data[split],
+                        target=target,
+                        split=split,
+                    )
                     y = encoder.transform(labels)
 
                     results["features"][split][target] = {"X": X, "y": y}
 
                     if not dry_run:
                         self.save_features(X, y, split, target)
+
+                if thin_records:
+                    labels_thin = self.extract_labels(thin_records, target)
+                    X_thin = self.transform_records(
+                        vectorizer=vectorizer,
+                        records=thin_records,
+                        target=target,
+                        split="test_thin",
+                    )
+                    y_thin = encoder.transform(labels_thin)
+                    results["features"]["test_thin"][target] = {
+                        "X": X_thin,
+                        "y": y_thin,
+                    }
+                    if not dry_run:
+                        self.save_features(X_thin, y_thin, "test_thin", target)
 
                 if not dry_run:
                     self.save_vectorizer(vectorizer, target)
@@ -524,6 +841,9 @@ class TFIDFFeatureBuilder:
                 results["vectorizers"] = self.vectorizers
                 results["encoders"]    = self.encoders
                 return results
+
+            if not thin_records:
+                self.remove_test_thin_feature_files(self.features_dir)
 
             top_terms_path = self.save_top_terms_report(
                 top_terms_sleeve, top_terms_media

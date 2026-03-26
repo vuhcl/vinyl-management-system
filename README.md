@@ -137,6 +137,8 @@ python -m grader.src.pipeline predict --text "factory sealed, never opened" --mo
 
 For mobile/React Native use, call the existing FastAPI endpoint: `POST /api/condition` with JSON `{ "seller_notes": "..." }`.
 
+**Quick synthetic eval (resume / portfolio):** run `python scripts/grader_eval_resume.py` → writes `artifacts/grader_eval_resume.json` (macro-F1, accuracy, ECE on a benchmark aligned with the grader test suite; see file `disclaimer`).
+
 API contract (baseline + rule engine applied):
 
 Request:

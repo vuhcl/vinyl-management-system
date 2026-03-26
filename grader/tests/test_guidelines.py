@@ -64,8 +64,9 @@ class TestGradeOwnership:
     def test_grade_owners_present(self, guidelines):
         assert "grade_owners" in guidelines
 
-    def test_mint_owned_by_rule_engine(self, guidelines):
-        assert guidelines["grade_owners"]["Mint"] == "rule_engine"
+    def test_mint_owned_by_model(self, guidelines):
+        """Mint hard-override removed — model owns Mint predictions."""
+        assert guidelines["grade_owners"]["Mint"] == "model"
 
     def test_poor_owned_by_rule_engine(self, guidelines):
         assert guidelines["grade_owners"]["Poor"] == "rule_engine"
@@ -129,10 +130,38 @@ class TestEbayJPHarmonization:
 
 class TestGradeDefinitions:
     REQUIRED_KEYS = [
-        "applies_to", "description", "hard_signals",
-        "supporting_signals", "forbidden_signals",
-        "min_supporting", "rule_confidence_threshold",
+        "applies_to",
+        "description",
+        "hard_signals",
+        "rule_confidence_threshold",
     ]
+
+    @staticmethod
+    def _has_supporting_schema(grade_def: dict) -> bool:
+        if grade_def.get("supporting_signals") is not None:
+            return True
+        return (
+            grade_def.get("supporting_signals_sleeve") is not None
+            and grade_def.get("supporting_signals_media") is not None
+        )
+
+    @staticmethod
+    def _has_forbidden_schema(grade_def: dict) -> bool:
+        if grade_def.get("forbidden_signals") is not None:
+            return True
+        return (
+            grade_def.get("forbidden_signals_sleeve") is not None
+            and grade_def.get("forbidden_signals_media") is not None
+        )
+
+    @staticmethod
+    def _has_min_supporting_schema(grade_def: dict) -> bool:
+        if grade_def.get("min_supporting") is not None:
+            return True
+        return (
+            grade_def.get("min_supporting_sleeve") is not None
+            and grade_def.get("min_supporting_media") is not None
+        )
 
     def test_all_grades_defined(self, guidelines):
         expected = set(guidelines["sleeve_grades"])
@@ -144,6 +173,43 @@ class TestGradeDefinitions:
             for key in self.REQUIRED_KEYS:
                 assert key in grade_def, (
                     f"Grade '{grade}' missing required key: {key}"
+                )
+            assert self._has_supporting_schema(grade_def), (
+                f"Grade '{grade}' needs supporting_signals or "
+                "supporting_signals_sleeve + supporting_signals_media"
+            )
+            assert self._has_forbidden_schema(grade_def), (
+                f"Grade '{grade}' needs forbidden_signals or "
+                "forbidden_signals_sleeve + forbidden_signals_media"
+            )
+            assert self._has_min_supporting_schema(grade_def), (
+                f"Grade '{grade}' needs min_supporting or "
+                "min_supporting_sleeve + min_supporting_media"
+            )
+
+    def test_max_supporting_sane_when_present(self, guidelines):
+        for grade, grade_def in guidelines["grades"].items():
+            if "max_supporting" in grade_def:
+                mx = grade_def["max_supporting"]
+                mn = grade_def["min_supporting"]
+                assert isinstance(mx, int), f"{grade}: max_supporting must be int"
+                assert mn is not None
+                assert mx >= mn, (
+                    f"{grade}: max_supporting ({mx}) must be >= min_supporting ({mn})"
+                )
+            for target in ("sleeve", "media"):
+                mx_key = f"max_supporting_{target}"
+                mn_key = f"min_supporting_{target}"
+                if mx_key not in grade_def:
+                    continue
+                mx = grade_def[mx_key]
+                mn = grade_def.get(mn_key)
+                assert mn is not None, (
+                    f"{grade}: {mx_key} requires matching {mn_key}"
+                )
+                assert isinstance(mx, int), f"{grade}: {mx_key} must be int"
+                assert mx >= mn, (
+                    f"{grade}: {mx_key} ({mx}) must be >= {mn_key} ({mn})"
                 )
 
     def test_applies_to_valid_targets(self, guidelines):
