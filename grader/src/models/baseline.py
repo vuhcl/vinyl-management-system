@@ -37,7 +37,7 @@ from typing import Optional
 import mlflow
 import numpy as np
 import yaml
-from sklearn.calibration import CalibratedClassifierCV
+from sklearn.isotonic import IsotonicRegression
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import (
     accuracy_score,
@@ -59,6 +59,70 @@ logger = logging.getLogger(__name__)
 
 TARGETS = ["sleeve", "media"]
 SPLITS = ["train", "val", "test"]
+
+
+# ---------------------------------------------------------------------------
+# _IsotonicCalibrator
+# ---------------------------------------------------------------------------
+class _IsotonicCalibrator:
+    """
+    Post-hoc probability calibrator using per-class isotonic regression.
+
+    Wraps a fitted sklearn classifier and applies a separate isotonic
+    regression to each class column of its predict_proba output.
+
+    Critically, this calibrator always outputs ``n_classes`` columns where
+    ``n_classes`` is the total number of canonical classes (passed in at
+    construction time). If the base model was trained without some rare
+    class (e.g. sleeve Excellent never appears in training data), those
+    columns stay at zero so downstream blending logic sees a consistent
+    shape.
+
+    Drop-in replacement for CalibratedClassifierCV(cv="prefit") which was
+    removed in sklearn 1.6+.
+    """
+
+    def __init__(self, base_clf, n_classes: int) -> None:
+        self.base_clf = base_clf
+        self.n_classes = n_classes
+        self.calibrators_: list[Optional[IsotonicRegression]] = []
+        self.classes_ = None
+
+    def fit(self, X, y) -> "_IsotonicCalibrator":
+        self.classes_ = self.base_clf.classes_   # model's actual classes (may be < n_classes)
+        model_classes = list(self.classes_)
+        raw_proba = self.base_clf.predict_proba(X)  # (n_samples, len(model_classes))
+
+        # One-hot encode y against the model's actual class list
+        y_onehot = np.zeros((len(y), len(model_classes)), dtype=float)
+        cls_to_col = {c: i for i, c in enumerate(model_classes)}
+        for row, label in enumerate(y):
+            if label in cls_to_col:
+                y_onehot[row, cls_to_col[label]] = 1.0
+
+        # One calibrator per model class
+        self.calibrators_ = []
+        for j in range(len(model_classes)):
+            iso = IsotonicRegression(out_of_bounds="clip")
+            iso.fit(raw_proba[:, j], y_onehot[:, j])
+            self.calibrators_.append(iso)
+        return self
+
+    def predict_proba(self, X) -> np.ndarray:
+        raw_proba = self.base_clf.predict_proba(X)
+        model_classes = list(self.base_clf.classes_)
+
+        # Build output with the full n_classes columns, mapping model classes
+        # to their canonical integer indices (model class values are ints from
+        # the LabelEncoder, so they directly index the output columns).
+        n_samples = raw_proba.shape[0]
+        out = np.zeros((n_samples, self.n_classes), dtype=float)
+        for j, cls_idx in enumerate(model_classes):
+            out[:, int(cls_idx)] = self.calibrators_[j].predict(raw_proba[:, j])
+
+        row_sum = out.sum(axis=1, keepdims=True)
+        row_sum[row_sum == 0] = 1.0
+        return out / row_sum
 
 
 # ---------------------------------------------------------------------------
@@ -89,6 +153,37 @@ class BaselineModel:
         self.class_weight: str = lr_cfg["class_weight"]
         self.solver: str = lr_cfg["solver"]
         self.random_state: int = lr_cfg.get("random_state", 42)
+        tuning_cfg = self.config["models"]["baseline"].get("tuning", {})
+        self.tuning_enabled: bool = bool(tuning_cfg.get("enabled", False))
+        self.tuning_c_values: list[float] = [
+            float(v) for v in tuning_cfg.get("c_values", [self.C])
+        ]
+        boundary_cfg = self.config["models"]["baseline"].get(
+            "boundary_objective", {}
+        )
+        self.boundary_enabled: bool = bool(boundary_cfg.get("enabled", False))
+        self.boundary_alpha: float = float(boundary_cfg.get("alpha", 0.2))
+        band_cfg = self.config["models"]["baseline"].get("confidence_band", {})
+        self.confidence_band_enabled: bool = bool(band_cfg.get("enabled", True))
+        self.confidence_band_max_gap: float = float(
+            band_cfg.get("max_gap", 0.12)
+        )
+        gating_cfg = self.config["models"]["baseline"].get(
+            "media_evidence_gating", {}
+        )
+        self.media_gating_enabled: bool = bool(gating_cfg.get("enabled", False))
+        self.media_gating_alpha_none: float = float(
+            gating_cfg.get("alpha_none", 0.35)
+        )
+        self.media_gating_alpha_weak: float = float(
+            gating_cfg.get("alpha_weak", 0.20)
+        )
+        aux_cfg = self.config["models"]["baseline"].get(
+            "media_evidence_aux", {}
+        )
+        self.media_evidence_aux_enabled: bool = bool(
+            aux_cfg.get("enabled", False)
+        )
 
         cal_cfg = self.config["evaluation"]["calibration"]
         self.calibration_method: str = cal_cfg.get("method", "isotonic")
@@ -113,8 +208,13 @@ class BaselineModel:
 
         # Fitted objects — populated during run()
         self.models: dict[str, LogisticRegression] = {}
-        self.calibrated: dict[str, CalibratedClassifierCV] = {}
+        self.calibrated: dict[str, "_IsotonicCalibrator"] = {}
+        self.boundary_models: dict[str, LogisticRegression] = {}
+        self.boundary_band_labels: dict[str, np.ndarray] = {}
+        self.media_evidence_aux_model: Optional[LogisticRegression] = None
         self.encoders: dict = {}
+        self.selected_c: dict[str, float] = {}
+        self.grade_ordinal_map = self._load_grade_ordinal_map()
 
         # MLflow
         mlflow.set_tracking_uri(self.config["mlflow"]["tracking_uri"])
@@ -127,6 +227,22 @@ class BaselineModel:
     def _load_yaml(path: str) -> dict:
         with open(path, "r") as f:
             return yaml.safe_load(f)
+
+    def _load_grade_ordinal_map(self) -> dict[str, int]:
+        rules_cfg = self.config.get("rules", {})
+        guidelines_path = rules_cfg.get("guidelines_path")
+        if not guidelines_path:
+            return {}
+        p = Path(guidelines_path)
+        if not p.exists():
+            return {}
+        with open(p, "r") as f:
+            g = yaml.safe_load(f)
+        return {
+            str(k): int(v)
+            for k, v in g.get("grade_ordinal_map", {}).items()
+            if isinstance(v, int)
+        }
 
     # -----------------------------------------------------------------------
     # Feature loading
@@ -155,6 +271,20 @@ class BaselineModel:
                     X.shape,
                 )
 
+        thin_x = self.features_dir / "test_thin_sleeve_X.npz"
+        if thin_x.exists():
+            features["test_thin"] = {}
+            for target in TARGETS:
+                X, y = TFIDFFeatureBuilder.load_features(
+                    str(self.features_dir), "test_thin", target
+                )
+                features["test_thin"][target] = {"X": X, "y": y}
+                logger.info(
+                    "Loaded features — split=test_thin target=%s shape=%s",
+                    target,
+                    X.shape,
+                )
+
         return features
 
     def load_encoders(self) -> dict:
@@ -173,18 +303,63 @@ class BaselineModel:
     # -----------------------------------------------------------------------
     # Model construction and training
     # -----------------------------------------------------------------------
-    def build_model(self, target: str) -> LogisticRegression:
+    def build_model(
+        self,
+        target: str,
+        *,
+        C: Optional[float] = None,
+    ) -> LogisticRegression:
         """
         Construct a LogisticRegression head for a single target.
         Hyperparameters come from grader.yaml — nothing hardcoded.
         """
         return LogisticRegression(
-            C=self.C,
+            C=self.C if C is None else C,
             max_iter=self.max_iter,
             class_weight=self.class_weight,
             solver=self.solver,
             random_state=self.random_state,
         )
+
+    @staticmethod
+    def _macro_f1(y_true, y_pred) -> float:
+        return float(f1_score(y_true, y_pred, average="macro"))
+
+    def _tune_c_for_target(self, target: str, features: dict) -> float:
+        """
+        Grid-search C on train->val for a single target.
+        Uses macro-F1 on val as selection metric.
+        """
+        X_train = features["train"][target]["X"]
+        y_train = features["train"][target]["y"]
+        X_val = features["val"][target]["X"]
+        y_val = features["val"][target]["y"]
+
+        best_c = self.C
+        best_val_f1 = -1.0
+
+        for c in self.tuning_c_values:
+            model = self.build_model(target, C=c)
+            model.fit(X_train, y_train)
+            val_pred = model.predict(X_val)
+            val_f1 = self._macro_f1(y_val, val_pred)
+            logger.info(
+                "Tune baseline C — target=%s C=%.4f val macro-F1=%.4f",
+                target,
+                c,
+                val_f1,
+            )
+            if val_f1 > best_val_f1:
+                best_val_f1 = val_f1
+                best_c = c
+
+        logger.info(
+            "Selected baseline C — target=%s C=%.4f (best val macro-F1=%.4f)",
+            target,
+            best_c,
+            best_val_f1,
+        )
+        return best_c
 
     def train(
         self,
@@ -205,7 +380,12 @@ class BaselineModel:
             X_train = features["train"][target]["X"]
             y_train = features["train"][target]["y"]
 
-            model = self.build_model(target)
+            selected_c = self.C
+            if self.tuning_enabled:
+                selected_c = self._tune_c_for_target(target, features)
+            self.selected_c[target] = selected_c
+
+            model = self.build_model(target, C=selected_c)
             model.fit(X_train, y_train)
             models[target] = model
 
@@ -215,6 +395,162 @@ class BaselineModel:
 
         return models
 
+    @staticmethod
+    def _grade_to_band(grade: str) -> str:
+        if grade in {"Poor", "Good"}:
+            return "low"
+        if grade in {"Very Good", "Very Good Plus"}:
+            return "mid"
+        if grade in {"Excellent", "Near Mint", "Mint"}:
+            return "high"
+        return "other"
+
+    def train_boundary_models(self, features: dict) -> None:
+        """Train coarse-bin auxiliary heads for boundary-aware blending."""
+        if not self.boundary_enabled:
+            return
+        self.boundary_models = {}
+        self.boundary_band_labels = {}
+        for target in TARGETS:
+            X_train = features["train"][target]["X"]
+            y_train = features["train"][target]["y"]
+            encoder = self.encoders[target]
+            grades = encoder.inverse_transform(y_train)
+            band_labels = np.asarray([self._grade_to_band(g) for g in grades])
+            bmodel = LogisticRegression(
+                C=self.selected_c.get(target, self.C),
+                max_iter=self.max_iter,
+                class_weight=self.class_weight,
+                solver=self.solver,
+                random_state=self.random_state,
+            )
+            bmodel.fit(X_train, band_labels)
+            self.boundary_models[target] = bmodel
+            self.boundary_band_labels[target] = bmodel.classes_
+            logger.info(
+                "Boundary auxiliary head trained — target=%s bands=%s",
+                target,
+                list(bmodel.classes_),
+            )
+
+    def train_media_evidence_aux(
+        self,
+        features: dict,
+        split_records: dict[str, list[dict]],
+    ) -> None:
+        """Train auxiliary classifier for media evidence strength."""
+        if not self.media_evidence_aux_enabled:
+            self.media_evidence_aux_model = None
+            return
+        train_records = split_records.get("train", [])
+        X_train = features["train"]["media"]["X"]
+        y = np.asarray(
+            [
+                str(r.get("media_evidence_strength", "none")).lower()
+                for r in train_records
+            ]
+        )
+        if len(y) != X_train.shape[0]:
+            logger.warning(
+                "Skipping media evidence aux head: record/feature mismatch."
+            )
+            self.media_evidence_aux_model = None
+            return
+        model = LogisticRegression(
+            C=self.C,
+            max_iter=self.max_iter,
+            class_weight="balanced",
+            solver=self.solver,
+            random_state=self.random_state,
+        )
+        model.fit(X_train, y)
+        self.media_evidence_aux_model = model
+        logger.info(
+            "Media evidence aux head trained — classes=%s",
+            list(model.classes_),
+        )
+
+    def _blend_with_boundary(
+        self,
+        target: str,
+        X,
+        base_proba: np.ndarray,
+    ) -> np.ndarray:
+        if not self.boundary_enabled or target not in self.boundary_models:
+            return base_proba
+        encoder = self.encoders[target]
+        n_classes = len(encoder.classes_)
+        band_model = self.boundary_models[target]
+        band_proba = band_model.predict_proba(X)
+        band_classes = list(band_model.classes_)
+        mapped = np.zeros((base_proba.shape[0], n_classes), dtype=float)
+        for j, grade in enumerate(encoder.classes_):
+            band = self._grade_to_band(str(grade))
+            if band in band_classes:
+                mapped[:, j] = band_proba[:, band_classes.index(band)]
+        blended = (1.0 - self.boundary_alpha) * base_proba + (
+            self.boundary_alpha * mapped
+        )
+        # base_proba already has n_classes columns (from _IsotonicCalibrator)
+        assert base_proba.shape[1] == n_classes, (
+            f"base_proba has {base_proba.shape[1]} cols but encoder has {n_classes}"
+        )
+        row_sum = blended.sum(axis=1, keepdims=True)
+        row_sum[row_sum == 0] = 1.0
+        return blended / row_sum
+
+    def _predict_with_proba(self, target: str, X) -> tuple[np.ndarray, np.ndarray]:
+        proba = self.calibrated[target].predict_proba(X)
+        proba = self._blend_with_boundary(target, X, proba)
+        pred = proba.argmax(axis=1)
+        return pred, proba
+
+    def _apply_media_evidence_gating(
+        self,
+        proba: np.ndarray,
+        media_strengths: Optional[list[str]],
+    ) -> np.ndarray:
+        if not self.media_gating_enabled or media_strengths is None:
+            return proba
+        classes = list(self.encoders["media"].classes_)
+        conservative = {"Near Mint", "Very Good Plus", "Very Good"}
+        prior = np.zeros(len(classes), dtype=np.float64)
+        for i, cls in enumerate(classes):
+            if cls in conservative:
+                prior[i] = 1.0
+        if prior.sum() == 0:
+            return proba
+        prior = prior / prior.sum()
+        out = proba.copy()
+        n = min(len(media_strengths), out.shape[0])
+        for i in range(n):
+            s = str(media_strengths[i]).lower()
+            if s == "none":
+                a = self.media_gating_alpha_none
+            elif s == "weak":
+                a = self.media_gating_alpha_weak
+            else:
+                a = 0.0
+            if a > 0:
+                out[i, :] = (1.0 - a) * out[i, :] + a * prior
+        row_sum = out.sum(axis=1, keepdims=True)
+        row_sum[row_sum == 0] = 1.0
+        return out / row_sum
+
+    def _confidence_band(self, scores: dict[str, float]) -> Optional[str]:
+        if not self.confidence_band_enabled or len(scores) < 2:
+            return None
+        ranked = sorted(scores.items(), key=lambda kv: kv[1], reverse=True)
+        (g1, p1), (g2, p2) = ranked[0], ranked[1]
+        if (p1 - p2) > self.confidence_band_max_gap:
+            return None
+        if g1 not in self.grade_ordinal_map or g2 not in self.grade_ordinal_map:
+            return None
+        if abs(self.grade_ordinal_map[g1] - self.grade_ordinal_map[g2]) != 1:
+            return None
+        ordered = sorted([g1, g2], key=lambda g: self.grade_ordinal_map[g])
+        return f"{ordered[0]}/{ordered[1]}"
+
     # -----------------------------------------------------------------------
     # Calibration — fitted on val split
     # -----------------------------------------------------------------------
@@ -222,20 +558,24 @@ class BaselineModel:
         self,
         models: dict[str, LogisticRegression],
         features: dict,
-    ) -> dict[str, CalibratedClassifierCV]:
+    ) -> dict[str, "_IsotonicCalibrator"]:
         """
-        Wrap each fitted model in CalibratedClassifierCV and fit
-        calibration on the val split.
+        Calibrate each fitted model on the val split using per-class isotonic
+        regression on the base model's raw predict_proba output.
 
-        Calibration is fitted on val — NOT train — to prevent
-        calibration from absorbing training signal.
+        This approach preserves the full class set from the base estimator
+        (including rare grades like Excellent that may not appear in val),
+        avoiding the class-mismatch crash that occurs with CalibratedClassifierCV
+        when val lacks some training classes.
+
+        Calibration is fitted on val — NOT train — to prevent overfitting.
 
         Args:
             models:   fitted LogisticRegression heads
             features: nested dict from load_all_features()
 
         Returns:
-            Dict mapping target → calibrated classifier.
+            Dict mapping target → _IsotonicCalibrator wrapper.
         """
         calibrated = {}
         for target in TARGETS:
@@ -247,10 +587,8 @@ class BaselineModel:
             X_val = features["val"][target]["X"]
             y_val = features["val"][target]["y"]
 
-            calibrator = CalibratedClassifierCV(
-                estimator=models[target],
-                method=self.calibration_method,
-            )
+            n_classes = len(self.encoders[target].classes_)
+            calibrator = _IsotonicCalibrator(models[target], n_classes=n_classes)
             calibrator.fit(X_val, y_val)
             calibrated[target] = calibrator
 
@@ -297,10 +635,20 @@ class BaselineModel:
         media_encoder = self.encoders["media"]
 
         # Predicted class indices and probabilities
-        sleeve_pred_idx = self.calibrated["sleeve"].predict(X_sleeve)
-        sleeve_proba = self.calibrated["sleeve"].predict_proba(X_sleeve)
-        media_pred_idx = self.calibrated["media"].predict(X_media)
-        media_proba = self.calibrated["media"].predict_proba(X_media)
+        sleeve_pred_idx, sleeve_proba = self._predict_with_proba(
+            "sleeve", X_sleeve
+        )
+        media_pred_idx, media_proba = self._predict_with_proba("media", X_media)
+        media_strengths = None
+        if records:
+            media_strengths = [
+                str(r.get("media_evidence_strength", "none")) for r in records
+            ]
+        media_proba = self._apply_media_evidence_gating(
+            media_proba,
+            media_strengths,
+        )
+        media_pred_idx = media_proba.argmax(axis=1)
 
         # Decode integer indices back to grade strings
         sleeve_pred = sleeve_encoder.inverse_transform(sleeve_pred_idx)
@@ -311,6 +659,13 @@ class BaselineModel:
 
         predictions = []
         for i in range(n_samples):
+            # Extract metadata from source record if available
+            record = records[i] if records else {}
+            media_verifiable = record.get("media_verifiable", True)
+            contradiction = record.get("contradiction_detected", False)
+            source = record.get("source", "unknown")
+            media_strength = record.get("media_evidence_strength", "none")
+
             # Build confidence score dicts
             sleeve_scores = {
                 cls: round(float(sleeve_proba[i][j]), 4)
@@ -320,12 +675,23 @@ class BaselineModel:
                 cls: round(float(media_proba[i][j]), 4)
                 for j, cls in enumerate(media_classes)
             }
-
-            # Extract metadata from source record if available
-            record = records[i] if records else {}
-            media_verifiable = record.get("media_verifiable", True)
-            contradiction = record.get("contradiction_detected", False)
-            source = record.get("source", "unknown")
+            sleeve_band = self._confidence_band(sleeve_scores)
+            media_band = self._confidence_band(media_scores)
+            excellent_proxy_media = 0.0
+            nm_key = "Near Mint"
+            vgp_key = "Very Good Plus"
+            if nm_key in media_scores and vgp_key in media_scores:
+                excellent_proxy_media = round(
+                    2.0 * min(media_scores[nm_key], media_scores[vgp_key]),
+                    4,
+                )
+            evidence_scores: dict[str, float] = {}
+            if self.media_evidence_aux_model is not None:
+                eproba = self.media_evidence_aux_model.predict_proba(
+                    X_media[i : i + 1]
+                )[0]
+                for j, cls in enumerate(self.media_evidence_aux_model.classes_):
+                    evidence_scores[str(cls)] = round(float(eproba[j]), 4)
 
             predictions.append(
                 {
@@ -339,6 +705,14 @@ class BaselineModel:
                     "metadata": {
                         "source": source,
                         "media_verifiable": media_verifiable,
+                        "media_evidence_strength": media_strength,
+                        "confidence_band_sleeve": sleeve_band,
+                        "confidence_band_media": media_band,
+                        "excellent_proxy_media": excellent_proxy_media,
+                        "media_evidence_scores": evidence_scores,
+                        "ambiguous_prediction": bool(
+                            sleeve_band is not None or media_band is not None
+                        ),
                         "rule_override_applied": False,
                         "rule_override_target": None,
                         "contradiction_detected": contradiction,
@@ -355,6 +729,7 @@ class BaselineModel:
         self,
         features: dict,
         split: str,
+        records: Optional[list[dict]] = None,
     ) -> dict[str, dict]:
         """
         Compute evaluation metrics for both targets on a given split.
@@ -367,7 +742,7 @@ class BaselineModel:
 
         Args:
             features: nested dict from load_all_features()
-            split:    "train", "val", or "test"
+            split:    "train", "val", "test", or "test_thin" (if features exist)
 
         Returns:
             Dict mapping target → metrics dict.
@@ -379,8 +754,16 @@ class BaselineModel:
             y_true = features[split][target]["y"]
             encoder = self.encoders[target]
 
-            y_pred = self.calibrated[target].predict(X)
-            y_proba = self.calibrated[target].predict_proba(X)
+            y_pred, y_proba = self._predict_with_proba(target, X)
+            if target == "media":
+                strengths = None
+                if records is not None:
+                    strengths = [
+                        str(r.get("media_evidence_strength", "none"))
+                        for r in records
+                    ]
+                y_proba = self._apply_media_evidence_gating(y_proba, strengths)
+                y_pred = y_proba.argmax(axis=1)
 
             macro_f1 = f1_score(y_true, y_pred, average="macro")
             accuracy = accuracy_score(y_true, y_pred)
@@ -457,10 +840,15 @@ class BaselineModel:
         """Format a human-readable confusion matrix string."""
         encoder = self.encoders[target]
         classes = encoder.classes_
-        cm = confusion_matrix(y_true, y_pred)
+        # Pass all canonical label indices so cm is always n_classes × n_classes
+        # even when rare classes (e.g. Excellent) are absent from the test split.
+        all_labels = list(range(len(classes)))
+        cm = confusion_matrix(y_true, y_pred, labels=all_labels)
 
         col_width = max(len(c) for c in classes) + 2
-        header = " " * col_width + "".join(f"{c:>{col_width}}" for c in classes)
+        header = " " * col_width + "".join(
+            f"{c:>{col_width}}" for c in classes
+        )
         lines = [
             f"CONFUSION MATRIX — {target.upper()}",
             "-" * len(header),
@@ -480,7 +868,7 @@ class BaselineModel:
         for target in TARGETS:
             X = features["test"][target]["X"]
             y_true = features["test"][target]["y"]
-            y_pred = self.calibrated[target].predict(X)
+            y_pred, _ = self._predict_with_proba(target, X)
 
             cm_text = self.format_confusion_matrix(y_true, y_pred, target)
             with open(self.confusion_paths[target], "w") as f:
@@ -520,8 +908,21 @@ class BaselineModel:
                 "lr_class_weight": self.class_weight,
                 "lr_solver": self.solver,
                 "calibration_method": self.calibration_method,
+                "tuning_enabled": self.tuning_enabled,
+                "boundary_enabled": self.boundary_enabled,
+                "boundary_alpha": self.boundary_alpha,
+                "confidence_band_enabled": self.confidence_band_enabled,
+                "media_gating_enabled": self.media_gating_enabled,
+                "media_gating_alpha_none": self.media_gating_alpha_none,
+                "media_gating_alpha_weak": self.media_gating_alpha_weak,
+                "media_evidence_aux_enabled": self.media_evidence_aux_enabled,
             }
         )
+        for target in TARGETS:
+            mlflow.log_param(
+                f"selected_C_{target}",
+                self.selected_c.get(target, self.C),
+            )
 
         # Metrics per split per target
         for split, target_results in eval_results.items():
@@ -534,13 +935,13 @@ class BaselineModel:
                         f"{prefix}_ece": metrics["ece"],
                     }
                 )
-                # Per-class F1 on test split
-                if split == "test":
+                # Per-class F1 on primary test splits
+                if split in ("test", "test_thin"):
                     for class_name, class_metrics in metrics["report"].items():
                         if isinstance(class_metrics, dict):
                             clean = class_name.lower().replace(" ", "_")
                             mlflow.log_metric(
-                                f"test_{target}_{clean}_f1",
+                                f"{split}_{target}_{clean}_f1",
                                 class_metrics.get("f1-score", 0.0),
                             )
 
@@ -578,6 +979,30 @@ class BaselineModel:
 
             # Train
             self.models = self.train(features)
+            self.train_boundary_models(features)
+
+            split_records: dict[str, list[dict]] = {}
+            splits_dir = Path(self.config["paths"]["splits"])
+            for split in SPLITS:
+                path = splits_dir / f"{split}.jsonl"
+                records: list[dict] = []
+                with open(path, "r", encoding="utf-8") as f:
+                    for line in f:
+                        line = line.strip()
+                        if line:
+                            records.append(json.loads(line))
+                split_records[split] = records
+            if "test_thin" in features:
+                tt_path = splits_dir / "test_thin.jsonl"
+                thin_recs: list[dict] = []
+                if tt_path.exists():
+                    with open(tt_path, "r", encoding="utf-8") as f:
+                        for line in f:
+                            line = line.strip()
+                            if line:
+                                thin_recs.append(json.loads(line))
+                split_records["test_thin"] = thin_recs
+            self.train_media_evidence_aux(features, split_records)
 
             # Calibrate on val
             self.calibrated = self.calibrate(self.models, features)
@@ -586,20 +1011,37 @@ class BaselineModel:
             eval_results: dict[str, dict] = {}
             for split in SPLITS:
                 logger.info("--- Evaluating on %s split ---", split.upper())
-                eval_results[split] = self.evaluate(features, split)
+                eval_results[split] = self.evaluate(
+                    features,
+                    split,
+                    records=split_records.get(split),
+                )
+            if "test_thin" in features:
+                logger.info("--- Evaluating on TEST_THIN split ---")
+                eval_results["test_thin"] = self.evaluate(
+                    features,
+                    "test_thin",
+                    records=split_records.get("test_thin"),
+                )
 
             # Summary log
             for target in TARGETS:
-                logger.info(
+                msg = (
                     "RESULTS SUMMARY — target=%s | "
                     "train macro-F1: %.4f | "
                     "val macro-F1: %.4f | "
-                    "test macro-F1: %.4f",
+                    "test macro-F1: %.4f"
+                ) % (
                     target,
                     eval_results["train"][target]["macro_f1"],
                     eval_results["val"][target]["macro_f1"],
                     eval_results["test"][target]["macro_f1"],
                 )
+                if "test_thin" in eval_results:
+                    msg += " | test_thin macro-F1: %.4f" % (
+                        eval_results["test_thin"][target]["macro_f1"],
+                    )
+                logger.info(msg)
 
             if dry_run:
                 logger.info(
