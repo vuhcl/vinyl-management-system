@@ -40,7 +40,7 @@ discogs:
   base_url:               https://api.discogs.com
   token:                  ${DISCOGS_TOKEN}       # environment variable
   rate_limit_per_minute:  60
-  marketplace_endpoint:   /marketplace/search
+  # Ingestion uses GET /users/{username}/inventory — not /marketplace/search (404).
 
 # ------------------------------------------------------------
 # eBay API
@@ -60,17 +60,63 @@ data:
     min_samples_per_class: 50      # warn if any class falls below this
     output_path: grader/data/processed/unified.jsonl
     report_path: grader/reports/class_distribution.txt
+    # Drop description-thin rows using the same rules as preprocess
+    # (preprocessing.description_adequacy). Requires adequacy.enabled: true.
+    exclude_thin_notes: false
 
   sources:
     - discogs
     - ebay_jp
 
   discogs:
-    format_filter:      Vinyl
-    target_per_grade:   500        # max listings to fetch per canonical grade
+    format_filter:      Vinyl    # default when omitted: Vinyl (see ingest_discogs.DEFAULT_DISCOGS_FORMAT_FILTER)
+    # Discogs forbids page > 100 on *other users'* inventories (403). Own shop
+    # via OAuth can go deeper; personal token alone still hits this cap.
+    max_public_inventory_pages: 100
+    # Matches seller profile UI (e.g. …/profile?limit=250&format=Vinyl). We send
+    # per_page + limit on api.discogs.com; the API may still cap at 100 — see logs.
+    inventory_per_page:   250
+    inventory_send_limit_param: true
+    inventory_sort:       listed   # API field; website uses sort=listed,desc
+    inventory_sort_order: desc
+    # Send format=Vinyl (etc.) on inventory GET — not in official docs; if 400, we retry without.
+    inventory_format_api_param: true
+    target_per_grade:   10000        # max listings to fetch per canonical grade
                                    # grades: Mint, Near Mint, VG+, VG, Good, Poor
                                    # Excellent excluded — Discogs has no EX grade
                                    # Generic excluded — not a searchable condition
+    # Drop seller notes that look like shop boilerplate only (see ingest_discogs).
+    generic_note_filter:
+      enabled: true
+      # Remove boilerplate sentences/lines from saved ``text`` (same patterns as drop).
+      strip_boilerplate: true
+      # If any pattern matches (case-insensitive) and the note lacks item-specific
+      # hints, the row is dropped — unless sleeve/media is Mint or preservation
+      # keywords (sealed, shrink, …) appear in the comment.
+      # patterns:  # defaults in ingest_discogs._DEFAULT_GENERIC_NOTE_PATTERNS include
+      #   promo banners ("half off", "marked for deletion", "new low price"),
+      #   trust spam ("reputable seller", "buy with confidence", refund lines),
+      #   and provenance tails like "collection]" for bracketed seller lines.
+      #   - "my custom boilerplate phrase"
+      # item_specific_hints:  # substrings that mean “this copy” was described
+      #   - "hairline"
+      # preservation_keywords:
+      #   - "sealed"
+
+    # Public seller inventories (add/remove usernames). Large vinyl shops work best.
+    inventory_sellers:
+      - Redscroll
+      - 1234gorecords
+      - All-Day
+      - Art-is-an
+      - DeeperThanTheDeepest
+      - hogwildrecords
+      - philadelphiamusic
+      - GroovesVinyl
+      - MION.USA
+      - bulltrax
+      - bordentownrecords
+      # Add more usernames (exactly as on discogs.com/user/...); 404 sellers are skipped.
 
   ebay:
     min_text_length:    3          # lower than Discogs — JP seller notes are sparse
@@ -120,11 +166,57 @@ preprocessing:
     "ex":     "excellent"
     "e+":     "excellent plus"
     "e-":     "excellent minus"
+    "woc":    "writing on cover"
+    "wobc":   "writing on back cover"
+    "wol":    "writing on label"
+    "soc":    "sticker on cover"
+    "sol":    "sticker on label"
 
   # Minimum text length after cleaning — listings below this are dropped.
   # Discogs: 10 chars (seller notes expected to be descriptive)
   # eBay JP: handled per-source in ingest_ebay.py (min 3 chars)
   min_text_length_discogs:  10
+
+  # Flag thin seller notes (missing sleeve and/or playable-media cues).
+  # Rows that fail require_both_for_training are still written to
+  # preprocessed.jsonl but excluded from train/val/test splits when
+  # drop_insufficient_from_training is true.
+  description_adequacy:
+    enabled:                        true
+    drop_insufficient_from_training: true
+    require_both_for_training:      true
+    # If the note is at least this long (cleaned text) and has no sleeve
+    # keywords, still count sleeve as adequate (avoids dropping long notes).
+    min_chars_sleeve_fallback:      56
+    user_prompt_sleeve: >-
+      Add jacket/sleeve detail (corners, ring wear, seams, inserts, shrink).
+    user_prompt_media: >-
+      Describe playable condition (surface marks, noise, how it plays) or say sealed/unplayed.
+    sleeve_evidence_terms:
+      - jacket
+      - sleeve
+      - cover
+      - outer sleeve
+      - gatefold
+      - obi
+      - insert
+      - spine
+      - back cover
+      - front cover
+      - corner
+      - corners
+      - ringwear
+      - ring wear
+      - seam
+      - split
+      - crease
+      - creased
+      - stain
+      - wear on
+      - shrink
+      - hype sticker
+      - picture sleeve
+      - laminated
 
 # ------------------------------------------------------------
 # Rule Engine
@@ -155,20 +247,46 @@ models:
       class_weight:   balanced     # handles class imbalance
       solver:         lbfgs
       random_state:   42
+    tuning:
+      enabled:        true
+      c_values:       [0.3, 1.0, 3.0, 10.0]
+    engineered_features:
+      enabled:        true
+    boundary_objective:
+      enabled:        true
+      alpha:          0.20
+    confidence_band:
+      enabled:        true
+      max_gap:        0.12
+    media_evidence_gating:
+      enabled:        false
+      alpha_none:     0.10
+      alpha_weak:     0.05
+    media_evidence_aux:
+      enabled:        true
 
   transformer:
     name:                   distilbert_two_head
     base_model:             distilbert-base-uncased
     freeze_encoder:         true   # default for small dataset (~1K-5K samples)
                                    # set to false to ablate full fine-tuning
+    # When freeze_encoder is true: unfreeze last N DistilBERT transformer blocks
+    # (0 = heads-only). Ignored when freeze_encoder is false.
+    unfreeze_top_n_layers:  2
     max_length:             128
-    dropout:                0.3
-    learning_rate:          2.0e-4
-    batch_size:             16
+    dropout:                0.35
+    learning_rate:          1.5e-4
+    batch_size:             24
     epochs:                 20
     early_stopping_patience: 3
     class_weight:           balanced
     random_state:           42
+    weight_decay:           0.04    # AdamW L2; raise to reduce overfit
+    warmup_ratio:           0.1     # linear LR warmup fraction of total steps
+    # Auxiliary 3-way head: none / weak / strong (heuristic media evidence)
+    media_evidence_aux:
+      enabled:              true
+      loss_weight:          0.2
 
 # ------------------------------------------------------------
 # Evaluation
@@ -182,13 +300,23 @@ evaluation:
   calibration:
     method:     isotonic           # isotonic regression post-hoc calibration
     cv_folds:   5
+  # Discogs-only data often has no Excellent in train/test; rules may still
+  # assign Excellent. If true, rule-adjusted macro-F1/accuracy (and grade
+  # analysis scoring lines) use the model-only label on rows where the
+  # rule-adjusted prediction is Excellent. Override audit still uses raw
+  # before/after.
+  excellent_eval_use_model_prediction: true
 
 # ------------------------------------------------------------
 # MLflow
 # ------------------------------------------------------------
+# Use a SQL-backed store (metadata). Plain directories under ./mlruns are
+# deprecated as the tracking backend (see MLflow GH #18534). Artifacts
+# (plots, models) still land under the experiment’s artifact_uri (often
+# ./mlruns/... when using the default local artifact root).
 mlflow:
   experiment_name:    vinyl_grader
-  tracking_uri:       grader/experiments/mlruns
+  tracking_uri:       sqlite:///grader/experiments/mlflow.db
   tags:
     project:  vinyl_collector_ai
     module:   grader
