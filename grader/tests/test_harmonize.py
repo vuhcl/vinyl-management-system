@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 
 import pytest
+import yaml
 
 from grader.src.data.harmonize_labels import LabelHarmonizer
 
@@ -201,8 +202,6 @@ class TestRunMethod:
     def test_all_output_records_have_valid_grades(
         self, harmonizer, discogs_jsonl, ebay_jsonl, guidelines_path
     ):
-        import yaml
-
         guidelines = yaml.safe_load(open(guidelines_path))
         sleeve_grades = set(guidelines["sleeve_grades"])
         media_grades = set(guidelines["media_grades"])
@@ -212,3 +211,51 @@ class TestRunMethod:
             assert record["sleeve_label"] in sleeve_grades
             assert record["media_label"] in media_grades
             assert record["media_label"] != "Generic"
+
+
+class TestExcludeThinNotes:
+    def test_exclude_thin_notes_drops_inadequate(
+        self, tmp_dirs, test_config, guidelines_path
+    ):
+        processed = tmp_dirs["processed"]
+        thin = {
+            "item_id": "thin_1",
+            "source": "discogs",
+            "text": "unplayed",
+            "sleeve_label": "Near Mint",
+            "media_label": "Near Mint",
+            "label_confidence": 1.0,
+        }
+        adequate = {
+            "item_id": "ok_1",
+            "source": "discogs",
+            "text": (
+                "jacket has corner wear and ring wear, "
+                "vinyl plays cleanly with no pops"
+            ),
+            "sleeve_label": "Very Good",
+            "media_label": "Near Mint",
+            "label_confidence": 1.0,
+        }
+        with open(processed / "discogs_processed.jsonl", "w") as f:
+            f.write(json.dumps(thin) + "\n")
+            f.write(json.dumps(adequate) + "\n")
+        with open(processed / "ebay_processed.jsonl", "w") as f:
+            pass
+
+        cfg_path = Path(test_config)
+        with open(cfg_path) as f:
+            cfg = yaml.safe_load(f)
+        cfg["data"]["harmonization"]["exclude_thin_notes"] = True
+        thin_cfg = cfg_path.parent / "harmonize_exclude_thin.yaml"
+        with open(thin_cfg, "w") as f:
+            yaml.dump(cfg, f, default_flow_style=False, sort_keys=False)
+
+        h = LabelHarmonizer(
+            config_path=str(thin_cfg),
+            guidelines_path=guidelines_path,
+        )
+        records = h.run(dry_run=True)
+        assert len(records) == 1
+        assert records[0]["item_id"] == "ok_1"
+        assert h._stats["drops"].get("thin_note_inadequate") == 1

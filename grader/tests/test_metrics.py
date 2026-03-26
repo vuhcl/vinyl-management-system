@@ -9,7 +9,11 @@ from grader.src.evaluation.metrics import (
     compare_models,
     compute_ece,
     compute_metrics,
+    compute_metrics_from_label_strings,
+    compute_rule_override_audit,
     log_metrics_to_mlflow,
+    remap_true_and_encode_predictions,
+    substitute_model_when_pred_excellent,
 )
 
 
@@ -146,6 +150,95 @@ class TestComputeECE:
         y_proba[:, 0] = 1.0
         ece = compute_ece(y_true, y_proba)
         assert ece < 0.05
+
+
+class TestComputeRuleOverrideAudit:
+    def test_helpful_and_harmful_counts(self, fitted_encoders):
+        enc = fitted_encoders["sleeve"]
+        classes = enc.classes_
+        # Two samples: idx 0 and 1
+        y_true = np.array([0, 1])
+        before = [str(classes[0]), str(classes[1])]
+        # First unchanged; second "harmful" if we flip away from true
+        after = [str(classes[0]), str(classes[0])]
+        aud = compute_rule_override_audit(
+            y_true, before, after, enc.classes_, target="sleeve", split="test"
+        )
+        assert aud["n_changed"] == 1
+        assert aud["n_harmful"] == 1
+        assert aud["n_helpful"] == 0
+        assert aud["override_precision"] == 0.0
+
+    def test_helpful_override(self, fitted_encoders):
+        enc = fitted_encoders["sleeve"]
+        classes = enc.classes_
+        y_true = np.array([1])
+        before = [str(classes[0])]
+        after = [str(classes[1])]
+        aud = compute_rule_override_audit(
+            y_true, before, after, enc.classes_, target="sleeve", split="test"
+        )
+        assert aud["n_helpful"] == 1
+        assert aud["n_harmful"] == 0
+        assert aud["override_precision"] == 1.0
+
+
+class TestSubstituteExcellent:
+    def test_replaces_excellent_with_model(self):
+        before = ["Very Good Plus", "Near Mint", "Excellent"]
+        after = ["Excellent", "Near Mint", "Excellent"]
+        out = substitute_model_when_pred_excellent(after, before)
+        # Rows with rule output Excellent use model label (last row model was already Excellent)
+        assert out == ["Very Good Plus", "Near Mint", "Excellent"]
+
+    def test_length_mismatch_raises(self):
+        with pytest.raises(ValueError, match="same length"):
+            substitute_model_when_pred_excellent(["a"], ["a", "b"])
+
+
+class TestComputeMetricsFromLabelStrings:
+    def test_matches_integer_predictions(self, fitted_encoders):
+        """String preds identical to encoded y_true should yield F1 = 1."""
+        enc = fitted_encoders["sleeve"]
+        n_cls = len(enc.classes_)
+        n = n_cls * 3
+        y_true = np.tile(np.arange(n_cls), 3)
+        labels = [str(enc.classes_[i]) for i in y_true]
+        result = compute_metrics_from_label_strings(
+            y_true,
+            labels,
+            enc.classes_,
+            target="sleeve",
+        )
+        assert result["macro_f1"] == pytest.approx(1.0, abs=0.01)
+        assert result["accuracy"] == pytest.approx(1.0, abs=0.01)
+        assert result["ece"] is None
+
+    def test_pred_label_missing_from_encoder_expands_space(
+        self, fitted_encoders
+    ):
+        """Predictions may use grades absent from an older encoder (e.g. Excellent)."""
+        enc = fitted_encoders["sleeve"]
+        y_true = np.array([0])
+        r = compute_metrics_from_label_strings(
+            y_true,
+            ["NotARealGrade"],
+            enc.classes_,
+            target="sleeve",
+        )
+        assert "NotARealGrade" in r["class_names"]
+
+
+class TestRemapTrueAndEncode:
+    def test_adds_excellent_to_space(self):
+        class_names = np.array(["Near Mint", "Very Good"])
+        y_true = np.array([0, 1, 0])
+        y_rem, combined, (yp,) = remap_true_and_encode_predictions(
+            y_true, class_names, ["Excellent", "Very Good", "Near Mint"]
+        )
+        assert "Excellent" in combined
+        assert y_rem.shape == y_true.shape
+        assert len(yp) == 3
 
 
 class TestCompareModels:

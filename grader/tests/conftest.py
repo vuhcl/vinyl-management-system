@@ -110,15 +110,20 @@ GRADE_TEXT_VARIANTS = {
 @pytest.fixture(scope="session")
 def tmp_dirs(tmp_path_factory):
     base = tmp_path_factory.mktemp("grader_test")
+    mlflow_dir = base / "mlflow"
     dirs = {
         "raw": base / "data" / "raw",
         "processed": base / "data" / "processed",
         "splits": base / "data" / "splits",
         "artifacts": base / "artifacts",
         "reports": base / "reports",
-        "mlruns": base / "experiments" / "mlruns",
+        "mlflow_dir": mlflow_dir,
+        # SQLite file — parent dir only is created (do not mkdir this path).
+        "mlflow_db": mlflow_dir / "tracking.db",
     }
-    for d in dirs.values():
+    for key, d in dirs.items():
+        if key == "mlflow_db":
+            continue
         d.mkdir(parents=True, exist_ok=True)
     (dirs["artifacts"] / "features").mkdir(parents=True, exist_ok=True)
     return dirs
@@ -147,7 +152,6 @@ def test_config(tmp_dirs, guidelines_path):
             "base_url": "https://api.discogs.com",
             "token": "TEST_TOKEN",
             "rate_limit_per_minute": 60,
-            "marketplace_endpoint": "/marketplace/search",
         },
         "ebay": {
             "base_url": "https://api.ebay.com/buy/browse/v1",
@@ -161,6 +165,12 @@ def test_config(tmp_dirs, guidelines_path):
             "discogs": {
                 "format_filter": "Vinyl",
                 "target_per_grade": 10,
+                "max_public_inventory_pages": 100,
+                "inventory_sellers": ["fixture_seller"],
+                "generic_note_filter": {
+                    "enabled": False,
+                    "strip_boilerplate": False,
+                },
             },
             "ebay": {
                 "min_text_length": 3,
@@ -221,6 +231,15 @@ def test_config(tmp_dirs, guidelines_path):
                 "unable to test",
                 "no turntable",
             ],
+            "description_adequacy": {
+                "enabled": True,
+                "drop_insufficient_from_training": False,
+                "require_both_for_training": True,
+                "min_chars_sleeve_fallback": 56,
+                "user_prompt_sleeve": "Add sleeve detail.",
+                "user_prompt_media": "Add media detail.",
+                "sleeve_evidence_terms": ["jacket", "cover", "corner"],
+            },
         },
         "rules": {
             "guidelines_path": guidelines_path,
@@ -270,7 +289,9 @@ def test_config(tmp_dirs, guidelines_path):
         },
         "mlflow": {
             "experiment_name": "test_vinyl_grader",
-            "tracking_uri": str(tmp_dirs["mlruns"]),
+            "tracking_uri": (
+                "sqlite:///" + tmp_dirs["mlflow_db"].resolve().as_posix()
+            ),
             "tags": {"project": "vinyl_collector_ai", "module": "grader"},
         },
         "export": {
