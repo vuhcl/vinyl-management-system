@@ -27,5 +27,6 @@ ebay:
   trusted_sellers: []              # populated in grader/configs/grader.yaml
 
 mlflow:
-  tracking_uri: ./experiments/mlruns
+  # Remote tracking: set MLFLOW_TRACKING_URI in the environment.
+  # Grader uses grader.yaml → tracking_uri_fallback when the env var is unset.
   artifact_location: ./artifacts

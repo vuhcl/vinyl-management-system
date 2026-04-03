@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=61", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vinyl-core"
+version = "0.1.0"
+description = "Core config, auth, and job helpers"
+requires-python = ">=3.12"
+dependencies = [
+    "pyyaml>=6.0",
+]
+
+[tool.setuptools.packages.find]
+where = [".."]
+include = ["core"]
