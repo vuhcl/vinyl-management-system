@@ -24,7 +24,7 @@ presets:
     dropout: 0.3
     weight_decay: 0.01
     warmup_ratio: 0.1
-    early_stopping_patience: 3
+    early_stopping_patience: 6
     media_evidence_aux:
       enabled: true
       loss_weight: 0.25
@@ -36,7 +36,7 @@ presets:
     dropout: 0.4
     weight_decay: 0.12
     warmup_ratio: 0.12
-    early_stopping_patience: 4
+    early_stopping_patience: 6
     media_evidence_aux:
       enabled: true
       loss_weight: 0.1
@@ -48,7 +48,7 @@ presets:
     dropout: 0.35
     weight_decay: 0.05
     warmup_ratio: 0.12
-    early_stopping_patience: 4
+    early_stopping_patience: 6
     media_evidence_aux:
       enabled: true
       loss_weight: 0.15
@@ -60,7 +60,7 @@ presets:
     dropout: 0.35
     weight_decay: 0.06
     warmup_ratio: 0.12
-    early_stopping_patience: 4
+    early_stopping_patience: 6
     media_evidence_aux:
       enabled: true
       loss_weight: 0.15
@@ -72,7 +72,7 @@ presets:
     dropout: 0.35
     weight_decay: 0.05
     warmup_ratio: 0.1
-    early_stopping_patience: 3
+    early_stopping_patience: 6
     media_evidence_aux:
       enabled: false
 
@@ -84,7 +84,7 @@ presets:
     dropout: 0.35
     weight_decay: 0.04
     warmup_ratio: 0.1
-    early_stopping_patience: 3
+    early_stopping_patience: 6
     media_evidence_aux:
       enabled: true
       loss_weight: 0.2

@@ -15,8 +15,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+import mlflow
 import yaml
 
+from grader.src.mlflow_tracking import configure_mlflow_from_config
 from grader.src.models.transformer import TransformerTrainer
 
 logging.basicConfig(
@@ -113,6 +115,23 @@ def main() -> None:
         help="Do not create MLflow runs",
     )
     parser.add_argument(
+        "--register",
+        action="store_true",
+        default=True,
+        help="Register the best-performing run to the MLflow model registry (default: true)",
+    )
+    parser.add_argument(
+        "--no-register",
+        dest="register",
+        action="store_false",
+        help="Skip model registry registration",
+    )
+    parser.add_argument(
+        "--registry-model-name",
+        default="VinylGrader",
+        help="Registered model name in the MLflow model registry",
+    )
+    parser.add_argument(
         "--dry-run",
         action="store_true",
         help="One epoch per preset, no saves (smoke test)",
@@ -170,6 +189,9 @@ def main() -> None:
         "hparams_json",
     ]
 
+    # preset_key → {"run_id": str, "test_mean_macro_f1": float}
+    run_registry: dict[str, dict] = {}
+
     for key in chosen:
         spec = all_presets[key]
         desc = str(spec.get("description", ""))
@@ -212,6 +234,57 @@ def main() -> None:
             summ["test_mean_macro_f1"],
             summ["sleeve_train_test_gap"],
         )
+
+        # Track run ID for model registration
+        if not args.skip_mlflow and not args.dry_run:
+            run_registry[key] = {
+                "run_id": out.get("mlflow_run_id", ""),
+                "test_mean_macro_f1": summ["test_mean_macro_f1"],
+                "preset": key,
+            }
+
+    # -----------------------------------------------------------------------
+    # Register the best run to the MLflow model registry
+    # -----------------------------------------------------------------------
+    if (
+        args.register
+        and not args.skip_mlflow
+        and not args.dry_run
+        and run_registry
+    ):
+        best = max(run_registry.values(), key=lambda x: x["test_mean_macro_f1"])
+        best_run_id = best["run_id"]
+        if best_run_id:
+            configure_mlflow_from_config(cfg)
+            model_uri = f"runs:/{best_run_id}/vinyl_grader"
+            try:
+                mv = mlflow.register_model(
+                    model_uri=model_uri,
+                    name=args.registry_model_name,
+                    tags={
+                        "preset": best["preset"],
+                        "test_mean_macro_f1": str(
+                            round(best["test_mean_macro_f1"], 4)
+                        ),
+                    },
+                )
+                logger.info(
+                    "Registered model '%s' version %s from run %s (preset=%s, "
+                    "test_mean_macro_f1=%.4f)",
+                    args.registry_model_name,
+                    mv.version,
+                    best_run_id,
+                    best["preset"],
+                    best["test_mean_macro_f1"],
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Model registration failed: %s", exc)
+        else:
+            logger.warning(
+                "Could not register: run_id not captured for preset '%s'. "
+                "Re-run with MLflow enabled to register manually.",
+                best["preset"],
+            )
 
 
 if __name__ == "__main__":

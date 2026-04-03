@@ -26,6 +26,10 @@ def run_discogs_ingest(
 
     Returns paths to written files: collection_csv, wantlist_csv.
     """
+    from shared.project_env import load_project_dotenv
+
+    load_project_dotenv()
+
     from shared.discogs_api import DiscogsClient
 
     root = get_project_root()
@@ -64,6 +68,10 @@ def run_full_ingest(
     ratings/albums if from AOTY) to data_dir so the recommender pipeline can
     use them.
     """
+    from shared.project_env import load_project_dotenv
+
+    load_project_dotenv()
+
     from recommender.src.data.ingest import ingest_all
 
     root = get_project_root()

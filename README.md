@@ -23,14 +23,11 @@ Shared infrastructure: **Discogs API** client and **AOTY** scraped-data loader u
 # Clone and enter project
 cd vinyl_management_system
 
-# Create venv and install
-python3.12 -m venv .venv
-source .venv/bin/activate   # Windows: .venv\Scripts\activate
-pip install -r requirements.txt
-pip install -r web/requirements.txt
+# Install (from repo root; requires [uv](https://docs.astral.sh/uv/))
+uv sync --extra test
 
 # Run the web app (from project root)
-uvicorn web.app.main:app --reload
+uv run uvicorn web.app.main:app --reload
 ```
 
 Open **http://127.0.0.1:8000** → [Log in with Discogs](http://127.0.0.1:8000/auth/login) (paste a [personal token](https://www.discogs.com/settings/developers)) → [Sync / Ingest](http://127.0.0.1:8000/ingest) to pull your collection and wantlist into `data/raw/`.
@@ -66,16 +63,19 @@ Full layout and how components coordinate: **[PROJECT_STRUCTURE.md](PROJECT_STRU
 
 ### Install
 
-```bash
-pip install -r requirements.txt
-pip install -r web/requirements.txt
-```
-
-Optional: install in editable mode so imports resolve from the repo root:
+This repo is a **uv workspace** (`[tool.uv.workspace]` in `pyproject.toml`). From the repo root:
 
 ```bash
-pip install -e .
+uv sync --extra test
 ```
+
+That installs `vinyl-shared`, `vinyl-core`, `vinyl-grader[serve]`, `vinyl-recommender`, `vinyl-price-estimator`, and `vinyl-web` together.
+
+**Without uv:** from the repo root, install each workspace package in dependency order (shared first), e.g. `pip install -e ./shared -e ./core -e ./grader -e ./recommender -e ./price_estimator -e ./web -e .`, or use `pip install -e .` after ensuring the root `pyproject.toml` resolves workspace members (pip 23+ with PEP 660).
+
+**Minimal environment** (e.g. grader API only): `uv sync --package vinyl-grader --extra serve` (see [`grader/Dockerfile`](grader/Dockerfile)).
+
+**Gradient boosting (price estimator):** `uv sync --package vinyl-price-estimator --extra lgb` (optional `lightgbm`).
 
 ### Config
 

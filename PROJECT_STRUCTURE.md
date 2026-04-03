@@ -11,7 +11,7 @@ vinyl_management_system/
 ├── README.md
 ├── PROJECT_STRUCTURE.md          # This file
 ├── pyproject.toml
-├── requirements.txt
+├── uv.lock                    # Pinned deps (uv); optional for pip-only workflows
 ├── configs/
 │   └── base.yaml                 # Shared config (paths, Discogs, AOTY, recommender params)
 │
@@ -66,7 +66,7 @@ vinyl_management_system/
 │   │       ├── auth.py             # Login (Discogs token), /auth/me
 │   │       ├── ingest.py           # POST /ingest/sync, /ingest/full
 │   │       └── ml.py               # /api/recommendations, /api/condition, /api/price
-│   ├── requirements.txt
+│   ├── pyproject.toml              # vinyl-web (workspace member)
 │   └── README.md
 │
 ├── data/                           # Shared data (default)
@@ -102,7 +102,7 @@ vinyl_management_system/
 
 ## Running the stack
 
-- **Install**: From project root, `pip install -r requirements.txt` and `pip install -r web/requirements.txt`.
+- **Install**: From project root, `uv sync --extra test` (see root `README.md`).
 - **Web app**: `uvicorn web.app.main:app --reload` (from project root, so `core`, `shared`, `recommender`, etc. are on `PYTHONPATH`).
 - **Ingest**: Use the web UI (Login → Ingest) or call POST `/ingest/sync` with a logged-in session.
 - **Recommender**: After ingest, run `python -m recommender.pipeline --config configs/base.yaml`.
