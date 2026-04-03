@@ -277,8 +277,8 @@ models:
     dropout:                0.35
     learning_rate:          1.5e-4
     batch_size:             24
-    epochs:                 20
-    early_stopping_patience: 3
+    epochs:                 40
+    early_stopping_patience: 6
     class_weight:           balanced
     random_state:           42
     weight_decay:           0.04    # AdamW L2; raise to reduce overfit
@@ -310,13 +310,15 @@ evaluation:
 # ------------------------------------------------------------
 # MLflow
 # ------------------------------------------------------------
-# Use a SQL-backed store (metadata). Plain directories under ./mlruns are
-# deprecated as the tracking backend (see MLflow GH #18534). Artifacts
-# (plots, models) still land under the experiment’s artifact_uri (often
-# ./mlruns/... when using the default local artifact root).
+# Primary URI: set MLFLOW_TRACKING_URI (e.g. http://GCP_HOST:5000).
+# If unset, tracking_uri_fallback is used (local SQLite metadata DB).
+# Artifacts follow the server’s configured artifact root.
 mlflow:
   experiment_name:    vinyl_grader
-  tracking_uri:       sqlite:///grader/experiments/mlflow.db
+  # Register transformer pyfunc after full pipeline train (models:/name/...)
+  registry_model_name: VinylGrader
+  register_after_pipeline: true
+  tracking_uri_fallback: sqlite:///grader/experiments/mlflow.db
   tags:
     project:  vinyl_collector_ai
     module:   grader
