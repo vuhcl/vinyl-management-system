@@ -41,6 +41,7 @@ import torch
 import yaml
 from transformers import DistilBertTokenizerFast
 
+from grader.src.mlflow_tracking import configure_mlflow_from_config
 from grader.src.data.preprocess import Preprocessor
 from grader.src.features.tfidf_features import TFIDFFeatureBuilder
 from grader.src.models.baseline import BaselineModel
@@ -120,8 +121,7 @@ class CoreMLExporter:
         self.dropout     = t_cfg["dropout"]
 
         # MLflow
-        mlflow.set_tracking_uri(self.config["mlflow"]["tracking_uri"])
-        mlflow.set_experiment(self.config["mlflow"]["experiment_name"])
+        configure_mlflow_from_config(self.config)
 
     # -----------------------------------------------------------------------
     # Config loading

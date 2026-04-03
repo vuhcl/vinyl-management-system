@@ -49,6 +49,10 @@ from transformers import (
 )
 
 from grader.src.evaluation.metrics import compute_metrics, log_metrics_to_mlflow
+from grader.src.mlflow_tracking import (
+    configure_mlflow_from_config,
+    is_remote_mlflow_tracking_uri,
+)
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -331,8 +335,9 @@ class TransformerTrainer:
         models.transformer.*        — all model and training hyperparameters
         paths.splits                — JSONL split files
         paths.artifacts             — output directory
-        mlflow.tracking_uri
-        mlflow.experiment_name
+        mlflow.tracking_uri / experiment_name
+            (configure_mlflow_from_config: env MLFLOW_TRACKING_URI
+            overrides mlflow.tracking_uri_fallback in grader.yaml)
     """
 
     def __init__(
@@ -398,8 +403,7 @@ class TransformerTrainer:
         torch.manual_seed(self.random_state)
         np.random.seed(self.random_state)
 
-        mlflow.set_tracking_uri(self.config["mlflow"]["tracking_uri"])
-        mlflow.set_experiment(self.config["mlflow"]["experiment_name"])
+        configure_mlflow_from_config(self.config)
 
         self.model: Optional[TwoHeadClassifier] = None
         self.tokenizer: Optional[DistilBertTokenizerFast] = None
@@ -1004,8 +1008,49 @@ class TransformerTrainer:
                 log_metrics_to_mlflow(metrics, prefix="transformer")
 
         # Model artifacts
+        track_uri = mlflow.get_tracking_uri() or ""
+        remote = is_remote_mlflow_tracking_uri(track_uri)
+
+        if remote:
+            # Upload the servable bundle first so flaky HTTP runs do not leave a
+            # run with loose files but no vinyl_grader/ MLmodel (registry/FastAPI).
+            try:
+                from grader.src.models.grader_pyfunc import log_pyfunc_model
+
+                log_pyfunc_model(self)
+                logger.info(
+                    "Remote MLflow URI — logged vinyl_grader pyfunc only "
+                    "(weights/config/tokenizer/encoders are inside that bundle)."
+                )
+                return
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "pyfunc logging failed (%s); falling back to loose artifacts "
+                    "(no standalone weights on remote — too large to duplicate).",
+                    exc,
+                )
+            mlflow.log_artifact(str(self.config_path_out))
+            mlflow.log_artifacts(str(self.tokenizer_dir), artifact_path="tokenizer")
+            for target in ("sleeve", "media"):
+                enc_path = self.artifacts_dir / f"label_encoder_{target}.pkl"
+                if enc_path.exists():
+                    mlflow.log_artifact(str(enc_path))
+            return
+
         mlflow.log_artifact(str(self.weights_path))
         mlflow.log_artifact(str(self.config_path_out))
+        mlflow.log_artifacts(str(self.tokenizer_dir), artifact_path="tokenizer")
+        for target in ("sleeve", "media"):
+            enc_path = self.artifacts_dir / f"label_encoder_{target}.pkl"
+            if enc_path.exists():
+                mlflow.log_artifact(str(enc_path))
+
+        try:
+            from grader.src.models.grader_pyfunc import log_pyfunc_model
+
+            log_pyfunc_model(self)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("pyfunc model logging skipped: %s", exc)
 
     # -----------------------------------------------------------------------
     # Orchestration
@@ -1234,7 +1279,9 @@ class TransformerTrainer:
                 }
 
             self.save_model()
+            run_id = ""
             if not skip_mlflow:
+                run_id = mlflow.active_run().info.run_id if mlflow.active_run() else ""
                 self._log_mlflow(eval_results, training_summary)
 
         return {
@@ -1242,6 +1289,7 @@ class TransformerTrainer:
             "encoders": self.encoders,
             "eval": eval_results,
             "training": training_summary,
+            "mlflow_run_id": run_id,
         }
 
 

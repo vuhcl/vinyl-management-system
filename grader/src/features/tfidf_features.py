@@ -34,6 +34,8 @@ import yaml
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.preprocessing import LabelEncoder
 
+from grader.src.mlflow_tracking import configure_mlflow_from_config
+
 # ---------------------------------------------------------------------------
 # Logging
 # ---------------------------------------------------------------------------
@@ -195,8 +197,7 @@ class TFIDFFeatureBuilder:
         }
 
         # MLflow
-        mlflow.set_tracking_uri(self.config["mlflow"]["tracking_uri"])
-        mlflow.set_experiment(self.config["mlflow"]["experiment_name"])
+        configure_mlflow_from_config(self.config)
 
     # -----------------------------------------------------------------------
     # Config loading

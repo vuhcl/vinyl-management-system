@@ -35,6 +35,7 @@ from typing import Optional
 import mlflow
 import yaml
 
+from grader.src.mlflow_tracking import configure_mlflow_from_config
 from grader.src.data.harmonize_labels import LabelHarmonizer
 from grader.src.data.ingest_discogs import DiscogsIngester
 from grader.src.data.ingest_ebay import EbayIngester
@@ -101,9 +102,8 @@ class Pipeline:
         # Paths
         self.artifacts_dir = Path(self.config["paths"]["artifacts"])
 
-        # MLflow
-        mlflow.set_tracking_uri(self.config["mlflow"]["tracking_uri"])
-        mlflow.set_experiment(self.config["mlflow"]["experiment_name"])
+        # MLflow (MLFLOW_TRACKING_URI env overrides tracking_uri_fallback)
+        configure_mlflow_from_config(self.config)
 
         # Lazy-loaded inference components — initialized on first predict call
         self._preprocessor: Optional[Preprocessor]        = None
@@ -146,8 +146,49 @@ class Pipeline:
         return self._tfidf
 
     # -----------------------------------------------------------------------
-    # Training pipeline
+    # MLflow model registry (full pipeline)
     # -----------------------------------------------------------------------
+    def _register_transformer_to_registry(
+        self,
+        transformer_results: dict,
+        *,
+        want_register: bool,
+        registry_model_name: str,
+    ) -> None:
+        if not want_register:
+            return
+        run_id = (transformer_results or {}).get("mlflow_run_id") or ""
+        if not run_id:
+            logger.warning(
+                "Skipping MLflow model registry: empty mlflow_run_id "
+                "(enable MLflow for the transformer step to register)."
+            )
+            return
+        configure_mlflow_from_config(self.config)
+        model_uri = f"runs:/{run_id}/vinyl_grader"
+        try:
+            ev = transformer_results.get("eval", {}).get("test", {})
+            s_f1 = float(ev.get("sleeve", {}).get("macro_f1", 0.0))
+            m_f1 = float(ev.get("media", {}).get("macro_f1", 0.0))
+            mean_f1 = (s_f1 + m_f1) / 2.0
+            mv = mlflow.register_model(
+                model_uri=model_uri,
+                name=registry_model_name,
+                tags={
+                    "source": "full_pipeline",
+                    "test_mean_macro_f1": str(round(mean_f1, 4)),
+                },
+            )
+            logger.info(
+                "Registered model '%s' version %s from run %s (%s)",
+                registry_model_name,
+                mv.version,
+                run_id,
+                model_uri,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Model registration failed: %s", exc)
+
     def train(
         self,
         skip_ingest: bool = False,
@@ -157,6 +198,8 @@ class Pipeline:
         skip_features: bool = False,
         skip_transformer: bool = False,
         baseline_only: bool = False,
+        register_after_pipeline: bool | None = None,
+        registry_model_name_override: str | None = None,
     ) -> dict:
         """
         Run the full training pipeline end to end.
@@ -180,12 +223,24 @@ class Pipeline:
             skip_features:    skip step 4 — use existing feature matrices
             skip_transformer: skip step 6 — baseline only
             baseline_only:    alias for skip_transformer=True
+            register_after_pipeline: if None, use config ``mlflow.register_after_pipeline``
+            registry_model_name_override: if set, overrides ``mlflow.registry_model_name``
 
         Returns:
             Dict with results from all completed steps.
         """
         skip_transformer = skip_transformer or baseline_only
         results = {}
+
+        mlflow_cfg = self.config.get("mlflow", {})
+        if register_after_pipeline is None:
+            want_registry = bool(mlflow_cfg.get("register_after_pipeline", True))
+        else:
+            want_registry = register_after_pipeline
+        registry_model_name = (
+            (registry_model_name_override or "").strip()
+            or str(mlflow_cfg.get("registry_model_name", "VinylGrader"))
+        )
 
         # Sub-steps (ingest/features/models/calibration) open their own MLflow runs.
         # Avoid opening an outer run here, otherwise nested start_run() calls fail.
@@ -287,6 +342,11 @@ class Pipeline:
                     target: transformer_results["eval"]["test"][target]
                     for target in ["sleeve", "media"]
                 }
+                self._register_transformer_to_registry(
+                    transformer_results,
+                    want_register=want_registry,
+                    registry_model_name=registry_model_name,
+                )
             else:
                 logger.info(
                     "Skipping transformer — baseline only mode."
@@ -1019,6 +1079,16 @@ def main() -> None:
         action="store_true",
         help="Train baseline only — skip transformer",
     )
+    train_parser.add_argument(
+        "--no-register",
+        action="store_true",
+        help="Skip registering the transformer pyfunc to the MLflow model registry",
+    )
+    train_parser.add_argument(
+        "--registry-model-name",
+        default=None,
+        help="Override mlflow.registry_model_name for this run",
+    )
 
     # --- predict subcommand ---
     predict_parser = subparsers.add_parser(
@@ -1069,6 +1139,11 @@ def main() -> None:
             config_path=args.config,
             guidelines_path=args.guidelines,
         )
+        train_kw = {}
+        if args.no_register:
+            train_kw["register_after_pipeline"] = False
+        if args.registry_model_name:
+            train_kw["registry_model_name_override"] = args.registry_model_name
         pipeline.train(
             skip_ingest=args.skip_ingest,
             skip_ebay_ingest=args.skip_ebay_ingest,
@@ -1076,6 +1151,7 @@ def main() -> None:
             skip_preprocess=args.skip_preprocess,
             skip_features=args.skip_features,
             baseline_only=args.baseline_only,
+            **train_kw,
         )
 
     elif args.command == "predict":

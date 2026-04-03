@@ -25,6 +25,8 @@ from typing import Optional
 import mlflow
 import yaml
 
+from grader.src.mlflow_tracking import configure_mlflow_from_config
+
 # ---------------------------------------------------------------------------
 # Logging
 # ---------------------------------------------------------------------------
@@ -102,8 +104,7 @@ class LabelHarmonizer:
         self.report_path.parent.mkdir(parents=True, exist_ok=True)
 
         # MLflow
-        mlflow.set_tracking_uri(self.config["mlflow"]["tracking_uri"])
-        mlflow.set_experiment(self.config["mlflow"]["experiment_name"])
+        configure_mlflow_from_config(self.config)
 
         # Stats — reset on each run()
         self._stats: dict = {}

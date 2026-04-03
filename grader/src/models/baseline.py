@@ -47,6 +47,7 @@ from sklearn.metrics import (
 )
 
 from grader.src.features.tfidf_features import TFIDFFeatureBuilder
+from grader.src.mlflow_tracking import configure_mlflow_from_config
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -217,8 +218,7 @@ class BaselineModel:
         self.grade_ordinal_map = self._load_grade_ordinal_map()
 
         # MLflow
-        mlflow.set_tracking_uri(self.config["mlflow"]["tracking_uri"])
-        mlflow.set_experiment(self.config["mlflow"]["experiment_name"])
+        configure_mlflow_from_config(self.config)
 
     # -----------------------------------------------------------------------
     # Config loading
