@@ -5,14 +5,39 @@ from __future__ import annotations
 import json
 import logging
 import os
+from contextlib import contextmanager
 from pathlib import Path
 
 import mlflow
+import torch
 from google.auth.exceptions import InvalidOperation as GoogleAuthInvalidOperation
 
 from grader.src.project_env import load_project_dotenv
 
 logger = logging.getLogger(__name__)
+
+
+@contextmanager
+def _torch_load_maps_storages_to_cpu():
+    """
+    MLflow unpickles ``python_model.pkl`` via cloudpickle, which calls
+    ``torch.load(..., weights_only=False)`` without ``map_location``. Checkpoints
+    produced on Apple MPS then fail on Linux (no MPS). Remap all storages to CPU
+    for the duration of ``mlflow.pyfunc.load_model`` only.
+    """
+    orig = torch.load
+
+    def _load(*args, **kwargs):
+        kw = dict(kwargs)
+        if "map_location" not in kw:
+            kw["map_location"] = lambda storage, loc: storage
+        return orig(*args, **kw)
+
+    torch.load = _load
+    try:
+        yield
+    finally:
+        torch.load = orig
 
 
 def _ensure_google_cloud_project_from_sa_json() -> None:
@@ -86,7 +111,8 @@ def load_grader_pyfunc():
 
     logger.info("Loading pyfunc model: %s", model_uri)
     try:
-        return mlflow.pyfunc.load_model(model_uri)
+        with _torch_load_maps_storages_to_cpu():
+            return mlflow.pyfunc.load_model(model_uri)
     except FileNotFoundError as exc:
         if "python_model.pkl" in str(exc):
             raise RuntimeError(
