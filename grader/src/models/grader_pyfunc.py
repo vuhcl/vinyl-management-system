@@ -146,19 +146,21 @@ class VinylGraderModel(mlflow.pyfunc.PythonModel):
         with open(arts["encoder_media"], "rb") as f:
             self.enc_media = pickle.load(f)
 
+        # Build on CPU, load weights with map_location=cpu so checkpoints saved on
+        # MPS/CUDA unpickle on Linux/Docker (no MPS; CUDA optional).
         self.model = _TwoHeadClassifier(
             n_sleeve_classes=cfg["n_sleeve_classes"],
             n_media_classes=cfg["n_media_classes"],
             dropout=float(cfg.get("dropout", 0.3)),
             n_evidence_classes=int(cfg.get("n_evidence_classes", 0)),
             base_model=cfg["base_model"],
-        ).to(self.device)
-
-        self.model.load_state_dict(
-            torch.load(
-                arts["transformer_weights"], map_location=self.device
-            )
         )
+        state = torch.load(
+            arts["transformer_weights"],
+            map_location=torch.device("cpu"),
+        )
+        self.model.load_state_dict(state)
+        self.model.to(self.device)
         self.model.eval()
         logger.info(
             "VinylGraderModel loaded — device=%s "

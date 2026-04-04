@@ -64,6 +64,47 @@ def resolve_mlflow_tracking_uri(mlflow_cfg: Mapping[str, Any] | None) -> str:
     return _DEFAULT_LOCAL
 
 
+def _walk_run_artifact_paths(run_id: str, path: str | None) -> list[str]:
+    """
+    List artifact file paths under *path* (recursive).
+
+    Empty on error or no children.
+    """
+    from mlflow.tracking import MlflowClient
+
+    client = MlflowClient()
+    out: list[str] = []
+
+    def walk(prefix: str | None) -> None:
+        try:
+            batch = client.list_artifacts(run_id, path=prefix)
+        except Exception:
+            return
+        for a in batch:
+            if a.is_dir:
+                walk(a.path)
+            else:
+                out.append(a.path)
+
+    walk(path)
+    return out
+
+
+def vinyl_grader_pyfunc_has_python_model(run_id: str) -> bool:
+    """
+    True if the run has a pyfunc pickle under ``vinyl_grader/``.
+
+    Call before ``register_model(..., "runs:/<id>/vinyl_grader")`` so a failed
+    remote ``log_pyfunc_model`` (fallback to loose artifacts only) does not
+    register a broken version.
+    """
+    paths = _walk_run_artifact_paths(run_id, "vinyl_grader")
+    return any(
+        p.endswith("python_model.pkl") or p.endswith("python_model.pkl.gz")
+        for p in paths
+    )
+
+
 def configure_mlflow_from_config(
     config: MutableMapping[str, Any],
 ) -> str:

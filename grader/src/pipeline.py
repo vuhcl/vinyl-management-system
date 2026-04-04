@@ -35,7 +35,10 @@ from typing import Optional
 import mlflow
 import yaml
 
-from grader.src.mlflow_tracking import configure_mlflow_from_config
+from grader.src.mlflow_tracking import (
+    configure_mlflow_from_config,
+    vinyl_grader_pyfunc_has_python_model,
+)
 from grader.src.data.harmonize_labels import LabelHarmonizer
 from grader.src.data.ingest_discogs import DiscogsIngester
 from grader.src.data.ingest_ebay import EbayIngester
@@ -165,6 +168,16 @@ class Pipeline:
             )
             return
         configure_mlflow_from_config(self.config)
+        if not vinyl_grader_pyfunc_has_python_model(run_id):
+            logger.warning(
+                "Skipping MLflow model registry: run %s has no "
+                "vinyl_grader/python_model.pkl. Remote pyfunc logging likely failed "
+                "(see training logs for 'pyfunc logging failed'); increase "
+                "MLFLOW_HTTP_REQUEST_TIMEOUT and related upload settings — "
+                "grader/serving/README.md.",
+                run_id,
+            )
+            return
         model_uri = f"runs:/{run_id}/vinyl_grader"
         try:
             ev = transformer_results.get("eval", {}).get("test", {})
