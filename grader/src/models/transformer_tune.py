@@ -18,7 +18,10 @@ from typing import Any
 import mlflow
 import yaml
 
-from grader.src.mlflow_tracking import configure_mlflow_from_config
+from grader.src.mlflow_tracking import (
+    configure_mlflow_from_config,
+    vinyl_grader_pyfunc_has_python_model,
+)
 from grader.src.models.transformer import TransformerTrainer
 
 logging.basicConfig(
@@ -256,29 +259,36 @@ def main() -> None:
         best_run_id = best["run_id"]
         if best_run_id:
             configure_mlflow_from_config(cfg)
-            model_uri = f"runs:/{best_run_id}/vinyl_grader"
-            try:
-                mv = mlflow.register_model(
-                    model_uri=model_uri,
-                    name=args.registry_model_name,
-                    tags={
-                        "preset": best["preset"],
-                        "test_mean_macro_f1": str(
-                            round(best["test_mean_macro_f1"], 4)
-                        ),
-                    },
-                )
-                logger.info(
-                    "Registered model '%s' version %s from run %s (preset=%s, "
-                    "test_mean_macro_f1=%.4f)",
-                    args.registry_model_name,
-                    mv.version,
+            if not vinyl_grader_pyfunc_has_python_model(best_run_id):
+                logger.warning(
+                    "Skipping model registry: run %s has no "
+                    "vinyl_grader/python_model.pkl (pyfunc logging may have failed).",
                     best_run_id,
-                    best["preset"],
-                    best["test_mean_macro_f1"],
                 )
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("Model registration failed: %s", exc)
+            else:
+                model_uri = f"runs:/{best_run_id}/vinyl_grader"
+                try:
+                    mv = mlflow.register_model(
+                        model_uri=model_uri,
+                        name=args.registry_model_name,
+                        tags={
+                            "preset": best["preset"],
+                            "test_mean_macro_f1": str(
+                                round(best["test_mean_macro_f1"], 4)
+                            ),
+                        },
+                    )
+                    logger.info(
+                        "Registered model '%s' version %s from run %s (preset=%s, "
+                        "test_mean_macro_f1=%.4f)",
+                        args.registry_model_name,
+                        mv.version,
+                        best_run_id,
+                        best["preset"],
+                        best["test_mean_macro_f1"],
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("Model registration failed: %s", exc)
         else:
             logger.warning(
                 "Could not register: run_id not captured for preset '%s'. "
