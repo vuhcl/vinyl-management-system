@@ -52,6 +52,21 @@ logger = logging.getLogger(__name__)
 _DEFAULT_BATCH_SIZE = 32
 _DEFAULT_MAX_LENGTH = 128
 
+
+def _torch_load_state_dict_cpu(path: str) -> Any:
+    """
+    Load a checkpoint onto CPU regardless of save device (MPS/CUDA).
+
+    ``map_location=torch.device('cpu')`` is not always enough for legacy
+    ``transformer_weights.pt`` files on Linux/Docker (MPS is unknown there).
+    """
+    return torch.load(
+        path,
+        map_location=lambda storage, _: storage,
+        weights_only=False,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Minimal self-contained TwoHeadClassifier (inference only)
 # ---------------------------------------------------------------------------
@@ -155,10 +170,7 @@ class VinylGraderModel(mlflow.pyfunc.PythonModel):
             n_evidence_classes=int(cfg.get("n_evidence_classes", 0)),
             base_model=cfg["base_model"],
         )
-        state = torch.load(
-            arts["transformer_weights"],
-            map_location=torch.device("cpu"),
-        )
+        state = _torch_load_state_dict_cpu(arts["transformer_weights"])
         self.model.load_state_dict(state)
         self.model.to(self.device)
         self.model.eval()

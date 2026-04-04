@@ -133,15 +133,6 @@ docker run --rm -p 8080:8080 \
   vinyl-grader-api:latest
 ```
 
-**One line** (no `\` before the image — a stray `\` there makes Docker report `invalid reference format`):
-
-```bash
-docker run --rm -p 8080:8080 -e MLFLOW_TRACKING_URI=http://YOUR_MLFLOW_HOST:5000 -e MLFLOW_MODEL_URI=models:/VinylGrader/latest -v /ABSOLUTE/PATH/TO/key.json:/secrets/sa.json:ro -e GOOGLE_APPLICATION_CREDENTIALS=/secrets/sa.json vinyl-grader-api:latest
-```
-
-**With `--env-file .env`:** ensure the file sets **`GOOGLE_APPLICATION_CREDENTIALS=/secrets/sa.json`** (path **inside** the container), not your host-only path. Mount the JSON to **`/secrets/sa.json`** as above. Variables in `.env` apply as-is inside the container.
-
-
 On **GCP** (GKE, Cloud Run, Compute Engine), prefer **Workload Identity** or the instance service account instead of a JSON key file; set ADC accordingly so `google-cloud-storage` can reach the bucket.
 
 **Push to a registry** (example):
@@ -152,17 +143,6 @@ docker push YOUR_REGISTRY/vinyl-grader-api:latest
 ```
 
 The final image includes `shared/`, `grader/` (including `grader/configs` for the rule engine), and dependencies from `uv export --package vinyl-grader --extra serve`.
-
----
-
-## MLflow on GCP (GCS artifacts)
-
-1. Run **`mlflow server`** with **`--default-artifact-root gs://YOUR_BUCKET/mlflow-artifacts`** and a durable **`--backend-store-uri`** (e.g. Cloud SQL / Postgres).
-2. **Training:** set **`GOOGLE_APPLICATION_CREDENTIALS`** (or use gcloud ADC) with a service account that can **create** objects in that bucket (e.g. **Storage Object Admin** on the bucket prefix).
-3. **Serving (this API):** use an account that can **read** the same objects (**Storage Object Viewer** is enough).
-4. Set **`MLFLOW_TRACKING_URI`** to the tracking server. Large files are transferred with the **GCS** client libraries, not as one giant HTTP body through the tracker—avoiding the proxy upload/download issues you see with **`mlflow-artifacts`** HTTP storage.
-
-If you put **nginx** (or similar) in front of the MLflow UI or REST API, keep **`proxy_read_timeout`** and **`client_max_body_size`** generous for whatever traffic still flows through HTTP.
 
 ---
 
