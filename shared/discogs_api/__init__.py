@@ -1,9 +1,4 @@
-"""
-Shared Discogs API client.
-
-This mirrors the previous top-level `discogs_api` package so all subprojects
-can import via `shared.discogs_api`.
-"""
+"""Shared Discogs API client (import as ``shared.discogs_api``)."""
 
 from shared.discogs_api.client import (
     DiscogsClient,

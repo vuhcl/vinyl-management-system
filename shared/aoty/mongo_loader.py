@@ -23,6 +23,10 @@ class MongoConfig:
     db_name: str = "music"
     user_ratings_collection: str = "user_ratings"
     albums_collection: str = "albums"
+    # Incremental Discogs ↔ AOTY mapping jobs (see scripts/build_discogs_*).
+    discogs_release_master_collection: str = "discogs_release_master"
+    discogs_master_aoty_collection: str = "discogs_master_aoty"
+    discogs_release_aoty_collection: str = "discogs_release_aoty"
 
 
 def _maybe_float(x: Any) -> float | None:
