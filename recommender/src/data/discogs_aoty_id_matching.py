@@ -11,7 +11,12 @@ Speed / API limits:
   - Optional on-disk cache under `cache_dir` (release→master, search JSON).
   - Minimum spacing between HTTP calls (`min_request_interval_s`).
   - Reads `X-Discogs-Ratelimit-Remaining` and backs off when low.
+<<<<<<< Updated upstream
   - Retries once on HTTP 429 using `Retry-After` when present.
+=======
+  - Retries on HTTP 429 using `Retry-After` when present.
+  - Retries on HTTP 500/502/503/504 with exponential backoff (transient gateway errors).
+>>>>>>> Stashed changes
 """
 
 from __future__ import annotations
@@ -22,15 +27,26 @@ import hashlib
 import json
 import time
 from pathlib import Path
+<<<<<<< Updated upstream
 from typing import Any
+=======
+from typing import Any, Iterable
+>>>>>>> Stashed changes
 
 import pandas as pd
 import requests
 
 
+<<<<<<< Updated upstream
 DISCogs_BASE_URL = "https://api.discogs.com"
 _RELEASE_CACHE_NAME = "release_master.json"
 _SEARCH_CACHE_NAME = "search_database.json"
+=======
+DISCOGS_BASE_URL = "https://api.discogs.com"
+_RELEASE_CACHE_NAME = "release_master.json"
+_SEARCH_CACHE_NAME = "search_database.json"
+_MASTER_CACHE_NAME = "master_detail.json"
+>>>>>>> Stashed changes
 
 
 def _normalize_text(s: str | None) -> str:
@@ -99,6 +115,14 @@ class DiscogsMatchConfig:
     rate_limit_remaining_sleep_below: int = 5
     rate_limit_extra_sleep_s: float = 2.0
     max_429_retries: int = 1
+<<<<<<< Updated upstream
+=======
+    # Transient errors from Discogs (502 Bad Gateway is common during load).
+    max_transient_retries: int = 5
+    transient_http_status_codes: tuple[int, ...] = (500, 502, 503, 504)
+    transient_base_sleep_s: float = 2.0
+    transient_max_sleep_s: float = 60.0
+>>>>>>> Stashed changes
 
 
 @dataclass
@@ -120,6 +144,12 @@ class DiscogsHttpHelper:
     _search_payloads: dict[str, dict[str, Any]] = field(
         default_factory=dict, repr=False
     )
+<<<<<<< Updated upstream
+=======
+    _master_payloads: dict[str, dict[str, Any]] = field(
+        default_factory=dict, repr=False
+    )
+>>>>>>> Stashed changes
     _dirty: bool = field(default=False, repr=False)
 
     def __post_init__(self) -> None:
@@ -136,6 +166,13 @@ class DiscogsHttpHelper:
         assert self.cache_dir is not None
         return self.cache_dir / _SEARCH_CACHE_NAME
 
+<<<<<<< Updated upstream
+=======
+    def _master_path(self) -> Path:
+        assert self.cache_dir is not None
+        return self.cache_dir / _MASTER_CACHE_NAME
+
+>>>>>>> Stashed changes
     def _load_disk(self) -> None:
         if self.cache_dir is None:
             return
@@ -146,12 +183,23 @@ class DiscogsHttpHelper:
         for k, v in sea.items():
             if isinstance(v, dict):
                 self._search_payloads[str(k)] = v
+<<<<<<< Updated upstream
+=======
+        mas = _load_json_dict(self._master_path())
+        for k, v in mas.items():
+            if isinstance(v, dict):
+                self._master_payloads[str(k)] = v
+>>>>>>> Stashed changes
 
     def save_disk(self) -> None:
         if self.cache_dir is None or not self._dirty:
             return
         _atomic_write_json(self._release_path(), self._release_master)
         _atomic_write_json(self._search_path(), self._search_payloads)
+<<<<<<< Updated upstream
+=======
+        _atomic_write_json(self._master_path(), self._master_payloads)
+>>>>>>> Stashed changes
         self._dirty = False
 
     def _throttle(self) -> None:
@@ -184,20 +232,45 @@ class DiscogsHttpHelper:
     ) -> requests.Response:
         self._throttle()
         self.session.headers["Authorization"] = f"Discogs token={self.token}"
+<<<<<<< Updated upstream
         attempt = 0
+=======
+        attempt_429 = 0
+        attempt_transient = 0
+>>>>>>> Stashed changes
         while True:
             resp = self.session.get(
                 url, params=params or {}, timeout=timeout_s
             )
             self._last_request_mono = time.monotonic()
+<<<<<<< Updated upstream
             if resp.status_code == 429 and attempt < self.cfg.max_429_retries:
+=======
+            if resp.status_code == 429 and attempt_429 < self.cfg.max_429_retries:
+>>>>>>> Stashed changes
                 ra = resp.headers.get("Retry-After", "60")
                 try:
                     delay = float(ra)
                 except ValueError:
                     delay = 60.0
                 time.sleep(delay)
+<<<<<<< Updated upstream
                 attempt += 1
+=======
+                attempt_429 += 1
+                continue
+            if (
+                resp.status_code in self.cfg.transient_http_status_codes
+                and attempt_transient < self.cfg.max_transient_retries
+            ):
+                delay = min(
+                    self.cfg.transient_max_sleep_s,
+                    self.cfg.transient_base_sleep_s
+                    * (2**attempt_transient),
+                )
+                time.sleep(delay)
+                attempt_transient += 1
+>>>>>>> Stashed changes
                 continue
             self._post_request_headers(resp)
             return resp
@@ -207,7 +280,11 @@ class DiscogsHttpHelper:
         if key in self._search_payloads:
             return self._search_payloads[key]
 
+<<<<<<< Updated upstream
         url = f"{DISCogs_BASE_URL}/database/search"
+=======
+        url = f"{DISCOGS_BASE_URL}/database/search"
+>>>>>>> Stashed changes
         resp = self._authorized_get(url, params=params)
         resp.raise_for_status()
         data = resp.json()
@@ -228,7 +305,11 @@ class DiscogsHttpHelper:
             except ValueError:
                 return {"master_id": mid}
 
+<<<<<<< Updated upstream
         url = f"{DISCogs_BASE_URL}/releases/{rid}"
+=======
+        url = f"{DISCOGS_BASE_URL}/releases/{rid}"
+>>>>>>> Stashed changes
         resp = self._authorized_get(url)
         resp.raise_for_status()
         data = resp.json()
@@ -242,6 +323,60 @@ class DiscogsHttpHelper:
         self._dirty = True
         return data
 
+<<<<<<< Updated upstream
+=======
+    def get_master_payload(self, master_id: str) -> dict[str, Any]:
+        """GET ``/masters/{id}`` (cached in memory + ``master_detail.json``)."""
+        mid = str(master_id)
+        if mid in self._master_payloads:
+            return self._master_payloads[mid]
+
+        url = f"{DISCOGS_BASE_URL}/masters/{mid}"
+        resp = self._authorized_get(url)
+        resp.raise_for_status()
+        raw = resp.json()
+        data = raw if isinstance(raw, dict) else {}
+        self._master_payloads[mid] = data
+        self._dirty = True
+        return data
+
+
+def parse_discogs_master_artist_title_year(
+    data: dict[str, Any],
+) -> tuple[str, str, int | None]:
+    """Best-effort artist, album title, year from Discogs ``/masters/{id}`` JSON."""
+    artists = data.get("artists") or []
+    artist = ""
+    if isinstance(artists, list) and artists:
+        a0 = artists[0]
+        if isinstance(a0, dict):
+            artist = str(a0.get("name") or "").strip()
+    title = str(data.get("title") or "").strip()
+    year_raw = data.get("year")
+    year: int | None
+    try:
+        year = int(year_raw) if year_raw is not None else None
+    except (TypeError, ValueError):
+        year = None
+    if year is not None and not (1800 <= year <= 2100):
+        year = None
+    return artist, title, year
+
+
+def save_master_to_aoty_json(path: Path, mapping: dict[str, str]) -> None:
+    """Write ``{discogs_master_id: aoty_album_id}`` JSON."""
+    _atomic_write_json(path, dict(sorted(mapping.items())))
+
+
+def load_master_to_aoty_json(path: Path) -> dict[str, str]:
+    raw = _load_json_dict(path)
+    out: dict[str, str] = {}
+    for k, v in raw.items():
+        if isinstance(k, str) and v is not None:
+            out[k] = str(v)
+    return out
+
+>>>>>>> Stashed changes
 
 def _search_discogs_masters(
     *,
@@ -408,6 +543,111 @@ def build_discogs_master_to_aoty_album_id_map(
     return master_to_aoty
 
 
+<<<<<<< Updated upstream
+=======
+def build_discogs_release_to_aoty_map(
+    release_ids: Iterable[str],
+    *,
+    discogs_master_to_aoty: dict[str, str],
+    http: DiscogsHttpHelper,
+) -> dict[str, str]:
+    """
+    For each Discogs release id, resolve master → AOTY album id.
+
+    Returns only releases that map successfully (same semantics as
+    ``map_discogs_release_ids_to_aoty_album_ids`` keep set).
+    """
+    out: dict[str, str] = {}
+    for rid in sorted({str(x) for x in release_ids}):
+        master_id = _get_discogs_release_master_id(http=http, release_id=rid)
+        if master_id is None:
+            continue
+        aoty_id = discogs_master_to_aoty.get(master_id)
+        if aoty_id is not None:
+            out[rid] = aoty_id
+    return out
+
+
+def apply_release_to_aoty_map(
+    df: pd.DataFrame,
+    release_to_aoty: dict[str, str],
+    *,
+    stats_out: dict[str, int] | None = None,
+) -> pd.DataFrame:
+    """
+    Replace ``album_id`` (Discogs release id) using a precomputed
+    ``release_to_aoty`` dict. Rows with unknown releases are dropped.
+    """
+    _empty_stats: dict[str, int] = {
+        "input_rows": 0,
+        "output_rows": 0,
+        "rows_dropped": 0,
+        "unique_discogs_releases": 0,
+        "unique_releases_mapped_to_aoty": 0,
+        "unique_releases_no_master": 0,
+        "unique_releases_master_not_in_aoty_catalog": 0,
+    }
+    if df.empty:
+        if stats_out is not None:
+            stats_out.clear()
+            stats_out.update(_empty_stats)
+        return df
+    if "album_id" not in df.columns:
+        raise ValueError(
+            "Expected df with an `album_id` column (Discogs release_id)."
+        )
+    out = df.copy()
+    out["album_id"] = out["album_id"].astype(str)
+    unique_release_ids = sorted(out["album_id"].unique())
+    mapped = {
+        r: release_to_aoty[r]
+        for r in unique_release_ids
+        if r in release_to_aoty
+    }
+    no_mapping = {r for r in unique_release_ids if r not in release_to_aoty}
+
+    out["album_id_mapped"] = out["album_id"].map(mapped)
+    out = out.dropna(subset=["album_id_mapped"]).copy()
+    out["album_id"] = out["album_id_mapped"].astype(str)
+    result = out.drop(columns=["album_id_mapped"])
+
+    if stats_out is not None:
+        in_rows = int(len(df))
+        out_rows = int(len(result))
+        stats_out.clear()
+        stats_out.update(
+            {
+                "input_rows": in_rows,
+                "output_rows": out_rows,
+                "rows_dropped": in_rows - out_rows,
+                "unique_discogs_releases": len(unique_release_ids),
+                "unique_releases_mapped_to_aoty": len(mapped),
+                "unique_releases_no_master": 0,
+                "unique_releases_master_not_in_aoty_catalog": len(no_mapping),
+            }
+        )
+
+    return result
+
+
+def save_release_to_aoty_json(path: Path, mapping: dict[str, str]) -> None:
+    """Write ``{discogs_release_id: aoty_album_id}`` JSON (sorted keys)."""
+    _atomic_write_json(path, dict(sorted(mapping.items())))
+
+
+def load_release_to_aoty_json(path: Path) -> dict[str, str]:
+    """Load release→AOTY map; non-string values are skipped."""
+    raw = _load_json_dict(path)
+    out: dict[str, str] = {}
+    for k, v in raw.items():
+        if isinstance(k, str) and isinstance(v, str):
+            out[k] = v
+        elif isinstance(k, str) and v is not None:
+            out[k] = str(v)
+    return out
+
+
+>>>>>>> Stashed changes
 def _get_discogs_release_master_id(
     *,
     http: DiscogsHttpHelper,
