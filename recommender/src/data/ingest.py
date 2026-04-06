@@ -7,8 +7,23 @@ Data ingestion for the recommender subproject.
   aoty loader.
   Scrapers and scraped data live elsewhere; point config to that directory.
 
+<<<<<<< Updated upstream
 When Discogs token or AOTY path is not set, falls back to CSV files in
 data_dir.
+=======
+<<<<<<< Updated upstream
+When Discogs token or AOTY path is not set, falls back to CSV files in data_dir.
+=======
+When Discogs token or AOTY path is not set, falls back to CSV files in
+data_dir.
+
+Optional **precomputed** Discogs release → AOTY album id JSON (see
+``scripts/build_discogs_aoty_release_map.py``): set
+``discogs["release_to_aoty_map_path"]`` and either use
+``discogs["skip_live_discogs_aoty_mapping"]=true`` to avoid live HTTP
+matching, or rely on automatic fallback when live matching raises.
+>>>>>>> Stashed changes
+>>>>>>> Stashed changes
 """
 from pathlib import Path
 from typing import cast
@@ -258,7 +273,8 @@ def ingest_all(
     """
     Load all raw inputs. Uses shared Discogs API and AOTY scraped data when configured.
 
-    - discogs: optional dict with use_api (bool), usernames (list[str]), token (str, or use env DISCOGS_USER_TOKEN).
+    - discogs: optional dict with use_api (bool), usernames (list[str]), token (str, or use env DISCOGS_USER_TOKEN),
+      release_to_aoty_map_path (str | Path to JSON), skip_live_discogs_aoty_mapping (bool).
     - aoty_scraped: optional dict with dir (Path), ratings_file (str), albums_file (str).
       When `aoty_scraped.dir` is not set (null), we fall back to loading AOTY data
       from local MongoDB (see `aoty.mongo_loader`) and then fall back to CSV.
@@ -334,11 +350,89 @@ def ingest_all(
         aoty_albums_file=aoty.get("albums_file", "albums.csv"),
     )
 
+<<<<<<< Updated upstream
+=======
+<<<<<<< Updated upstream
+=======
+>>>>>>> Stashed changes
     # If Discogs data came from the API, `collection`/`wantlist` album_id
     # values are Discogs release IDs. Map them to canonical AOTY album_id so
     # the recommender interactions align across sources.
     ingest_metadata: dict = {"discogs_aoty_mapping": None}
+<<<<<<< Updated upstream
     if use_discogs and not albums.empty and discogs_token_resolved:
+=======
+
+    def _resolve_release_to_aoty_path(raw_path: str | Path | None) -> Path | None:
+        if not raw_path:
+            return None
+        p = Path(raw_path).expanduser()
+        candidates = (
+            [p.resolve()]
+            if p.is_absolute()
+            else [
+                (Path.cwd() / p).resolve(),
+                (data_dir / p).resolve(),
+                (data_dir.parent / p).resolve(),
+            ]
+        )
+        for c in candidates:
+            if c.is_file():
+                return c
+        return None
+
+    release_map_path = _resolve_release_to_aoty_path(
+        discogs.get("release_to_aoty_map_path")
+    )
+    release_map: dict[str, str] = {}
+    if release_map_path is not None:
+        try:
+            from recommender.src.data.discogs_aoty_id_matching import (
+                load_release_to_aoty_json,
+            )
+
+            release_map = load_release_to_aoty_json(release_map_path)
+        except Exception:
+            release_map = {}
+
+    def _apply_release_artifact() -> dict:
+        from recommender.src.data.discogs_aoty_id_matching import (
+            apply_release_to_aoty_map,
+        )
+
+        nonlocal collection, wantlist
+        c_stats: dict[str, int] = {}
+        w_stats: dict[str, int] = {}
+        collection = apply_release_to_aoty_map(
+            collection, release_map, stats_out=c_stats
+        )
+        wantlist = apply_release_to_aoty_map(
+            wantlist, release_map, stats_out=w_stats
+        )
+        return {
+            "attempted": True,
+            "mode": "release_to_aoty_artifact",
+            "path": str(release_map_path),
+            "catalog_build": {},
+            "collection_release_map": dict(c_stats),
+            "wantlist_release_map": dict(w_stats),
+        }
+
+    skip_live = bool(discogs.get("skip_live_discogs_aoty_mapping"))
+
+    if use_discogs and skip_live:
+        if release_map:
+            ingest_metadata["discogs_aoty_mapping"] = _apply_release_artifact()
+        else:
+            ingest_metadata["discogs_aoty_mapping"] = {
+                "attempted": True,
+                "error": (
+                    "skip_live_discogs_aoty_mapping is true but "
+                    "release_to_aoty_map_path is missing, unreadable, or empty"
+                ),
+            }
+    elif use_discogs and not albums.empty and discogs_token_resolved:
+>>>>>>> Stashed changes
         if "album_title" in albums.columns and (
             albums["album_title"].astype(str).str.strip().ne("").any()
         ):
@@ -362,6 +456,10 @@ def ingest_all(
                 )
                 mapping_report: dict = {
                     "attempted": True,
+<<<<<<< Updated upstream
+=======
+                    "mode": "live_discogs_http",
+>>>>>>> Stashed changes
                     "catalog_build": {},
                     "collection_release_map": None,
                     "wantlist_release_map": None,
@@ -405,6 +503,7 @@ def ingest_all(
                     http.save_disk()
                 ingest_metadata["discogs_aoty_mapping"] = mapping_report
             except Exception as exc:
+<<<<<<< Updated upstream
                 # Mapping is best-effort; downstream preprocess will filter
                 # based on available album metadata.
                 ingest_metadata["discogs_aoty_mapping"] = {
@@ -412,6 +511,20 @@ def ingest_all(
                     "error": str(exc),
                 }
 
+=======
+                if release_map:
+                    rep = _apply_release_artifact()
+                    rep["live_error"] = str(exc)
+                    rep["mode"] = "release_to_aoty_artifact_after_live_error"
+                    ingest_metadata["discogs_aoty_mapping"] = rep
+                else:
+                    ingest_metadata["discogs_aoty_mapping"] = {
+                        "attempted": True,
+                        "error": str(exc),
+                    }
+
+>>>>>>> Stashed changes
+>>>>>>> Stashed changes
     return {
         "collection": collection,
         "wantlist": wantlist,

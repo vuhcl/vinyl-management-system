@@ -55,19 +55,30 @@ def run_pipeline(
     if not skip_ingest:
         discogs_cfg = config.get("discogs", {})
         aoty_cfg = config.get("aoty_scraped", {})
+        project_root = Path(config_path).resolve().parent.parent
         aoty_dir = aoty_cfg.get("dir")
         if aoty_dir is not None:
             aoty_dir = Path(aoty_dir)
             if not aoty_dir.is_absolute():
                 # Resolve relative to project root (parent of configs/)
-                project_root = Path(config_path).resolve().parent.parent
                 aoty_dir = project_root / aoty_dir
+        release_map_path = discogs_cfg.get("release_to_aoty_map_path")
+        if release_map_path:
+            rp = Path(release_map_path).expanduser()
+            if not rp.is_absolute():
+                release_map_path = str(project_root / rp)
+            else:
+                release_map_path = str(rp)
         raw = ingest_all(
             data_dir,
             discogs={
                 "use_api": discogs_cfg.get("use_api", False),
                 "usernames": discogs_cfg.get("usernames"),
                 "token": discogs_cfg.get("token"),
+                "release_to_aoty_map_path": release_map_path,
+                "skip_live_discogs_aoty_mapping": discogs_cfg.get(
+                    "skip_live_discogs_aoty_mapping", False
+                ),
             } if discogs_cfg else None,
             aoty_scraped={
                 "dir": aoty_dir,

@@ -8,8 +8,17 @@ import pandas as pd
 from recommender.src.data.discogs_aoty_id_matching import (
     DiscogsHttpHelper,
     DiscogsMatchConfig,
+<<<<<<< Updated upstream
     build_discogs_master_to_aoty_album_id_map,
     map_discogs_release_ids_to_aoty_album_ids,
+=======
+    apply_release_to_aoty_map,
+    build_discogs_master_to_aoty_album_id_map,
+    load_release_to_aoty_json,
+    map_discogs_release_ids_to_aoty_album_ids,
+    parse_discogs_master_artist_title_year,
+    save_release_to_aoty_json,
+>>>>>>> Stashed changes
 )
 
 
@@ -145,3 +154,31 @@ def test_discogs_http_helper_disk_cache_roundtrip(tmp_path) -> None:
     h2 = DiscogsHttpHelper(FakeSession(release_master_map={}), "t", cfg, tmp_path)
     assert h2._release_master["500"] == "123"
     assert h2._search_payloads["k1"]["results"][0]["id"] == 1
+<<<<<<< Updated upstream
+=======
+
+
+def test_parse_discogs_master_artist_title_year() -> None:
+    artist, title, year = parse_discogs_master_artist_title_year(
+        {
+            "artists": [{"name": "  Echo  "}],
+            "title": "Heaven Up Here",
+            "year": 1981,
+        }
+    )
+    assert artist == "Echo"
+    assert title == "Heaven Up Here"
+    assert year == 1981
+
+
+def test_apply_release_to_aoty_map_and_json_roundtrip(tmp_path) -> None:
+    df = pd.DataFrame(
+        {"user_id": ["a", "b"], "album_id": ["rel1", "rel_missing"]}
+    )
+    path = tmp_path / "m.json"
+    save_release_to_aoty_json(path, {"rel1": "aoty_x"})
+    loaded = load_release_to_aoty_json(path)
+    out = apply_release_to_aoty_map(df, loaded)
+    assert len(out) == 1
+    assert out.iloc[0]["album_id"] == "aoty_x"
+>>>>>>> Stashed changes
