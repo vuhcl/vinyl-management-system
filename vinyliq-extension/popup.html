@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <style>
+    body { width: 300px; font-family: system-ui, sans-serif; font-size: 13px; padding: 10px; }
+    label { display: block; margin-top: 8px; font-weight: 600; }
+    select, input[type="text"] { width: 100%; margin-top: 4px; box-sizing: border-box; }
+    button { margin-top: 12px; width: 100%; padding: 8px; cursor: pointer; }
+    .hint { font-size: 11px; color: #666; margin-top: 6px; }
+    .err { color: #b00; font-size: 12px; margin-top: 8px; }
+  </style>
+</head>
+<body>
+  <strong>VinylIQ</strong>
+  <p class="hint" id="release-line">Release: —</p>
+  <label for="apiBase">API base URL</label>
+  <input type="text" id="apiBase" placeholder="http://127.0.0.1:8801" />
+  <label for="apiKey">API key (optional)</label>
+  <input type="text" id="apiKey" placeholder="if VINYLIQ_API_KEY set on server" />
+  <label for="media">Media condition</label>
+  <select id="media"></select>
+  <label for="sleeve">Sleeve condition</label>
+  <select id="sleeve"></select>
+  <button type="button" id="estimate">Get estimate</button>
+  <div class="err" id="err"></div>
+  <script src="popup.js"></script>
+</body>
+</html>
