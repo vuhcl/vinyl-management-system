@@ -14,3 +14,20 @@ mlruns
 .env.*
 dist/
 configs/*.local.yaml
+
+# Coverage / local test outputs
+.coverage
+coverage.xml
+htmlcov/
+
+# VinylIQ local data and trained models (large; rebuild from pipelines)
+price_estimator/data/cache
+price_estimator/data/dumps
+price_estimator/data/raw
+price_estimator/data/processed
+price_estimator/artifacts
+
+# Optional heavy subtrees if present under COPY targets
+recommender/**/node_modules
+web/**/node_modules
+**/.discogs_cache

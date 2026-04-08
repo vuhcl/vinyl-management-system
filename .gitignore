@@ -14,6 +14,24 @@ dist/
 build/
 
 # Data and artifacts (skeletal repo: no data)
+# Local SQLite / DB files (VinylIQ feature store, marketplace cache, etc.)
+*.sqlite
+*.sqlite-journal
+*.sqlite-wal
+*.sqlite-shm
+*.db
+
+# Discogs monthly XML dumps (often multi-GB; keep out of git)
+price_estimator/data/dumps/*
+!price_estimator/data/dumps/.gitkeep
+# VinylIQ runtime data: queues, shards, collector output (not the small examples)
+price_estimator/data/cache/
+price_estimator/data/raw/*
+!price_estimator/data/raw/.gitkeep
+!price_estimator/data/raw/release_ids.example.txt
+price_estimator/data/processed/*
+!price_estimator/data/processed/.gitkeep
+
 data/raw/*
 !data/raw/.gitkeep
 data/processed/*
@@ -67,4 +85,7 @@ grader/artifacts/*.mlpackage
 grader/reports/coverage/
 grader/reports/*.csv
 grader/reports/*.txt
- 
+.coverage
+coverage.xml
+htmlcov/
+.pytest_cache/
