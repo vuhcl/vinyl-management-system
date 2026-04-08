@@ -37,6 +37,8 @@ import yaml
 
 from grader.src.mlflow_tracking import (
     configure_mlflow_from_config,
+    mlflow_enabled,
+    mlflow_log_artifacts_enabled,
     vinyl_grader_pyfunc_has_python_model,
 )
 from grader.src.data.harmonize_labels import LabelHarmonizer
@@ -105,8 +107,8 @@ class Pipeline:
         # Paths
         self.artifacts_dir = Path(self.config["paths"]["artifacts"])
 
-        # MLflow (MLFLOW_TRACKING_URI env overrides tracking_uri_fallback)
-        configure_mlflow_from_config(self.config)
+        if mlflow_enabled(self.config):
+            configure_mlflow_from_config(self.config)
 
         # Lazy-loaded inference components — initialized on first predict call
         self._preprocessor: Optional[Preprocessor]        = None
@@ -159,6 +161,11 @@ class Pipeline:
         registry_model_name: str,
     ) -> None:
         if not want_register:
+            return
+        if not mlflow_log_artifacts_enabled(self.config):
+            logger.info(
+                "Skipping MLflow model registry (mlflow.log_artifacts: false)."
+            )
             return
         run_id = (transformer_results or {}).get("mlflow_run_id") or ""
         if not run_id:
@@ -213,6 +220,8 @@ class Pipeline:
         baseline_only: bool = False,
         register_after_pipeline: bool | None = None,
         registry_model_name_override: str | None = None,
+        no_mlflow: bool = False,
+        mlflow_no_artifacts: bool = False,
     ) -> dict:
         """
         Run the full training pipeline end to end.
@@ -238,6 +247,8 @@ class Pipeline:
             baseline_only:    alias for skip_transformer=True
             register_after_pipeline: if None, use config ``mlflow.register_after_pipeline``
             registry_model_name_override: if set, overrides ``mlflow.registry_model_name``
+            no_mlflow: if True, same as ``mlflow.enabled: false`` (no tracking).
+            mlflow_no_artifacts: if True, params/metrics only; ignored if ``no_mlflow``.
 
         Returns:
             Dict with results from all completed steps.
@@ -245,11 +256,30 @@ class Pipeline:
         skip_transformer = skip_transformer or baseline_only
         results = {}
 
+        ml = self.config.setdefault("mlflow", {})
+        if no_mlflow:
+            ml["enabled"] = False
+            logger.info("MLflow disabled (--no-mlflow).")
+        elif mlflow_no_artifacts and ml.get("enabled", True):
+            ml["log_artifacts"] = False
+            logger.info(
+                "MLflow metrics-only (--mlflow-no-artifacts / "
+                "mlflow.log_artifacts: false)."
+            )
+
+        if mlflow_enabled(self.config):
+            configure_mlflow_from_config(self.config)
+
         mlflow_cfg = self.config.get("mlflow", {})
         if register_after_pipeline is None:
             want_registry = bool(mlflow_cfg.get("register_after_pipeline", True))
         else:
             want_registry = register_after_pipeline
+        want_registry = (
+            want_registry
+            and mlflow_enabled(self.config)
+            and mlflow_log_artifacts_enabled(self.config)
+        )
         registry_model_name = (
             (registry_model_name_override or "").strip()
             or str(mlflow_cfg.get("registry_model_name", "VinylGrader"))
@@ -268,6 +298,7 @@ class Pipeline:
                 discogs_ingester = DiscogsIngester(
                     config_path=self.config_path,
                     guidelines_path=self.guidelines_path,
+                    config=self.config,
                 )
                 discogs_ingester.run()
 
@@ -281,6 +312,7 @@ class Pipeline:
                     ebay_ingester = EbayIngester(
                         config_path=self.config_path,
                         guidelines_path=self.guidelines_path,
+                        config=self.config,
                     )
                     ebay_ingester.run()
             else:
@@ -295,6 +327,7 @@ class Pipeline:
                 harmonizer = LabelHarmonizer(
                     config_path=self.config_path,
                     guidelines_path=self.guidelines_path,
+                    config=self.config,
                 )
                 results["harmonize"] = harmonizer.run()
             else:
@@ -309,6 +342,7 @@ class Pipeline:
                 preprocessor = Preprocessor(
                     config_path=self.config_path,
                     guidelines_path=self.guidelines_path,
+                    config=self.config,
                 )
                 results["preprocess"] = preprocessor.run()
             else:
@@ -320,7 +354,10 @@ class Pipeline:
                 logger.info("STEP 4 — TF-IDF FEATURE EXTRACTION")
                 logger.info("=" * 50)
 
-                tfidf = TFIDFFeatureBuilder(config_path=self.config_path)
+                tfidf = TFIDFFeatureBuilder(
+                    config_path=self.config_path,
+                    config=self.config,
+                )
                 results["features"] = tfidf.run()
             else:
                 logger.info("Skipping feature extraction — using existing matrices.")
@@ -330,7 +367,10 @@ class Pipeline:
             logger.info("STEP 5 — BASELINE MODEL (TF-IDF + LR)")
             logger.info("=" * 50)
 
-            baseline = BaselineModel(config_path=self.config_path)
+            baseline = BaselineModel(
+                config_path=self.config_path,
+                config=self.config,
+            )
             baseline_results = baseline.run()
             results["baseline"] = baseline_results
 
@@ -341,13 +381,17 @@ class Pipeline:
 
             # Step 6 — Transformer model
             transformer_test_metrics = None
+            trainer: Optional[TransformerTrainer] = None
 
             if not skip_transformer:
                 logger.info("=" * 50)
                 logger.info("STEP 6 — TRANSFORMER MODEL (DistilBERT)")
                 logger.info("=" * 50)
 
-                trainer = TransformerTrainer(config_path=self.config_path)
+                trainer = TransformerTrainer(
+                    config_path=self.config_path,
+                    config=self.config,
+                )
                 transformer_results = trainer.run()
                 results["transformer"] = transformer_results
 
@@ -426,17 +470,19 @@ class Pipeline:
                             + thin_per_class_table
                         )
 
-                mlflow.log_artifact(str(comparison_path))
-                log_comparison_to_mlflow(
-                    baseline_metrics=baseline_test_metrics,
-                    transformer_metrics=transformer_test_metrics,
-                )
-                if thin_compare_table is not None:
+                if mlflow_enabled(self.config):
+                    if mlflow_log_artifacts_enabled(self.config):
+                        mlflow.log_artifact(str(comparison_path))
                     log_comparison_to_mlflow(
-                        baseline_metrics=b_thin,
-                        transformer_metrics=t_thin,
-                        key_suffix="test_thin",
+                        baseline_metrics=baseline_test_metrics,
+                        transformer_metrics=transformer_test_metrics,
                     )
+                    if thin_compare_table is not None:
+                        log_comparison_to_mlflow(
+                            baseline_metrics=b_thin,
+                            transformer_metrics=t_thin,
+                            key_suffix="test_thin",
+                        )
 
                 results["comparison"] = {
                     "table":     comparison_table,
@@ -461,6 +507,10 @@ class Pipeline:
 
             # Load test features for calibration plots
             tfidf_builder = self._get_tfidf()
+            _cal_mlf = (
+                mlflow_enabled(self.config)
+                and mlflow_log_artifacts_enabled(self.config)
+            )
             for target in ["sleeve", "media"]:
                 X_test, y_test = TFIDFFeatureBuilder.load_features(
                     str(self.artifacts_dir / "features"),
@@ -482,7 +532,7 @@ class Pipeline:
                     class_names=encoder.classes_,
                     target=target,
                     model_name="baseline",
-                    log_to_mlflow=True,
+                    log_to_mlflow=_cal_mlf,
                 )
 
                 # Transformer calibration — if available
@@ -496,7 +546,7 @@ class Pipeline:
                         class_names=encoder.classes_,
                         target=target,
                         model_name="transformer",
-                        log_to_mlflow=True,
+                        log_to_mlflow=_cal_mlf,
                     )
 
             # Step 9 — Rule engine: compare model vs adjusted; audit overrides
@@ -516,9 +566,11 @@ class Pipeline:
                 )
             )
 
-            mlflow.log_metrics(rule_mlflow)
-            for _p in grade_paths.values():
-                mlflow.log_artifact(_p)
+            if mlflow_enabled(self.config):
+                mlflow.log_metrics(rule_mlflow)
+                if mlflow_log_artifacts_enabled(self.config):
+                    for _p in grade_paths.values():
+                        mlflow.log_artifact(_p)
 
             results["rule_eval"] = rule_eval
             results["grade_analysis_reports"] = grade_paths
@@ -1093,6 +1145,19 @@ def main() -> None:
         help="Train baseline only — skip transformer",
     )
     train_parser.add_argument(
+        "--no-mlflow",
+        action="store_true",
+        help="Disable MLflow entirely (same as mlflow.enabled: false in config).",
+    )
+    train_parser.add_argument(
+        "--mlflow-no-artifacts",
+        action="store_true",
+        help=(
+            "Log params/metrics only — no artifact uploads or registry "
+            "(mlflow.log_artifacts: false). Ignored with --no-mlflow."
+        ),
+    )
+    train_parser.add_argument(
         "--no-register",
         action="store_true",
         help="Skip registering the transformer pyfunc to the MLflow model registry",
@@ -1164,6 +1229,8 @@ def main() -> None:
             skip_preprocess=args.skip_preprocess,
             skip_features=args.skip_features,
             baseline_only=args.baseline_only,
+            no_mlflow=args.no_mlflow,
+            mlflow_no_artifacts=args.mlflow_no_artifacts,
             **train_kw,
         )
 

@@ -18,19 +18,24 @@ Usage:
     python -m grader.src.data.ingest_discogs --dry-run
 """
 
+import copy
 import json
 import logging
 import os
 import re
 import time
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 import mlflow
 import requests
 import yaml
 
-from grader.src.mlflow_tracking import configure_mlflow_from_config
+from grader.src.mlflow_tracking import (
+    configure_mlflow_from_config,
+    mlflow_enabled,
+    mlflow_start_run_ctx,
+)
 from grader.src.project_env import load_project_dotenv
 
 # ---------------------------------------------------------------------------
@@ -239,8 +244,12 @@ class DiscogsIngester:
         target_per_grade: Optional[int] = None,
         format_filter: Optional[str] = None,
         cache_only: bool = False,
+        config: Optional[dict[str, Any]] = None,
     ) -> None:
-        self.config = self._load_yaml(config_path)
+        if config is not None:
+            self.config = copy.deepcopy(config)
+        else:
+            self.config = self._load_yaml(config_path)
         self.guidelines = self._load_yaml(guidelines_path)
 
         load_project_dotenv()
@@ -338,8 +347,8 @@ class DiscogsIngester:
         self.raw_dir.mkdir(parents=True, exist_ok=True)
         self.processed_path.parent.mkdir(parents=True, exist_ok=True)
 
-        # MLflow
-        configure_mlflow_from_config(self.config)
+        if mlflow_enabled(self.config):
+            configure_mlflow_from_config(self.config)
 
         # Stats counters — reset on each run()
         self._stats: dict = {}
@@ -1026,7 +1035,7 @@ class DiscogsIngester:
         self._inventory_limit_param_rejected = False
         self._logged_inventory_api_page_size_mismatch = False
 
-        with mlflow.start_run(run_name="ingest_discogs"):
+        with mlflow_start_run_ctx(self.config, "ingest_discogs"):
             # Fetch raw listings
             all_listings = self.fetch_all()
 
@@ -1070,7 +1079,8 @@ class DiscogsIngester:
                 return processed_records
 
             self.save_processed(processed_records)
-            self._log_mlflow()
+            if mlflow_enabled(self.config):
+                self._log_mlflow()
 
         return processed_records
 

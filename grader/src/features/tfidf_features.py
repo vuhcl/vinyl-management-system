@@ -21,11 +21,13 @@ Usage:
     python -m grader.src.features.tfidf_features --dry-run
 """
 
+import copy
 import json
 import logging
 import pickle
 import re
 from pathlib import Path
+from typing import Any, Optional
 
 import mlflow
 import numpy as np
@@ -34,7 +36,12 @@ import yaml
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.preprocessing import LabelEncoder
 
-from grader.src.mlflow_tracking import configure_mlflow_from_config
+from grader.src.mlflow_tracking import (
+    configure_mlflow_from_config,
+    mlflow_enabled,
+    mlflow_log_artifacts_enabled,
+    mlflow_start_run_ctx,
+)
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -69,8 +76,15 @@ class TFIDFFeatureBuilder:
         mlflow.experiment_name
     """
 
-    def __init__(self, config_path: str) -> None:
-        self.config = self._load_yaml(config_path)
+    def __init__(
+        self,
+        config_path: str,
+        config: Optional[dict[str, Any]] = None,
+    ) -> None:
+        if config is not None:
+            self.config = copy.deepcopy(config)
+        else:
+            self.config = self._load_yaml(config_path)
 
         tfidf_cfg = self.config["models"]["baseline"]["tfidf"]
         self.max_features: int = tfidf_cfg["max_features"]
@@ -196,8 +210,8 @@ class TFIDFFeatureBuilder:
             ),
         }
 
-        # MLflow
-        configure_mlflow_from_config(self.config)
+        if mlflow_enabled(self.config):
+            configure_mlflow_from_config(self.config)
 
     # -----------------------------------------------------------------------
     # Config loading
@@ -691,12 +705,11 @@ class TFIDFFeatureBuilder:
         if split_sizes.get("test_thin", 0):
             metrics_tf["n_test_thin"] = split_sizes["test_thin"]
         mlflow.log_metrics(metrics_tf)
-        mlflow.log_artifact(str(top_terms_report_path))
-
-        # Log fitted vectorizer and encoder artifacts
-        for target in TARGETS:
-            mlflow.log_artifact(str(self.vectorizer_paths[target]))
-            mlflow.log_artifact(str(self.encoder_paths[target]))
+        if mlflow_log_artifacts_enabled(self.config):
+            mlflow.log_artifact(str(top_terms_report_path))
+            for target in TARGETS:
+                mlflow.log_artifact(str(self.vectorizer_paths[target]))
+                mlflow.log_artifact(str(self.encoder_paths[target]))
 
     # -----------------------------------------------------------------------
     # Orchestration
@@ -723,7 +736,7 @@ class TFIDFFeatureBuilder:
             Dict with fitted vectorizers, encoders, and feature
             matrices for inspection or direct use by baseline.py.
         """
-        with mlflow.start_run(run_name="tfidf_features"):
+        with mlflow_start_run_ctx(self.config, "tfidf_features"):
 
             # Load all splits
             split_data: dict[str, list[dict]] = {}
@@ -849,7 +862,8 @@ class TFIDFFeatureBuilder:
             top_terms_path = self.save_top_terms_report(
                 top_terms_sleeve, top_terms_media
             )
-            self._log_mlflow(split_sizes, vocab_sizes, top_terms_path)
+            if mlflow_enabled(self.config):
+                self._log_mlflow(split_sizes, vocab_sizes, top_terms_path)
 
             results["vectorizers"] = self.vectorizers
             results["encoders"]    = self.encoders

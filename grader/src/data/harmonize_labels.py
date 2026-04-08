@@ -16,16 +16,22 @@ Usage:
     python -m grader.src.data.harmonize_labels --dry-run
 """
 
+import copy
 import json
 import logging
 from collections import defaultdict
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 import mlflow
 import yaml
 
-from grader.src.mlflow_tracking import configure_mlflow_from_config
+from grader.src.mlflow_tracking import (
+    configure_mlflow_from_config,
+    mlflow_enabled,
+    mlflow_log_artifacts_enabled,
+    mlflow_start_run_ctx,
+)
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -71,10 +77,18 @@ class LabelHarmonizer:
         media_grades                         — valid media label values
     """
 
-    def __init__(self, config_path: str, guidelines_path: str) -> None:
+    def __init__(
+        self,
+        config_path: str,
+        guidelines_path: str,
+        config: Optional[dict[str, Any]] = None,
+    ) -> None:
         self._config_path = config_path
         self._guidelines_path = guidelines_path
-        self.config = self._load_yaml(config_path)
+        if config is not None:
+            self.config = copy.deepcopy(config)
+        else:
+            self.config = self._load_yaml(config_path)
         self.guidelines = self._load_yaml(guidelines_path)
 
         # Valid grade sets
@@ -103,8 +117,8 @@ class LabelHarmonizer:
         self.output_path.parent.mkdir(parents=True, exist_ok=True)
         self.report_path.parent.mkdir(parents=True, exist_ok=True)
 
-        # MLflow
-        configure_mlflow_from_config(self.config)
+        if mlflow_enabled(self.config):
+            configure_mlflow_from_config(self.config)
 
         # Stats — reset on each run()
         self._stats: dict = {}
@@ -493,7 +507,8 @@ class LabelHarmonizer:
             for grade, count in grade_counts.items():
                 clean_grade = grade.lower().replace(" ", "_")
                 mlflow.log_metric(f"dist_{target}_{clean_grade}", count)
-        mlflow.log_artifact(str(self.report_path))
+        if mlflow_log_artifacts_enabled(self.config):
+            mlflow.log_artifact(str(self.report_path))
 
     # -----------------------------------------------------------------------
     # Orchestration
@@ -528,7 +543,7 @@ class LabelHarmonizer:
             "cross_source_duplicates": 0,
         }
 
-        with mlflow.start_run(run_name="harmonize_labels"):
+        with mlflow_start_run_ctx(self.config, "harmonize_labels"):
             all_records: list[dict] = []
 
             for source, path in self.source_paths.items():
@@ -599,7 +614,8 @@ class LabelHarmonizer:
 
             self.save_unified(all_records)
             self.save_report(report_text)
-            self._log_mlflow(distribution)
+            if mlflow_enabled(self.config):
+                self._log_mlflow(distribution)
 
         return all_records
 

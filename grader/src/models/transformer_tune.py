@@ -20,6 +20,8 @@ import yaml
 
 from grader.src.mlflow_tracking import (
     configure_mlflow_from_config,
+    mlflow_enabled,
+    mlflow_log_artifacts_enabled,
     vinyl_grader_pyfunc_has_python_model,
 )
 from grader.src.models.transformer import TransformerTrainer
@@ -115,7 +117,20 @@ def main() -> None:
     parser.add_argument(
         "--skip-mlflow",
         action="store_true",
-        help="Do not create MLflow runs",
+        help="Do not create MLflow runs (same as --no-mlflow)",
+    )
+    parser.add_argument(
+        "--no-mlflow",
+        action="store_true",
+        help="Disable MLflow entirely (same as mlflow.enabled: false).",
+    )
+    parser.add_argument(
+        "--mlflow-no-artifacts",
+        action="store_true",
+        help=(
+            "Params/metrics only — no pyfunc/GCS artifacts. "
+            "Ignored if --no-mlflow or --skip-mlflow."
+        ),
     )
     parser.add_argument(
         "--register",
@@ -153,6 +168,18 @@ def main() -> None:
 
     with open(args.config, "r", encoding="utf-8") as f:
         cfg = yaml.safe_load(f)
+
+    ml = cfg.setdefault("mlflow", {})
+    if args.skip_mlflow or args.no_mlflow:
+        ml["enabled"] = False
+        logger.info("MLflow disabled (--skip-mlflow / --no-mlflow).")
+    elif args.mlflow_no_artifacts and ml.get("enabled", True):
+        ml["log_artifacts"] = False
+        logger.info(
+            "MLflow metrics-only (--mlflow-no-artifacts / "
+            "mlflow.log_artifacts: false)."
+        )
+
     artifacts_dir = Path(cfg["paths"]["artifacts"])
 
     if args.promote.strip():
@@ -209,10 +236,11 @@ def main() -> None:
             config_path=args.config,
             transformer_overrides=overrides,
             artifact_subdir=str(subdir),
+            config=cfg,
         )
         out = trainer.run(
             dry_run=args.dry_run,
-            skip_mlflow=args.skip_mlflow,
+            skip_mlflow=args.skip_mlflow or args.no_mlflow,
             mlflow_run_name=f"tune_{key}",
         )
         ev = out["eval"]
@@ -239,7 +267,11 @@ def main() -> None:
         )
 
         # Track run ID for model registration
-        if not args.skip_mlflow and not args.dry_run:
+        if (
+            not args.skip_mlflow
+            and not args.no_mlflow
+            and not args.dry_run
+        ):
             run_registry[key] = {
                 "run_id": out.get("mlflow_run_id", ""),
                 "test_mean_macro_f1": summ["test_mean_macro_f1"],
@@ -252,7 +284,9 @@ def main() -> None:
     if (
         args.register
         and not args.skip_mlflow
+        and not args.no_mlflow
         and not args.dry_run
+        and mlflow_log_artifacts_enabled(cfg)
         and run_registry
     ):
         best = max(run_registry.values(), key=lambda x: x["test_mean_macro_f1"])

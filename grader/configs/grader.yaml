@@ -314,7 +314,15 @@ evaluation:
 # If unset, tracking_uri_fallback is used (local SQLite metadata DB).
 # Production: point the MLflow server at gs://… for --default-artifact-root and use
 # GOOGLE_APPLICATION_CREDENTIALS (or ADC) on training and serving so artifacts use GCS.
+#
+# Cost control (same idea as price_estimator train_vinyliq):
+#   enabled: false        — no MLflow runs at all; models still written to paths.artifacts
+#   log_artifacts: false  — runs still log params/metrics/tags; no log_artifact / pyfunc /
+#                          registry (registry needs a run artifact).
+# CLI: python -m grader.src.pipeline train --no-mlflow | --mlflow-no-artifacts
 mlflow:
+  enabled: true
+  log_artifacts: true
   experiment_name:    vinyl_grader
   # Register transformer pyfunc after full pipeline train (models:/name/...)
   registry_model_name: VinylGrader
