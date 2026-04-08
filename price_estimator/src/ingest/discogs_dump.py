@@ -260,3 +260,34 @@ def iter_dump_feature_rows(
         row = release_element_to_row(elem, skip_deleted=skip_deleted)
         if row is not None:
             yield row
+
+
+def probe_dump_community(
+    path: Path,
+    *,
+    limit: int,
+    skip_deleted: bool = True,
+) -> tuple[int, int, int]:
+    """
+    Scan the first *limit* accepted releases and summarize community stats.
+
+    Returns ``(parsed_rows, count_with_have_or_want_positive,
+    max_have_plus_want)``.
+
+    If ``count_with_have_or_want_positive`` is 0, the dump likely omits
+    ``<community><have>`` / ``<want>`` (common on recent public dumps);
+    popularity ordering in SQLite will fall back to ``release_id``.
+    """
+    parsed = 0
+    nz = 0
+    max_sum = 0
+    for row in iter_dump_feature_rows(path, skip_deleted=skip_deleted):
+        parsed += 1
+        s = int(row.get("want_count") or 0) + int(row.get("have_count") or 0)
+        if s > 0:
+            nz += 1
+        if s > max_sum:
+            max_sum = s
+        if parsed >= limit:
+            break
+    return parsed, nz, max_sum

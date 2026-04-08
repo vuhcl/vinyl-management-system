@@ -26,11 +26,23 @@ def _parse_price_field(v: Any) -> float | None:
         return None
 
 
+def _blocked_from_sale_int(v: Any) -> int | None:
+    if v is None:
+        return None
+    if isinstance(v, bool):
+        return 1 if v else 0
+    try:
+        return 1 if int(v) else 0
+    except (TypeError, ValueError):
+        return None
+
+
 def normalize_marketplace_stats(payload: dict[str, Any]) -> dict[str, Any]:
     """
     Normalize Discogs marketplace stats JSON to scalars.
 
-    Field names vary; we map to lowest_price, median_price, num_for_sale.
+    Field names vary; we map common keys. Full payload is still stored in
+    ``raw_json`` on upsert.
     """
     lowest = _parse_price_field(
         payload.get("lowest_price") or payload.get("lowest")
@@ -42,6 +54,7 @@ def normalize_marketplace_stats(payload: dict[str, Any]) -> dict[str, Any]:
     )
     if median is None:
         median = lowest
+    highest = _parse_price_field(payload.get("highest_price"))
     nfs = payload.get("num_for_sale")
     if nfs is None:
         nfs = payload.get("for_sale_count")
@@ -49,11 +62,20 @@ def normalize_marketplace_stats(payload: dict[str, Any]) -> dict[str, Any]:
         num_for_sale = int(nfs) if nfs is not None else 0
     except (TypeError, ValueError):
         num_for_sale = 0
+    blocked = _blocked_from_sale_int(payload.get("blocked_from_sale"))
     return {
         "lowest_price": lowest,
         "median_price": median,
+        "highest_price": highest,
         "num_for_sale": num_for_sale,
+        "blocked_from_sale": blocked,
     }
+
+
+_MARKETPLACE_MIGRATIONS: list[tuple[str, str]] = [
+    ("highest_price", "REAL"),
+    ("blocked_from_sale", "INTEGER"),
+]
 
 
 class MarketplaceStatsDB:
@@ -63,6 +85,10 @@ class MarketplaceStatsDB:
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._init_schema()
+
+    def _existing_columns(self, conn: sqlite3.Connection) -> set[str]:
+        cur = conn.execute("PRAGMA table_info(marketplace_stats)")
+        return {str(r[1]) for r in cur.fetchall()}
 
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(str(self.path), timeout=30.0)
@@ -85,6 +111,12 @@ class MarketplaceStatsDB:
                 )
                 """
             )
+            existing = self._existing_columns(conn)
+            for col, sql_type in _MARKETPLACE_MIGRATIONS:
+                if col not in existing:
+                    conn.execute(
+                        f"ALTER TABLE marketplace_stats ADD COLUMN {col} {sql_type}"
+                    )
             conn.commit()
 
     def upsert(
@@ -103,13 +135,15 @@ class MarketplaceStatsDB:
                 """
                 INSERT INTO marketplace_stats (
                     release_id, fetched_at, lowest_price, median_price,
-                    num_for_sale, raw_json
-                ) VALUES (?, ?, ?, ?, ?, ?)
+                    highest_price, num_for_sale, blocked_from_sale, raw_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(release_id) DO UPDATE SET
                     fetched_at = excluded.fetched_at,
                     lowest_price = excluded.lowest_price,
                     median_price = excluded.median_price,
+                    highest_price = excluded.highest_price,
                     num_for_sale = excluded.num_for_sale,
+                    blocked_from_sale = excluded.blocked_from_sale,
                     raw_json = excluded.raw_json
                 """,
                 (
@@ -117,7 +151,9 @@ class MarketplaceStatsDB:
                     now,
                     norm["lowest_price"],
                     norm["median_price"],
+                    norm["highest_price"],
                     norm["num_for_sale"],
+                    norm["blocked_from_sale"],
                     body,
                 ),
             )
@@ -134,7 +170,7 @@ class MarketplaceStatsDB:
             row = cur.fetchone()
         if not row:
             return None
-        return {
+        out = {
             "release_id": row["release_id"],
             "fetched_at": row["fetched_at"],
             "lowest_price": row["lowest_price"],
@@ -142,6 +178,12 @@ class MarketplaceStatsDB:
             "num_for_sale": row["num_for_sale"],
             "raw_json": row["raw_json"],
         }
+        keys = row.keys()
+        if "highest_price" in keys:
+            out["highest_price"] = row["highest_price"]
+        if "blocked_from_sale" in keys:
+            out["blocked_from_sale"] = row["blocked_from_sale"]
+        return out
 
     def iter_release_ids(self) -> list[str]:
         with self._connect() as conn:

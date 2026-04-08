@@ -159,6 +159,11 @@ class FeatureStoreDB:
         sort_by: str = "release_id",
         min_have: int = 0,
         min_want: int = 0,
+        proxy_weight_master: float = 1.0,
+        proxy_weight_artist: float = 1.0,
+        exclude_various_artists: bool = False,
+        exclude_file_formats: bool = False,
+        prefer_vinyl_tiebreak: bool = False,
     ) -> Iterator[str]:
         """
         Stream ``release_id`` values for export / stats collection.
@@ -167,10 +172,127 @@ class FeatureStoreDB:
           ``release_id`` — ascending ID;
           ``have_count`` — descending community have, then ``release_id``;
           ``want_count`` — descending community want, then ``release_id``;
-          ``popularity`` — descending ``have_count + want_count``, then ``release_id``.
-        ``min_have`` / ``min_want``: optional lower bounds (0 = no filter).
+          ``popularity`` — descending ``have_count + want_count``, then ``release_id``;
+          ``catalog_proxy`` — master + primary-artist catalog mass (see
+          ``price_estimator.src.catalog_proxy``); ignores ``min_have`` / ``min_want``.
+        ``min_have`` / ``min_want``: optional lower bounds (0 = no filter); not
+        applied for ``catalog_proxy``.
+        ``exclude_various_artists``: if True, drop rows whose primary artist is
+        Discogs Various (id 194), name contains ``various``, or name is
+        **Unknown Artist** (not applied for ``catalog_proxy``; proxy SQL always
+        excludes those rows).
+        ``exclude_file_formats``: if True, drop Discogs **File** / digital rows
+        (not applied for ``catalog_proxy``; proxy SQL always excludes them).
+        ``prefer_vinyl_tiebreak``: if True, sort vinyl-looking rows before
+        others when community scores tie (have / want / popularity sorts only).
         """
-        valid = ("release_id", "have_count", "want_count", "popularity")
+        valid = (
+            "release_id",
+            "have_count",
+            "want_count",
+            "popularity",
+            "catalog_proxy",
+        )
+        if sort_by not in valid:
+            raise ValueError(f"sort_by must be one of {valid}, got {sort_by!r}")
+
+        if sort_by == "catalog_proxy":
+            from price_estimator.src.catalog_proxy import (
+                sql_select_release_ids_ordered_by_catalog_proxy,
+            )
+
+            sql = sql_select_release_ids_ordered_by_catalog_proxy().strip()
+            wm = float(proxy_weight_master)
+            wa = float(proxy_weight_artist)
+            with self._connect() as conn:
+                cur = conn.execute(sql, (wm, wa))
+                for row in cur:
+                    yield str(row[0])
+            return
+
+        clauses: list[str] = []
+        params: list[int] = []
+        mh = max(0, int(min_have))
+        mw = max(0, int(min_want))
+        if mh > 0:
+            clauses.append("COALESCE(have_count, 0) >= ?")
+            params.append(mh)
+        if mw > 0:
+            clauses.append("COALESCE(want_count, 0) >= ?")
+            params.append(mw)
+        if exclude_various_artists:
+            from price_estimator.src.catalog_proxy import (
+                sql_exclude_various_primary_artist,
+            )
+
+            clauses.append(sql_exclude_various_primary_artist("artists_json"))
+        if exclude_file_formats:
+            from price_estimator.src.catalog_proxy import (
+                sql_exclude_file_format_releases,
+            )
+
+            clauses.append(
+                sql_exclude_file_format_releases("formats_json", "format_desc")
+            )
+        where = f"WHERE {' AND '.join(clauses)} " if clauses else ""
+
+        vinyl_k = None
+        if prefer_vinyl_tiebreak:
+            from price_estimator.src.catalog_proxy import sql_vinyl_preference_key
+
+            vinyl_k = sql_vinyl_preference_key("formats_json", "format_desc")
+
+        if sort_by == "have_count":
+            if vinyl_k:
+                order = (
+                    f"ORDER BY have_count DESC, {vinyl_k} DESC, release_id ASC"
+                )
+            else:
+                order = "ORDER BY have_count DESC, release_id ASC"
+        elif sort_by == "want_count":
+            if vinyl_k:
+                order = (
+                    f"ORDER BY want_count DESC, {vinyl_k} DESC, release_id ASC"
+                )
+            else:
+                order = "ORDER BY want_count DESC, release_id ASC"
+        elif sort_by == "popularity":
+            if vinyl_k:
+                order = (
+                    "ORDER BY (COALESCE(have_count, 0) + COALESCE(want_count, 0)) "
+                    f"DESC, {vinyl_k} DESC, release_id ASC"
+                )
+            else:
+                order = (
+                    "ORDER BY (COALESCE(have_count, 0) + COALESCE(want_count, 0)) "
+                    "DESC, release_id ASC"
+                )
+        else:
+            order = "ORDER BY release_id ASC"
+
+        sql = f"SELECT release_id FROM releases_features {where}{order}"
+        with self._connect() as conn:
+            cur = conn.execute(sql, tuple(params))
+            for row in cur:
+                yield str(row[0])
+
+    def iter_community_release_rows(
+        self,
+        *,
+        sort_by: str,
+        min_have: int = 0,
+        min_want: int = 0,
+        exclude_various_artists: bool = False,
+        exclude_file_formats: bool = False,
+        prefer_vinyl_tiebreak: bool = False,
+    ) -> Iterator[tuple[str, int]]:
+        """
+        Like ``iter_release_ids`` for community sorts, but yields
+        ``(release_id, vinyl_flag)`` with vinyl_flag 0/1 from catalog heuristics.
+
+        ``sort_by``: ``have_count``, ``want_count``, or ``popularity`` only.
+        """
+        valid = ("have_count", "want_count", "popularity")
         if sort_by not in valid:
             raise ValueError(f"sort_by must be one of {valid}, got {sort_by!r}")
 
@@ -184,22 +306,60 @@ class FeatureStoreDB:
         if mw > 0:
             clauses.append("COALESCE(want_count, 0) >= ?")
             params.append(mw)
+        if exclude_various_artists:
+            from price_estimator.src.catalog_proxy import (
+                sql_exclude_various_primary_artist,
+            )
+
+            clauses.append(sql_exclude_various_primary_artist("artists_json"))
+        if exclude_file_formats:
+            from price_estimator.src.catalog_proxy import (
+                sql_exclude_file_format_releases,
+            )
+
+            clauses.append(
+                sql_exclude_file_format_releases("formats_json", "format_desc")
+            )
         where = f"WHERE {' AND '.join(clauses)} " if clauses else ""
 
-        if sort_by == "have_count":
-            order = "ORDER BY have_count DESC, release_id ASC"
-        elif sort_by == "want_count":
-            order = "ORDER BY want_count DESC, release_id ASC"
-        elif sort_by == "popularity":
-            order = (
-                "ORDER BY (COALESCE(have_count, 0) + COALESCE(want_count, 0)) DESC, "
-                "release_id ASC"
-            )
-        else:
-            order = "ORDER BY release_id ASC"
+        vinyl_k = None
+        if prefer_vinyl_tiebreak:
+            from price_estimator.src.catalog_proxy import sql_vinyl_preference_key
 
-        sql = f"SELECT release_id FROM releases_features {where}{order}"
+            vinyl_k = sql_vinyl_preference_key("formats_json", "format_desc")
+
+        if sort_by == "have_count":
+            if vinyl_k:
+                order = (
+                    f"ORDER BY have_count DESC, {vinyl_k} DESC, release_id ASC"
+                )
+            else:
+                order = "ORDER BY have_count DESC, release_id ASC"
+        elif sort_by == "want_count":
+            if vinyl_k:
+                order = (
+                    f"ORDER BY want_count DESC, {vinyl_k} DESC, release_id ASC"
+                )
+            else:
+                order = "ORDER BY want_count DESC, release_id ASC"
+        else:
+            if vinyl_k:
+                order = (
+                    "ORDER BY (COALESCE(have_count, 0) + COALESCE(want_count, 0)) "
+                    f"DESC, {vinyl_k} DESC, release_id ASC"
+                )
+            else:
+                order = (
+                    "ORDER BY (COALESCE(have_count, 0) + COALESCE(want_count, 0)) "
+                    "DESC, release_id ASC"
+                )
+
+        vk_sel = vinyl_k if vinyl_k else "0"
+        sql = (
+            f"SELECT release_id, CAST(({vk_sel}) AS INTEGER) AS _v "
+            f"FROM releases_features {where}{order}"
+        )
         with self._connect() as conn:
             cur = conn.execute(sql, tuple(params))
             for row in cur:
-                yield str(row[0])
+                yield str(row[0]), int(row[1] or 0)

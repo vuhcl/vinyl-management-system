@@ -9,6 +9,7 @@ from xml.etree import ElementTree as ET
 from price_estimator.src.features.vinyliq_features import row_dict_for_inference
 from price_estimator.src.ingest.discogs_dump import (
     iter_dump_feature_rows,
+    probe_dump_community,
     release_element_to_row,
 )
 from price_estimator.src.storage.feature_store import FeatureStoreDB
@@ -104,6 +105,22 @@ def test_iter_dump_feature_rows_gzip(tmp_path: Path):
     p.write_bytes(gzip.compress(SAMPLE_XML))
     rows = list(iter_dump_feature_rows(p, skip_deleted=False))
     assert len(rows) == 2
+
+
+def test_probe_dump_community(tmp_path: Path):
+    p = tmp_path / "releases.xml"
+    p.write_bytes(SAMPLE_XML)
+    parsed, nz, mx = probe_dump_community(p, limit=10, skip_deleted=True)
+    assert parsed == 1
+    assert nz == 1
+    assert mx == 15
+
+    parsed2, nz2, mx2 = probe_dump_community(
+        p, limit=10, skip_deleted=False
+    )
+    assert parsed2 == 2
+    assert nz2 == 2
+    assert mx2 == 15
 
 
 def test_row_dict_for_inference_catalog_indices_and_counts():

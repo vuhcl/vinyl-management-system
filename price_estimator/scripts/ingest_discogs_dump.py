@@ -14,6 +14,14 @@ Optional: write every release_id to a text file for
       --dump releases.xml.gz \\
       --ids-out price_estimator/data/raw/dump_release_ids.txt
 
+**Community have/want:** Many monthly ``releases.xml.gz`` files do **not** include
+``<community>`` want/have counts (or they are empty). Then every row ingests as
+``0/0`` and ``--rank-by combined`` / ``have`` / ``want`` sort only by
+``release_id``. Default ``--rank-by proxy`` uses catalog-based ranking.
+Use ``--probe-community 5000`` on your dump to verify before
+a full ingest; fill counts via Discogs **API** (e.g. ``ingest_from_discogs.py``)
+if you need popularity ordering.
+
 Use ``--limit`` for a smoke test; ``--ids-only`` to only emit IDs (no SQLite).
 """
 from __future__ import annotations
@@ -75,6 +83,16 @@ def main() -> int:
         help="Parse only; print counts, no writes",
     )
     parser.add_argument(
+        "--probe-community",
+        type=int,
+        metavar="N",
+        default=0,
+        help=(
+            "Parse first N releases, print how many have non-zero have/want in XML; "
+            "then exit (no DB write). Use to verify dump has community stats."
+        ),
+    )
+    parser.add_argument(
         "--include-deleted",
         action="store_true",
         help="Keep releases with status=Deleted (default: skip)",
@@ -90,11 +108,35 @@ def main() -> int:
     skip_deleted = not args.include_deleted
 
     try:
-        from price_estimator.src.ingest.discogs_dump import iter_dump_feature_rows
+        from price_estimator.src.ingest.discogs_dump import (
+            iter_dump_feature_rows,
+            probe_dump_community,
+        )
         from price_estimator.src.storage.feature_store import FeatureStoreDB
     except ImportError:
         print("PYTHONPATH must include repo root.", file=sys.stderr)
         return 1
+
+    if args.probe_community > 0:
+        parsed, nz, mx = probe_dump_community(
+            dump_path,
+            limit=int(args.probe_community),
+            skip_deleted=skip_deleted,
+        )
+        print(
+            f"probe-community: scanned {parsed} releases "
+            f"(limit was {args.probe_community})"
+        )
+        print(f"  releases with have+want > 0 in XML: {nz}")
+        print(f"  max have+want seen: {mx}")
+        if nz == 0:
+            print(
+                "\nNo community stats in this sample — dump-ingested DB will have "
+                "all zeros; popularity queues sort by release_id only.\n"
+                "Use API ingest or another source to populate have_count/want_count.",
+                file=sys.stderr,
+            )
+        return 0
 
     feat_path = args.feature_db or (root / "data" / "feature_store.sqlite")
     if not feat_path.is_absolute():
