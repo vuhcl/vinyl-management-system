@@ -2,8 +2,9 @@
 """
 Write ``release_id`` lines from ``feature_store.sqlite`` (``releases_features``).
 
-After a dump ingest, ``have_count`` and ``want_count`` are in the DB — use
-``--sort-by have`` or ``want`` (Discogs-style popularity) without scraping.
+Dump ingest often leaves ``have_count`` / ``want_count`` at zero; use
+``--sort-by catalog_proxy`` for catalog-based ordering, or community sorts only
+if those columns were filled (e.g. API ingest).
 
   PYTHONPATH=. python price_estimator/scripts/export_release_ids.py \\
       --out price_estimator/data/raw/dump_release_ids.txt
@@ -14,6 +15,9 @@ After a dump ingest, ``have_count`` and ``want_count`` are in the DB — use
 
   PYTHONPATH=. python price_estimator/scripts/export_release_ids.py \\
       --sort-by want --out price_estimator/data/raw/popular_by_want.txt
+
+  PYTHONPATH=. python price_estimator/scripts/export_release_ids.py \\
+      --sort-by combined --out price_estimator/data/raw/popular_by_have_plus_want.txt
 
 Or with sqlite3 only (numeric sort only):
 
@@ -53,12 +57,24 @@ def main() -> int:
     )
     parser.add_argument(
         "--sort-by",
-        choices=("release_id", "have", "want"),
+        choices=("release_id", "have", "want", "combined", "catalog_proxy"),
         default="release_id",
         help=(
-            "release_id=ascending ID; have=descending have_count; "
-            "want=descending want_count"
+            "release_id=ascending ID; have/want/combined=community sorts; "
+            "catalog_proxy=master+artist catalog mass (JSON1)"
         ),
+    )
+    parser.add_argument(
+        "--proxy-weight-master",
+        type=float,
+        default=1.0,
+        help="catalog_proxy only: weight per master fan-out (default 1)",
+    )
+    parser.add_argument(
+        "--proxy-weight-artist",
+        type=float,
+        default=1.0,
+        help="catalog_proxy only: weight per primary artist catalog mass (default 1)",
     )
     parser.add_argument(
         "--min-have",
@@ -99,6 +115,8 @@ def main() -> int:
         "release_id": "release_id",
         "have": "have_count",
         "want": "want_count",
+        "combined": "popularity",
+        "catalog_proxy": "catalog_proxy",
     }
     sort_key = sort_map[args.sort_by]
     args.out.parent.mkdir(parents=True, exist_ok=True)
@@ -109,6 +127,8 @@ def main() -> int:
             sort_by=sort_key,
             min_have=args.min_have,
             min_want=args.min_want,
+            proxy_weight_master=args.proxy_weight_master,
+            proxy_weight_artist=args.proxy_weight_artist,
         ):
             if args.limit and n >= args.limit:
                 break

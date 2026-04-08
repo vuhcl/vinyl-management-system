@@ -16,7 +16,7 @@ Dedicated **price microservice** and training pipeline: Discogs `marketplace/sta
 | `scripts/collect_marketplace_stats.py` | Rate-limited stats collector (`--resume`, `--max`) |
 | `scripts/ingest_discogs_dump.py` | Monthly `releases.xml(.gz)` → feature store + optional ID list |
 | `scripts/export_release_ids.py` | `feature_store.sqlite` → IDs (`--sort-by release_id`, `have`, or `want`) |
-| `scripts/build_stats_collection_queue.py` | Merge popularity + stratified (decade × genre) IDs → queue for stats collector |
+| `scripts/build_stats_collection_queue.py` | Merge catalog-proxy (or community) + stratified IDs → queue for stats collector |
 | `scripts/ingest_from_discogs.py` | Live API → feature store + marketplace DB |
 | `src/ingest/discogs_dump.py` | Streaming XML parser for dump rows |
 | `scripts/build_feature_store.py` | CSV → feature store |
@@ -105,6 +105,8 @@ After adding **`requests-oauthlib`** to **`shared`**, run **`uv sync`** once at 
 
 **Parallelism & limits:** **`--workers`** (default 8), **`--req-per-minute`** global sliding window (default 55), **`--max-retries`**, **`--backoff-base`**, **`--backoff-max`**, **`--http-timeout`**. IDs are read in a **streaming** fashion. One Discogs token still obeys Discogs’ per-app rate limit; use separate runs with different tokens and split ID files to scale further.
 
+**Shard order:** Contiguous splits (e.g. **`split -l 50000`**) keep file order: **shard 1 = head of the file**. Lists from **`export_release_ids.py`** default **`--sort-by release_id`** are **lexicographic ID order**. For **catalog-based “head” first** (master + artist mass), use **`build_stats_collection_queue.py`** (default **`--rank-by proxy`**) without **`--shuffle-final`**, or **`export_release_ids.py --sort-by catalog_proxy`**. For **community want/have** ordering you need non-zero counts in SQLite; then **`--rank-by combined`** or **`export_release_ids.py --sort-by combined`**, then split.
+
 ### Data collection strategy (how many labels, which releases)
 
 You **do not** need marketplace stats for the full Discogs catalog—only for `release_id`s that become training rows after joining to `releases_features`. Aim for **tens of thousands to low hundreds of thousands** of labels for a strong first model; validate with learning curves (MAE vs. training size) once you have ~20k+.
@@ -115,20 +117,20 @@ You **do not** need marketplace stats for the full Discogs catalog—only for `r
 2. **Stratified coverage** — Popularity alone under-represents old decades, niche genres, and low-have tail. Sample randomly **per bucket** (e.g. decade × `genre`) so the feature space is covered.
 3. **Pure random** over the whole feature store wastes quota on cold listings; use it **inside** stratification, not as the only source.
 
-**Practical recipe:** Build a merged ID list—e.g. a **popularity** head (default **combined** = `have_count + want_count` desc, plus a second pass for high-want or high-have tails), plus a **stratified** slice—and run **`collect_marketplace_stats.py`** with **`--resume`** / **`--max`**. Training uses a **release_id-level holdout**, so diversity of pressings matters more than raw row count alone.
+**Practical recipe:** Build a merged ID list—e.g. a **proxy** head (default **catalog score**: master fan-out + primary-artist catalog mass), plus optional **stratified** slice—and run **`collect_marketplace_stats.py`** with **`--resume`** / **`--max`**. If **`have_count` / `want_count`** are populated (API ingest), you can use **`--rank-by combined`** instead. Training uses a **release_id-level holdout**, so diversity of pressings matters more than raw row count alone.
 
-**Scripted merge:** **`build_stats_collection_queue.py`** reads `feature_store.sqlite`. Primary block size is **`--popular-have-limit`**, ordered by **`--popular-by`** (`combined` default, or `have` / `want`). Then **`--popular-want-limit`** adds IDs from the complement sort. Stratified sampling adds up to **`--stratify-per-bucket`** per **`decade_genre`** or **`decade`**; use **`--stratify-order popularity`** to take the most in-demand rows per bucket instead of deterministic pseudo-random (**`--seed`**). Optional **`--max-total`** caps the file; **`--shuffle-final`** permutes the merged list before writing.
+**Scripted merge:** **`build_stats_collection_queue.py`** reads `feature_store.sqlite`. Head size is **`--primary-limit`**, ordered by **`--rank-by`** (**`proxy`** default, or **`combined` / `have` / `want`** for community sorts). **`--extra-limit`** adds more IDs (same proxy order skipping duplicates, or complement community sort). Stratified sampling adds up to **`--stratify-per-bucket`** per **`decade_genre`** or **`decade`**; use **`--stratify-order proxy`** for catalog score per bucket, or **`community`** (alias **`popularity`**) for have+want. **Various-artist** rows (Discogs Various id **194**, or primary artist name containing ``various``) are **omitted** from the queue and from proxy fan-out counts. **`--max-per-primary-artist`** (default **5**, **0** = off) limits repeats of the same primary artist in the proxy head/extra blocks and in **proxy** stratified buckets. Optional **`--max-total`** caps the file; **`--shuffle-final`** permutes the merged list before writing.
 
 ```bash
 PYTHONPATH=. python price_estimator/scripts/build_stats_collection_queue.py \
   --db price_estimator/data/feature_store.sqlite \
   --out price_estimator/data/raw/collection_queue.txt \
-  --popular-by combined \
-  --popular-have-limit 350000 \
-  --popular-want-limit 350000 \
+  --rank-by proxy \
+  --primary-limit 350000 \
+  --extra-limit 350000 \
   --stratify-per-bucket 40 \
   --stratify-by decade_genre \
-  --stratify-order popularity \
+  --stratify-order proxy \
   --seed 42 \
   --max-total 500000
 
