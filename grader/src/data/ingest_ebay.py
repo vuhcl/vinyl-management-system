@@ -22,19 +22,24 @@ Usage:
 """
 
 import base64
+import copy
 import json
 import logging
 import os
 import re
 import time
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 import mlflow
 import requests
 import yaml
 
-from grader.src.mlflow_tracking import configure_mlflow_from_config
+from grader.src.mlflow_tracking import (
+    configure_mlflow_from_config,
+    mlflow_enabled,
+    mlflow_start_run_ctx,
+)
 from grader.src.project_env import load_project_dotenv
 
 # ---------------------------------------------------------------------------
@@ -115,8 +120,16 @@ class EbayIngester:
         "no turntable",
     }
 
-    def __init__(self, config_path: str, guidelines_path: str) -> None:
-        self.config = self._load_yaml(config_path)
+    def __init__(
+        self,
+        config_path: str,
+        guidelines_path: str,
+        config: Optional[dict[str, Any]] = None,
+    ) -> None:
+        if config is not None:
+            self.config = copy.deepcopy(config)
+        else:
+            self.config = self._load_yaml(config_path)
         self.guidelines = self._load_yaml(guidelines_path)
 
         load_project_dotenv()
@@ -176,8 +189,8 @@ class EbayIngester:
         self.raw_dir.mkdir(parents=True, exist_ok=True)
         self.processed_path.parent.mkdir(parents=True, exist_ok=True)
 
-        # MLflow
-        configure_mlflow_from_config(self.config)
+        if mlflow_enabled(self.config):
+            configure_mlflow_from_config(self.config)
 
         # Stats counters — reset on each run()
         self._stats: dict = {}
@@ -689,7 +702,7 @@ class EbayIngester:
             "drops":         {},
         }
 
-        with mlflow.start_run(run_name="ingest_ebay"):
+        with mlflow_start_run_ctx(self.config, "ingest_ebay"):
             all_items = self.fetch_all()
             processed_records: list[dict] = []
 
@@ -730,7 +743,8 @@ class EbayIngester:
                 return processed_records
 
             self.save_processed(processed_records)
-            self._log_mlflow()
+            if mlflow_enabled(self.config):
+                self._log_mlflow()
 
         return processed_records
 

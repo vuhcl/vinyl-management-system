@@ -28,6 +28,7 @@ Usage:
     python -m grader.src.models.baseline --dry-run
 """
 
+import copy
 import json
 import logging
 import pickle
@@ -47,7 +48,12 @@ from sklearn.metrics import (
 )
 
 from grader.src.features.tfidf_features import TFIDFFeatureBuilder
-from grader.src.mlflow_tracking import configure_mlflow_from_config
+from grader.src.mlflow_tracking import (
+    configure_mlflow_from_config,
+    mlflow_enabled,
+    mlflow_log_artifacts_enabled,
+    mlflow_start_run_ctx,
+)
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -145,8 +151,16 @@ class BaselineModel:
         mlflow.experiment_name
     """
 
-    def __init__(self, config_path: str) -> None:
-        self.config = self._load_yaml(config_path)
+    def __init__(
+        self,
+        config_path: str,
+        config: Optional[dict] = None,
+    ) -> None:
+        if config is not None:
+            self.config = copy.deepcopy(config)
+        else:
+            self.config = self._load_yaml(config_path)
+        self._config_path_str = config_path
 
         lr_cfg = self.config["models"]["baseline"]["logistic_regression"]
         self.C: float = lr_cfg["C"]
@@ -217,8 +231,8 @@ class BaselineModel:
         self.selected_c: dict[str, float] = {}
         self.grade_ordinal_map = self._load_grade_ordinal_map()
 
-        # MLflow
-        configure_mlflow_from_config(self.config)
+        if mlflow_enabled(self.config):
+            configure_mlflow_from_config(self.config)
 
     # -----------------------------------------------------------------------
     # Config loading
@@ -945,10 +959,10 @@ class BaselineModel:
                                 class_metrics.get("f1-score", 0.0),
                             )
 
-        # Artifacts
-        for target in TARGETS:
-            mlflow.log_artifact(str(self.calibrated_paths[target]))
-            mlflow.log_artifact(str(self.confusion_paths[target]))
+        if mlflow_log_artifacts_enabled(self.config):
+            for target in TARGETS:
+                mlflow.log_artifact(str(self.calibrated_paths[target]))
+                mlflow.log_artifact(str(self.confusion_paths[target]))
 
     # -----------------------------------------------------------------------
     # Orchestration
@@ -971,7 +985,7 @@ class BaselineModel:
         Returns:
             Dict with models, calibrated models, and eval results.
         """
-        with mlflow.start_run(run_name="baseline_tfidf_logreg"):
+        with mlflow_start_run_ctx(self.config, "baseline_tfidf_logreg"):
 
             # Load features and encoders
             features = self.load_all_features()
@@ -1056,7 +1070,8 @@ class BaselineModel:
             # Save artifacts
             self.save_models()
             self.save_confusion_matrices(features)
-            self._log_mlflow(eval_results)
+            if mlflow_enabled(self.config):
+                self._log_mlflow(eval_results)
 
         return {
             "models": self.models,
@@ -1085,9 +1100,27 @@ def main() -> None:
         action="store_true",
         help="Train and evaluate without saving artifacts",
     )
+    parser.add_argument(
+        "--no-mlflow",
+        action="store_true",
+        help="Disable MLflow (mlflow.enabled: false)",
+    )
+    parser.add_argument(
+        "--mlflow-no-artifacts",
+        action="store_true",
+        help="Params/metrics only (mlflow.log_artifacts: false). Ignored with --no-mlflow.",
+    )
     args = parser.parse_args()
 
-    model = BaselineModel(config_path=args.config)
+    with open(args.config, "r", encoding="utf-8") as f:
+        cfg = yaml.safe_load(f)
+    ml = cfg.setdefault("mlflow", {})
+    if args.no_mlflow:
+        ml["enabled"] = False
+    elif args.mlflow_no_artifacts and ml.get("enabled", True):
+        ml["log_artifacts"] = False
+
+    model = BaselineModel(config_path=args.config, config=cfg)
     model.run(dry_run=args.dry_run)
 
 

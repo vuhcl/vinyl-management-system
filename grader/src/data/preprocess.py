@@ -22,16 +22,22 @@ Usage:
     python -m grader.src.data.preprocess --dry-run
 """
 
+import copy
 import json
 import logging
 import re
 from collections import Counter
 from pathlib import Path
+from typing import Any, Optional
 
 import mlflow
 import yaml
 
-from grader.src.mlflow_tracking import configure_mlflow_from_config
+from grader.src.mlflow_tracking import (
+    configure_mlflow_from_config,
+    mlflow_enabled,
+    mlflow_start_run_ctx,
+)
 from sklearn.model_selection import StratifiedShuffleSplit
 
 # ---------------------------------------------------------------------------
@@ -70,8 +76,16 @@ class Preprocessor:
             — protected terms derived from all signals
     """
 
-    def __init__(self, config_path: str, guidelines_path: str) -> None:
-        self.config = self._load_yaml(config_path)
+    def __init__(
+        self,
+        config_path: str,
+        guidelines_path: str,
+        config: Optional[dict[str, Any]] = None,
+    ) -> None:
+        if config is not None:
+            self.config = copy.deepcopy(config)
+        else:
+            self.config = self._load_yaml(config_path)
         self.guidelines = self._load_yaml(guidelines_path)
 
         pp_cfg = self.config["preprocessing"]
@@ -304,8 +318,8 @@ class Preprocessor:
         splits_dir.mkdir(parents=True, exist_ok=True)
         self.reports_dir.mkdir(parents=True, exist_ok=True)
 
-        # MLflow
-        configure_mlflow_from_config(self.config)
+        if mlflow_enabled(self.config):
+            configure_mlflow_from_config(self.config)
 
         # Stats
         self._stats: dict = {}
@@ -913,7 +927,7 @@ class Preprocessor:
             "n_test_thin": 0,
         }
 
-        with mlflow.start_run(run_name="preprocess"):
+        with mlflow_start_run_ctx(self.config, "preprocess"):
             records = self.load_unified()
 
             # Process each record
@@ -992,7 +1006,8 @@ class Preprocessor:
             self.save_preprocessed(processed)
             self.save_splits(splits)
             self._write_test_thin_jsonl(thin_records)
-            self._log_mlflow(splits)
+            if mlflow_enabled(self.config):
+                self._log_mlflow(splits)
 
         return out_splits
 

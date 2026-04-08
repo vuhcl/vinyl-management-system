@@ -31,7 +31,7 @@ where = ["."]
 include = ["repo_meta"]
 
 [tool.pytest.ini_options]
-testpaths = ["grader/tests", "recommender/tests"]
+testpaths = ["grader/tests", "recommender/tests", "price_estimator/tests"]
 pythonpath = ["."]
 addopts = [
     "--cov=grader/src",

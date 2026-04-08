@@ -11,7 +11,7 @@ A monorepo for vinyl collection tooling: **Discogs integration**, **data ingest*
 | **Web app** | Log in with your Discogs token, sync collection & wantlist to the app, and call ML APIs (recommendations, condition, price). |
 | **Recommender** | Hybrid (ALS + content-based) recommendations using your Discogs collection/wantlist and optional AOTY ratings. |
 | **Vinyl condition grader** | Predicts sleeve and media condition from seller notes (e.g. Discogs listings). |
-| **Price estimator** | Estimates fair market value for releases (stub; pipeline and API in place). |
+| **Price estimator (VinylIQ)** | XGBoost + Discogs stats; FastAPI microservice, optional Chrome extension. |
 
 Shared infrastructure: **Discogs API** client and **AOTY** scraped-data loader used across components.
 
@@ -198,19 +198,14 @@ Before turning this into a public-facing product, I recommend addressing:
 - **Dataset and label governance** (document label mappings/contradictions; add regression tests for harmonization).
 - **CI/CD and reproducible training** (locked dependencies, deterministic splits, artifact checks).
 
-### Price estimator
+### Price estimator (VinylIQ)
 
-1. Add `price_estimator/data/raw/sales.csv` and `metadata.csv` (see `price_estimator/README.md`).
-2. Train:
+1. Seed demo data and train (see **`price_estimator/README.md`**) or collect real `marketplace/stats` + feature store.
+2. Run API: `PYTHONPATH=. uvicorn price_estimator.src.api.main:app --port 8801`
+3. Web: set `PRICE_SERVICE_URL` to proxy `GET /api/price/{release_id}` to the microservice, or use in-process `estimate()` without it.
+4. Chrome: load unpacked **`vinyliq-extension/`**.
 
-```bash
-PYTHONPATH=. python -m price_estimator.src.pipeline --phase baseline
-# or --phase gradient_boosting for LightGBM + prediction intervals
-```
-
-3. Use `estimate(release_id, ..., features_row=...)` in code or via web `/api/price` when a model is trained.
-
-See **`price_estimator/README.md`** for data format and options.
+See **`price_estimator/README.md`** and **`vinyliq-extension/README.md`**.
 
 ---
 

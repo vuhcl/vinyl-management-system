@@ -29,6 +29,7 @@ Usage:
 """
 
 import contextlib
+import copy
 import json
 import logging
 import pickle
@@ -52,6 +53,8 @@ from grader.src.evaluation.metrics import compute_metrics, log_metrics_to_mlflow
 from grader.src.mlflow_tracking import (
     configure_mlflow_from_config,
     is_remote_mlflow_tracking_uri,
+    mlflow_enabled,
+    mlflow_log_artifacts_enabled,
 )
 
 # ---------------------------------------------------------------------------
@@ -346,8 +349,12 @@ class TransformerTrainer:
         freeze_encoder_override: Optional[bool] = None,
         transformer_overrides: Optional[dict[str, Any]] = None,
         artifact_subdir: Optional[str] = None,
+        config: Optional[dict] = None,
     ) -> None:
-        self.config = self._load_yaml(config_path)
+        if config is not None:
+            self.config = copy.deepcopy(config)
+        else:
+            self.config = self._load_yaml(config_path)
         if transformer_overrides:
             self.config["models"]["transformer"] = merge_transformer_hparams(
                 self.config["models"]["transformer"],
@@ -403,7 +410,8 @@ class TransformerTrainer:
         torch.manual_seed(self.random_state)
         np.random.seed(self.random_state)
 
-        configure_mlflow_from_config(self.config)
+        if mlflow_enabled(self.config):
+            configure_mlflow_from_config(self.config)
 
         self.model: Optional[TwoHeadClassifier] = None
         self.tokenizer: Optional[DistilBertTokenizerFast] = None
@@ -1007,6 +1015,14 @@ class TransformerTrainer:
             for target, metrics in target_results.items():
                 log_metrics_to_mlflow(metrics, prefix="transformer")
 
+        if not mlflow_log_artifacts_enabled(self.config):
+            mlflow.log_param("mlflow_log_artifacts", "false")
+            logger.info(
+                "MLflow metrics-only (mlflow.log_artifacts: false) — "
+                "skipping artifact and pyfunc uploads."
+            )
+            return
+
         # Model artifacts
         track_uri = mlflow.get_tracking_uri() or ""
         remote = is_remote_mlflow_tracking_uri(track_uri)
@@ -1072,7 +1088,9 @@ class TransformerTrainer:
         Returns:
             model, encoders, eval, training (best epoch / val F1).
         """
-        self._skip_mlflow = bool(skip_mlflow or dry_run)
+        self._skip_mlflow = bool(
+            skip_mlflow or dry_run or not mlflow_enabled(self.config)
+        )
         run_name = mlflow_run_name or "transformer_distilbert_two_head"
         mlflow_ctx = (
             contextlib.nullcontext()
@@ -1280,7 +1298,7 @@ class TransformerTrainer:
 
             self.save_model()
             run_id = ""
-            if not skip_mlflow:
+            if not self._skip_mlflow:
                 run_id = mlflow.active_run().info.run_id if mlflow.active_run() else ""
                 self._log_mlflow(eval_results, training_summary)
 
@@ -1323,13 +1341,38 @@ def main() -> None:
         action="store_true",
         help="Train and save artifacts without MLflow",
     )
+    parser.add_argument(
+        "--no-mlflow",
+        action="store_true",
+        help="Same as --skip-mlflow / mlflow.enabled: false",
+    )
+    parser.add_argument(
+        "--mlflow-no-artifacts",
+        action="store_true",
+        help=(
+            "Log params/metrics only (mlflow.log_artifacts: false). "
+            "Ignored with --skip-mlflow / --no-mlflow."
+        ),
+    )
     args = parser.parse_args()
+
+    with open(args.config, "r", encoding="utf-8") as f:
+        cfg = yaml.safe_load(f)
+    ml = cfg.setdefault("mlflow", {})
+    if args.skip_mlflow or args.no_mlflow:
+        ml["enabled"] = False
+    elif args.mlflow_no_artifacts and ml.get("enabled", True):
+        ml["log_artifacts"] = False
 
     trainer = TransformerTrainer(
         config_path=args.config,
         freeze_encoder_override=not args.unfreeze if args.unfreeze else None,
+        config=cfg,
     )
-    trainer.run(dry_run=args.dry_run, skip_mlflow=args.skip_mlflow)
+    trainer.run(
+        dry_run=args.dry_run,
+        skip_mlflow=args.skip_mlflow or args.no_mlflow,
+    )
 
 
 if __name__ == "__main__":

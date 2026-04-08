@@ -13,9 +13,10 @@ training pick up ``MLFLOW_TRACKING_URI`` without a manual ``export``.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
-from typing import Any, Mapping, MutableMapping
+from typing import Any, Iterator, Mapping, MutableMapping
 from urllib.parse import urlparse
 
 from grader.src.project_env import load_project_dotenv
@@ -23,6 +24,43 @@ from grader.src.project_env import load_project_dotenv
 logger = logging.getLogger(__name__)
 
 _DEFAULT_LOCAL = "sqlite:///grader/experiments/mlflow.db"
+
+
+def _mlflow_section(config: Mapping[str, Any] | None) -> dict[str, Any]:
+    return dict(config or {}).get("mlflow") or {}
+
+
+def mlflow_enabled(config: Mapping[str, Any] | None) -> bool:
+    """When false, training should not create runs or log to MLflow."""
+    return bool(_mlflow_section(config).get("enabled", True))
+
+
+def mlflow_log_artifacts_enabled(config: Mapping[str, Any] | None) -> bool:
+    """
+    When false (and MLflow is enabled), log params/metrics/tags only — no
+    log_artifact / pyfunc bundle / registry uploads.
+    """
+    if not mlflow_enabled(config):
+        return False
+    return bool(_mlflow_section(config).get("log_artifacts", True))
+
+
+@contextlib.contextmanager
+def mlflow_start_run_ctx(
+    config: MutableMapping[str, Any],
+    run_name: str,
+) -> Iterator[None]:
+    """
+    Active MLflow run when ``mlflow.enabled`` is true; otherwise no-op context.
+    """
+    if not mlflow_enabled(config):
+        yield
+        return
+    import mlflow
+
+    configure_mlflow_from_config(config)
+    with mlflow.start_run(run_name=run_name):
+        yield
 
 
 def is_remote_mlflow_tracking_uri(uri: str | None) -> bool:
@@ -113,6 +151,9 @@ def configure_mlflow_from_config(
     MLflow client. Writes the resolved URI back to
     ``config["mlflow"]["tracking_uri"]`` for introspection.
     """
+    if not mlflow_enabled(config):
+        return ""
+
     import mlflow
 
     load_project_dotenv()
