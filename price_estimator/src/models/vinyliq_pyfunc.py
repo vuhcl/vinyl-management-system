@@ -18,6 +18,7 @@ from ..features.vinyliq_features import (
 from .condition_adjustment import default_params, load_params
 from .fitted_regressor import TARGET_KIND_RESIDUAL_LOG_MEDIAN
 
+# Residual reconstruction anchor: prefer release lowest, same order as training.
 _PYFUNC_MEDIAN_COL = "discogs_median_price"
 
 
@@ -65,7 +66,8 @@ class VinylIQPricePyFunc(PythonModel):
         if self._target_kind == TARGET_KIND_RESIDUAL_LOG_MEDIAN:
             if _PYFUNC_MEDIAN_COL not in df.columns:
                 raise ValueError(
-                    f"Residual target requires {_PYFUNC_MEDIAN_COL!r} column for reconstruction"
+                    f"Residual target requires {_PYFUNC_MEDIAN_COL!r} column "
+                    f"(log1p anchor; use release or marketplace lowest)"
                 )
             med = np.maximum(
                 df[_PYFUNC_MEDIAN_COL].to_numpy(dtype=np.float64, copy=False),

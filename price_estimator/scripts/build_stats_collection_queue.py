@@ -30,9 +30,11 @@ containing ``various``) and **Unknown Artist** as the primary credit are
 samplers are not dominated by compilations or placeholders.
 
 **File / digital** releases (Discogs format **File** in ``formats_json`` or
-``format_desc``) are **excluded**. **Vinyl media** (LP, 7\"/10\"/12\", format
-**vinyl**, etc.) are identified for sorting and optional **target share**
-(``--target-vinyl-fraction``, default **0.7**): each primary block, extra block,
+``format_desc``) and **Unofficial Release** (in ``format_desc`` or format
+**descriptions**) are **excluded**. **Vinyl media** (LP, 7\"/10\"/12\", format
+**vinyl**, etc.) are identified for sorting (LP before 12\"/10\"/7\") and optional
+**target share**
+(``--target-vinyl-fraction``, default **0.85**): each primary block, extra block,
 and stratified bucket aims for that fraction vinyl vs other physical formats;
 use **0** to disable quota (tie-break only).
 
@@ -40,6 +42,11 @@ use **0** to disable quota (tie-break only).
 limits how many releases each primary Discogs artist can contribute to the
 proxy **head** and, for ``--stratify-order proxy``, within each stratification
 bucket—so one mega-catalog artist cannot occupy the whole queue.
+
+For ``--rank-by proxy``, the builder runs the **filter + join + global sort once**,
+stores the ordered rows in a session **TEMP** table, then reads that table for
+the primary block, extra block, and any vinyl-quota replay—so it does **not**
+re-execute the heavy catalog-proxy query on every pass.
 
 Example:
 
@@ -123,7 +130,7 @@ def iter_catalog_proxy_release_rows(
     w_master: float,
     w_artist: float,
 ) -> Iterator[tuple[str, str, int]]:
-    """Yield (release_id, primary_artist_id_text, vinyl_flag 0/1) in proxy order."""
+    """Yield (release_id, primary_artist_id_text, vinyl format rank 0–4) in proxy order."""
     from price_estimator.src.catalog_proxy import (
         sql_select_release_id_and_primary_artist_ordered_by_catalog_proxy,
     )
@@ -157,7 +164,10 @@ def _take_vinyl_quota_block(
     out: list[str],
 ) -> None:
     """
-    Consume rows from *iter_rows_factory* (release_id, primary_artist_id, vinyl).
+    Consume rows from *iter_rows_factory* (release_id, primary_artist_id, vinyl_rank).
+
+    *vinyl_rank* is 0 for non-vinyl, 1–4 for vinyl (LP highest). Quota counts
+    any rank ``> 0`` as vinyl.
 
     Appends up to *block_limit* ids to *out* while respecting optional vinyl
     share, artist cap, and dedupe *seen*. A second pass relaxes quota if the
@@ -186,7 +196,7 @@ def _take_vinyl_quota_block(
                 continue
             if cap > 0 and per_artist.get(aid, 0) >= cap:
                 continue
-            is_v = int(v) == 1
+            is_v = int(v) > 0
             if strict_quota and use_quota:
                 if got_v < need_v or got_nv < need_nv:
                     if is_v:
@@ -228,38 +238,59 @@ def _collect_ranked_ids_proxy(
 
     ``target_vinyl_fraction`` in (0, 1): target vinyl share within each block;
     **None** or outside that range: no quota (proxy order + tie-break only).
+
+    Uses one materialized TEMP table so quota replays and the extra block do not
+    each re-run the full proxy CTE + sort.
     """
+    pl = max(0, int(primary_limit))
+    el = max(0, int(extra_limit))
+    if pl <= 0 and el <= 0:
+        return []
+
     out: list[str] = []
     seen: set[str] = set()
     per_artist: dict[str, int] = {}
     cap = max(0, int(max_per_primary_artist))
 
-    if max(0, primary_limit) > 0:
-        _take_vinyl_quota_block(
-            lambda: iter_catalog_proxy_release_rows(
-                db_path, w_master, w_artist
-            ),
-            block_limit=primary_limit,
-            max_per_primary_artist=cap,
-            seen=seen,
-            per_artist=per_artist,
-            skip_if_seen=False,
-            target_vinyl_fraction=target_vinyl_fraction,
-            out=out,
-        )
-    if max(0, extra_limit) > 0:
-        _take_vinyl_quota_block(
-            lambda: iter_catalog_proxy_release_rows(
-                db_path, w_master, w_artist
-            ),
-            block_limit=extra_limit,
-            max_per_primary_artist=cap,
-            seen=seen,
-            per_artist=per_artist,
-            skip_if_seen=True,
-            target_vinyl_fraction=target_vinyl_fraction,
-            out=out,
-        )
+    from price_estimator.src.catalog_proxy import (
+        drop_catalog_proxy_ordered_temp,
+        iter_materialized_catalog_proxy_rows,
+        materialize_catalog_proxy_ordered_table,
+    )
+
+    conn = sqlite3.connect(str(db_path))
+    try:
+        materialize_catalog_proxy_ordered_table(conn, w_master, w_artist)
+
+        def _rows() -> Iterator[tuple[str, str, int]]:
+            return iter_materialized_catalog_proxy_rows(conn)
+
+        if pl > 0:
+            _take_vinyl_quota_block(
+                _rows,
+                block_limit=pl,
+                max_per_primary_artist=cap,
+                seen=seen,
+                per_artist=per_artist,
+                skip_if_seen=False,
+                target_vinyl_fraction=target_vinyl_fraction,
+                out=out,
+            )
+        if el > 0:
+            _take_vinyl_quota_block(
+                _rows,
+                block_limit=el,
+                max_per_primary_artist=cap,
+                seen=seen,
+                per_artist=per_artist,
+                skip_if_seen=True,
+                target_vinyl_fraction=target_vinyl_fraction,
+                out=out,
+            )
+    finally:
+        drop_catalog_proxy_ordered_temp(conn)
+        conn.close()
+
     return out
 
 
@@ -321,6 +352,7 @@ def collect_ranked_ids(
                     min_want=0,
                     exclude_various_artists=True,
                     exclude_file_formats=True,
+                    exclude_unofficial_releases=True,
                     prefer_vinyl_tiebreak=True,
                 )
             ),
@@ -343,6 +375,7 @@ def collect_ranked_ids(
                     min_want=0,
                     exclude_various_artists=True,
                     exclude_file_formats=True,
+                    exclude_unofficial_releases=True,
                     prefer_vinyl_tiebreak=True,
                 )
             ),
@@ -391,16 +424,18 @@ def collect_stratified_ids(
     try:
         from price_estimator.src.catalog_proxy import (
             sql_exclude_file_format_releases,
+            sql_exclude_unofficial_releases,
             sql_exclude_various_primary_artist,
-            sql_vinyl_preference_key,
+            sql_vinyl_format_rank,
             stratified_vinyl_bucket_counts,
         )
 
         queue_row_filter = (
             f"({sql_exclude_various_primary_artist('artists_json')}) AND "
-            f"({sql_exclude_file_format_releases('formats_json', 'format_desc')})"
+            f"({sql_exclude_file_format_releases('formats_json', 'format_desc')}) "
+            f"AND ({sql_exclude_unofficial_releases('formats_json', 'format_desc')})"
         )
-        _vinyl_plain = sql_vinyl_preference_key("formats_json", "format_desc")
+        _vinyl_rank_plain = sql_vinyl_format_rank("formats_json", "format_desc")
 
         split: tuple[int, int] | None = None
         if target_vinyl_fraction is not None and 0 < float(
@@ -425,7 +460,7 @@ WITH inner AS (
   SELECT release_id,
          decade,
          COALESCE(genre, '') AS _g,
-         CAST(({_vinyl_plain}) AS INTEGER) AS _v,
+         CAST(({_vinyl_rank_plain}) AS INTEGER) AS _v,
          (COALESCE(have_count, 0) + COALESCE(want_count, 0)) AS pop
   FROM releases_features
   WHERE {queue_row_filter}
@@ -437,7 +472,7 @@ vin AS (
              PARTITION BY {partition_inner}
              ORDER BY pop DESC, _v DESC, release_id ASC
            ) AS rn
-    FROM inner WHERE _v = 1
+    FROM inner WHERE _v > 0
   ) WHERE rn <= ?
 ),
 non AS (
@@ -458,7 +493,7 @@ SELECT release_id FROM non
             else:
                 inner_order = (
                     "(COALESCE(have_count, 0) + COALESCE(want_count, 0)) DESC, "
-                    f"{_vinyl_plain} DESC, "
+                    f"{_vinyl_rank_plain} DESC, "
                     "release_id ASC"
                 )
                 sql = f"""
@@ -505,7 +540,7 @@ WITH inner AS (
   SELECT release_id,
          decade,
          COALESCE(genre, '') AS _g,
-         CAST(({_vinyl_plain}) AS INTEGER) AS _v,
+         CAST(({_vinyl_rank_plain}) AS INTEGER) AS _v,
          abs((CAST(release_id AS INTEGER) * 7919 + ?) % 2147483647) AS h
   FROM releases_features
   WHERE {queue_row_filter}
@@ -517,7 +552,7 @@ vin AS (
              PARTITION BY {partition_inner}
              ORDER BY h
            ) AS rn
-    FROM inner WHERE _v = 1
+    FROM inner WHERE _v > 0
   ) WHERE rn <= ?
 ),
 non AS (
@@ -697,12 +732,12 @@ def main() -> int:
     p.add_argument(
         "--target-vinyl-fraction",
         type=float,
-        default=0.7,
+        default=0.85,
         metavar="F",
         help=(
             "Target vinyl-medium share (0–1) in each primary/extra block and "
             "each stratified bucket; 0 disables quota (sort tie-break only). "
-            "Default 0.7"
+            "Default 0.85"
         ),
     )
     args = p.parse_args()

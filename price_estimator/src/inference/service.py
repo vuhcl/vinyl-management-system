@@ -25,10 +25,7 @@ from ..models.fitted_regressor import (
     load_fitted_regressor,
 )
 from ..storage.feature_store import FeatureStoreDB
-from ..storage.marketplace_db import (
-    MarketplaceStatsDB,
-    normalize_marketplace_stats,
-)
+from ..storage.marketplace_db import MarketplaceStatsDB
 
 
 def _repo_root() -> Path:
@@ -156,6 +153,7 @@ class InferenceService:
                 return {
                     "lowest_price": row["lowest_price"],
                     "median_price": row["median_price"],
+                    "release_lowest_price": row.get("release_lowest_price"),
                     "num_for_sale": row["num_for_sale"],
                     "source": "cache",
                 }
@@ -166,22 +164,37 @@ class InferenceService:
                 return {
                     "lowest_price": row["lowest_price"],
                     "median_price": row["median_price"],
+                    "release_lowest_price": row.get("release_lowest_price"),
                     "num_for_sale": row["num_for_sale"],
                     "source": "cache",
                 }
             return {
                 "lowest_price": None,
                 "median_price": None,
+                "release_lowest_price": None,
                 "num_for_sale": 0,
                 "source": "none",
             }
-        raw = client.get_marketplace_stats(rid)
-        norm = normalize_marketplace_stats(raw if isinstance(raw, dict) else {})
-        self.marketplace.upsert(rid, raw if isinstance(raw, dict) else {})
+        release_pl = None
+        try:
+            release_pl = client.get_release_with_retries(
+                rid, max_retries=4, backoff_base=1.5, backoff_max=60.0, timeout=45.0
+            )
+        except Exception:
+            release_pl = None
+        if not isinstance(release_pl, dict):
+            release_pl = None
+        self.marketplace.upsert(
+            rid,
+            {},
+            release_payload=release_pl,
+        )
+        row = self.marketplace.get(rid) or {}
         return {
-            "lowest_price": norm["lowest_price"],
-            "median_price": norm["median_price"],
-            "num_for_sale": norm["num_for_sale"],
+            "lowest_price": row.get("lowest_price"),
+            "median_price": row.get("median_price"),
+            "release_lowest_price": row.get("release_lowest_price"),
+            "num_for_sale": int(row.get("num_for_sale") or 0),
             "source": "live",
         }
 
@@ -194,7 +207,11 @@ class InferenceService:
         refresh_stats: bool = False,
     ) -> dict[str, Any]:
         stats = self.fetch_stats(release_id, refresh=refresh_stats)
-        baseline = stats.get("median_price") or stats.get("lowest_price")
+        baseline = (
+            stats.get("release_lowest_price")
+            or stats.get("lowest_price")
+            or stats.get("median_price")
+        )
         cat = self.features.get(str(release_id).strip())
         enc = self._catalog_encoders
         genre = (cat or {}).get("genre") or ""
@@ -246,7 +263,11 @@ class InferenceService:
 
         logp_raw = float(model.predict_log1p(x)[0])
         if model.target_kind == TARGET_KIND_RESIDUAL_LOG_MEDIAN:
-            mp = stats.get("median_price")
+            mp = (
+                stats.get("release_lowest_price")
+                or stats.get("lowest_price")
+                or stats.get("median_price")
+            )
             anchor = float(mp) if mp is not None and float(mp) > 0 else 0.0
             if anchor <= 0.0 and baseline is not None:
                 anchor = float(baseline)

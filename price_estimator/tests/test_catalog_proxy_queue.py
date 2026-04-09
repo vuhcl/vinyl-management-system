@@ -305,6 +305,99 @@ def test_file_format_releases_excluded_from_proxy_queue(tmp_path: Path) -> None:
     assert "v1" in ordered
 
 
+def test_unofficial_releases_excluded_from_proxy_queue(tmp_path: Path) -> None:
+    db = tmp_path / "fs.sqlite"
+    conn = sqlite3.connect(str(db))
+    conn.executescript(_schema_sql())
+    unofficial_desc = (
+        "u1",
+        "mf",
+        0,
+        0,
+        None,
+        "Rock",
+        None,
+        1990,
+        2000,
+        None,
+        0,
+        0,
+        0,
+        0,
+        0,
+        "Vinyl, LP, Unofficial Release",
+        '[{"id":"1","name":"A"}]',
+        None,
+        None,
+        None,
+        None,
+    )
+    unofficial_json = (
+        "u2",
+        "mf",
+        0,
+        0,
+        None,
+        "Rock",
+        None,
+        1990,
+        2000,
+        None,
+        0,
+        0,
+        0,
+        0,
+        0,
+        "Vinyl LP",
+        '[{"id":"1","name":"A"}]',
+        None,
+        None,
+        None,
+        '[{"name":"Vinyl","qty":"1","descriptions":["LP","Unofficial Release"]}]',
+    )
+    ok_row = (
+        "ok_u",
+        "mf",
+        0,
+        0,
+        None,
+        "Rock",
+        None,
+        1990,
+        1999,
+        None,
+        0,
+        0,
+        0,
+        0,
+        0,
+        "Vinyl LP",
+        '[{"id":"1","name":"A"}]',
+        None,
+        None,
+        None,
+        '[{"name":"Vinyl","qty":"1","descriptions":["LP"]}]',
+    )
+    conn.executemany(
+        "INSERT INTO releases_features VALUES (" + ",".join("?" * 21) + ")",
+        [unofficial_desc, unofficial_json, ok_row],
+    )
+    conn.commit()
+    conn.close()
+
+    mod = _load_build_queue_module()
+    ordered = mod.collect_ranked_ids(
+        db,
+        primary_limit=10,
+        extra_limit=0,
+        rank_by="proxy",
+        max_per_primary_artist=0,
+    )
+    assert "u1" not in ordered
+    assert "u2" not in ordered
+    assert "ok_u" in ordered
+
+
 def test_twelve_inch_format_desc_counts_as_vinyl_without_word_vinyl(
     tmp_path: Path,
 ) -> None:
@@ -453,6 +546,75 @@ def test_target_vinyl_fraction_shapes_proxy_head(tmp_path: Path) -> None:
     )
     assert ordered[:7] == [f"v{i}" for i in range(7)]
     assert ordered[7:10] == ["c0", "c1", "c2"]
+
+
+def test_lp_sorts_before_twelve_inch_at_same_proxy_score(tmp_path: Path) -> None:
+    db = tmp_path / "fs.sqlite"
+    conn = sqlite3.connect(str(db))
+    conn.executescript(_schema_sql())
+    twelve = (
+        "twelve1",
+        "ms",
+        0,
+        0,
+        None,
+        "Rock",
+        None,
+        1990,
+        2000,
+        None,
+        0,
+        0,
+        0,
+        0,
+        0,
+        '12", 45 RPM, Single',
+        '[{"id":"55","name":"Band"}]',
+        None,
+        None,
+        None,
+        None,
+    )
+    lp_row = (
+        "lp1",
+        "ms",
+        0,
+        0,
+        None,
+        "Rock",
+        None,
+        1990,
+        2000,
+        None,
+        0,
+        0,
+        0,
+        0,
+        0,
+        "Vinyl, LP, Album",
+        '[{"id":"55","name":"Band"}]',
+        None,
+        None,
+        None,
+        '[{"name":"Vinyl","qty":"1","descriptions":["LP"]}]',
+    )
+    conn.executemany(
+        "INSERT INTO releases_features VALUES (" + ",".join("?" * 21) + ")",
+        [twelve, lp_row],
+    )
+    conn.commit()
+    conn.close()
+
+    mod = _load_build_queue_module()
+    ordered = mod.collect_ranked_ids(
+        db,
+        primary_limit=5,
+        extra_limit=0,
+        rank_by="proxy",
+        max_per_primary_artist=0,
+    )
+    assert ordered[0] == "lp1"
+    assert ordered[1] == "twelve1"
 
 
 def test_vinyl_sorts_before_cd_at_same_proxy_score(tmp_path: Path) -> None:
@@ -878,3 +1040,96 @@ def test_marketplace_normalize_extra_fields() -> None:
     assert n["highest_price"] == 5.0
     assert n["num_for_sale"] == 3
     assert n["blocked_from_sale"] == 1
+
+
+def test_merge_release_listing_into_norm_fills_from_release() -> None:
+    from price_estimator.src.storage.marketplace_db import (
+        merge_release_listing_into_norm,
+        normalize_marketplace_stats,
+    )
+
+    norm = normalize_marketplace_stats({})
+    rel = {
+        "lowest_price": {"value": 12.5, "currency": "USD"},
+        "num_for_sale": 7,
+        "community": {"want": 10, "have": 20},
+    }
+    out = merge_release_listing_into_norm(norm, {}, rel)
+    assert out["lowest_price"] == 12.5
+    assert out["median_price"] == 12.5
+    assert out["num_for_sale"] == 7
+
+
+def test_merge_release_listing_respects_stats_payload() -> None:
+    from price_estimator.src.storage.marketplace_db import (
+        merge_release_listing_into_norm,
+        normalize_marketplace_stats,
+    )
+
+    payload = {"lowest_price": 9.0, "num_for_sale": 2}
+    norm = normalize_marketplace_stats(payload)
+    rel = {"lowest_price": {"value": 99.0}, "num_for_sale": 50}
+    out = merge_release_listing_into_norm(norm, payload, rel)
+    assert out["lowest_price"] == 9.0
+    assert out["num_for_sale"] == 2
+
+
+def test_price_suggestions_ladder_parses_all_grades() -> None:
+    import json
+
+    from price_estimator.src.storage.marketplace_db import (
+        price_suggestion_values_by_grade,
+        price_suggestions_ladder_from_json,
+    )
+
+    raw = json.dumps(
+        {
+            "Near Mint (NM or M-)": {"currency": "USD", "value": 10.0},
+            "Very Good Plus (VG+)": {"currency": "USD", "value": 7.5},
+            "Poor (P)": {"currency": "USD", "value": 1.0},
+        },
+        separators=(",", ":"),
+    )
+    ladder = price_suggestions_ladder_from_json(raw)
+    assert set(ladder.keys()) == {
+        "Near Mint (NM or M-)",
+        "Very Good Plus (VG+)",
+        "Poor (P)",
+    }
+    vals = price_suggestion_values_by_grade(raw)
+    assert vals["Near Mint (NM or M-)"] == pytest.approx(10.0)
+    assert vals["Very Good Plus (VG+)"] == pytest.approx(7.5)
+    assert vals["Poor (P)"] == pytest.approx(1.0)
+
+
+def test_upsert_preserves_price_suggestions_on_empty_api_payload(tmp_path) -> None:
+    import json
+
+    from price_estimator.src.storage.marketplace_db import MarketplaceStatsDB
+
+    db_path = tmp_path / "m.sqlite"
+    store = MarketplaceStatsDB(db_path)
+    rid = "999001"
+    full = {
+        "Near Mint (NM or M-)": {"currency": "USD", "value": 12.0},
+        "Good (G)": {"currency": "USD", "value": 3.0},
+    }
+    store.upsert(
+        rid,
+        {},
+        release_payload={"lowest_price": {"value": 5.0}, "num_for_sale": 1},
+        price_suggestions_payload=full,
+    )
+    row1 = store.get(rid)
+    assert row1 is not None
+    assert json.loads(row1["price_suggestions_json"]) == full
+
+    store.upsert(
+        rid,
+        {},
+        release_payload={"lowest_price": {"value": 6.0}, "num_for_sale": 2},
+        price_suggestions_payload={},
+    )
+    row2 = store.get(rid)
+    assert row2 is not None
+    assert json.loads(row2["price_suggestions_json"]) == full
