@@ -4,6 +4,8 @@ from __future__ import annotations
 import pytest
 
 from price_estimator.src.training.label_synthesis import (
+    dollar_target_and_residual_anchor_from_marketplace_row,
+    parse_price_suggestion_value,
     synthesize_training_price,
     training_label_config_from_vinyliq,
 )
@@ -82,6 +84,8 @@ def test_training_label_config_from_vinyliq_defaults():
         "spread_lowest_floor_ratio": None,
         "spread_min_median_weight": None,
         "spread_num_for_sale_reference": None,
+        "price_suggestion_grade": "Near Mint (NM or M-)",
+        "price_suggestion_fallback_lowest": True,
     }
 
 
@@ -93,6 +97,8 @@ def test_training_label_config_from_vinyliq_nested():
         "spread_lowest_floor_ratio": None,
         "spread_min_median_weight": None,
         "spread_num_for_sale_reference": None,
+        "price_suggestion_grade": "Near Mint (NM or M-)",
+        "price_suggestion_fallback_lowest": True,
     }
 
 
@@ -197,3 +203,43 @@ def test_training_label_config_spread_null_reference_disables_listing_depth():
     }
     d = training_label_config_from_vinyliq(cfg)
     assert d["spread_num_for_sale_reference"] is None
+
+
+def test_parse_price_suggestion_value():
+    raw = '{"Near Mint (NM or M-)": {"currency": "USD", "value": 12.5}}'
+    assert parse_price_suggestion_value(raw, "Near Mint (NM or M-)") == pytest.approx(
+        12.5
+    )
+
+
+def test_dollar_target_release_lowest_prefers_release_column():
+    row = {
+        "release_lowest_price": 18.0,
+        "lowest_price": 10.0,
+        "median_price": 10.0,
+        "num_for_sale": 1,
+    }
+    tl = {"mode": "release_lowest", "blend_median_weight": 0.7}
+    y, m = dollar_target_and_residual_anchor_from_marketplace_row(row, tl)
+    assert y == pytest.approx(18.0)
+    assert m == pytest.approx(18.0)
+
+
+def test_dollar_target_price_suggestion():
+    row = {
+        "price_suggestions_json": (
+            '{"Near Mint (NM or M-)": {"currency": "USD", "value": 30.0}}'
+        ),
+        "release_lowest_price": 20.0,
+        "lowest_price": 15.0,
+        "median_price": 15.0,
+        "num_for_sale": 2,
+    }
+    tl = {
+        "mode": "price_suggestion",
+        "price_suggestion_grade": "Near Mint (NM or M-)",
+        "price_suggestion_fallback_lowest": True,
+    }
+    y, m = dollar_target_and_residual_anchor_from_marketplace_row(row, tl)
+    assert y == pytest.approx(30.0)
+    assert m == pytest.approx(20.0)

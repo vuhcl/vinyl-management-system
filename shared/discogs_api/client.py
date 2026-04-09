@@ -308,6 +308,59 @@ class DiscogsClient:
             return {}
         return out
 
+    def get_release_with_retries(
+        self,
+        release_id: str | int,
+        *,
+        curr_abbr: str | None = None,
+        max_retries: int = 8,
+        backoff_base: float = 1.5,
+        backoff_max: float = 120.0,
+        timeout: float = 45.0,
+    ) -> dict[str, Any]:
+        """GET /releases/{id} with retries (community have/want, lowest_price, num_for_sale, …)."""
+        rid = str(release_id).strip()
+        params: dict[str, Any] = {}
+        if curr_abbr:
+            params["curr_abbr"] = curr_abbr
+        out = self.get_with_retries(
+            f"/releases/{rid}",
+            params=params or None,
+            max_retries=max_retries,
+            backoff_base=backoff_base,
+            backoff_max=backoff_max,
+            timeout=timeout,
+        )
+        if not isinstance(out, dict):
+            return {}
+        return out
+
+    def get_price_suggestions_with_retries(
+        self,
+        release_id: str | int,
+        *,
+        max_retries: int = 8,
+        backoff_base: float = 1.5,
+        backoff_max: float = 120.0,
+        timeout: float = 45.0,
+    ) -> dict[str, Any]:
+        """
+        GET /marketplace/price_suggestions/{id} — grade → {value, currency}.
+
+        Auth required; Discogs returns ``{}`` if seller settings are incomplete.
+        """
+        rid = str(release_id).strip()
+        out = self.get_with_retries(
+            f"/marketplace/price_suggestions/{rid}",
+            max_retries=max_retries,
+            backoff_base=backoff_base,
+            backoff_max=backoff_max,
+            timeout=timeout,
+        )
+        if not isinstance(out, dict):
+            return {}
+        return out
+
     def database_search(
         self,
         *,

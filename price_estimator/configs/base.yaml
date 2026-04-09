@@ -23,22 +23,28 @@ vinyliq:
     learning_rate: 0.05
     subsample: 0.85
     colsample_bytree: 0.85
-  # Dollar target for ``log1p(y)`` from marketplace_stats (median + lowest aggregates).
-  # spread_signal: c=min(1,lowest_eff/median); y=c*median+(1-c)*lowest_eff (see label_synthesis).
-  # Robust defaults (spread only): floor lowest vs median + min weight on median so one
-  # fire-sale / damaged listing does not dominate. Set either key to null to disable.
-  # spread_num_for_sale_reference: scales how much listing count increases median pull
-  # when the book is wide (low lowest_eff/median). High n + wide spread → trust median
-  # more; low n + wide spread → keep spread target (thin sample: less median pull).
-  # blend: y = blend_median_weight * median + (1 - w) * lowest (legacy).
+  # Dollar target for ``log1p(y)`` (see ``label_synthesis``).
+  # spread_signal / blend / median / geometric_mean: use ``release_lowest_price``
+  # from ``GET /releases`` when present, else marketplace stats (``median_price`` there
+  # often equals lowest — not a separate Discogs median).
+  # price_suggestion: pseudo-label from ``GET /marketplace/price_suggestions`` for
+  # ``price_suggestion_grade`` (Discogs seller tool; requires token + seller settings).
+  # The collector stores the full grade→price map in ``price_suggestions_json`` for
+  # all conditions (see ``price_suggestions_ladder_from_json`` in marketplace_db).
+  # price_suggestion_strict: skip rows when suggestions JSON is empty.
+  # release_lowest: y = release or stats lowest.
+  # spread_num_for_sale_reference: listing-depth term for spread_signal only.
   training_label:
     mode: spread_signal
     blend_median_weight: 0.7
     spread_lowest_floor_ratio: 0.35
     spread_min_median_weight: 0.25
     spread_num_for_sale_reference: 20
-  # residual_log_median (default): y = log1p(y_label) - log1p(Discogs median); X omits price/liquidity;
-  # inference adds log1p(live median) before condition adjust (see training_label.json).
+    price_suggestion_grade: "Near Mint (NM or M-)"
+    price_suggestion_fallback_lowest: true
+  # residual_log_median (default): y = log1p(y_label) - log1p(anchor); anchor prefers
+  # release_lowest_price then stats lowest/median; X omits price/liquidity; inference
+  # adds log1p(live anchor). Pyfunc column name remains ``discogs_median_price``.
   # dollar_log1p: predict log1p(price) with marketplace scalars in X (legacy).
   # residual_z_clip_abs: optional positive float; clip z=log1p(y_label)-log1p(median) to [-c,c].
   training_target:

@@ -59,7 +59,10 @@ from ..models.vinyliq_pyfunc import (
     pyfunc_artifacts_dict,
 )
 from ..models.xgb_vinyliq import XGBVinylIQModel
-from .label_synthesis import synthesize_training_price, training_label_config_from_vinyliq
+from .label_synthesis import (
+    dollar_target_and_residual_anchor_from_marketplace_row,
+    training_label_config_from_vinyliq,
+)
 from .search_space import sample_from_space
 
 
@@ -158,38 +161,49 @@ def load_training_frame(
     list[float],
 ]:
     tl = training_label or {"mode": "median", "blend_median_weight": 0.7}
-    mode = str(tl.get("mode", "median"))
-    blend_w = float(tl.get("blend_median_weight", 0.7))
-    spread_floor = tl.get("spread_lowest_floor_ratio")
-    spread_min_mw = tl.get("spread_min_median_weight")
-    spread_n_ref = tl.get("spread_num_for_sale_reference")
 
     conn_m = sqlite3.connect(str(marketplace_db))
     conn_m.row_factory = sqlite3.Row
     cur = conn_m.execute(
         """
-        SELECT release_id, median_price, lowest_price, num_for_sale
+        SELECT release_id, median_price, lowest_price, num_for_sale,
+               price_suggestions_json, release_lowest_price, release_num_for_sale,
+               community_want, community_have
         FROM marketplace_stats
-        WHERE median_price IS NOT NULL AND median_price > 0
+        WHERE (
+            COALESCE(release_lowest_price, lowest_price, median_price) IS NOT NULL
+            AND COALESCE(release_lowest_price, lowest_price, median_price) > 0
+        ) OR (
+            price_suggestions_json IS NOT NULL
+            AND TRIM(price_suggestions_json) != ''
+            AND TRIM(price_suggestions_json) != '{}'
+        )
         """
     )
     labels: dict[str, float] = {}
     medians: dict[str, float] = {}
+    marketplace_extra: dict[str, dict[str, Any]] = {}
     for r in cur.fetchall():
         rid = str(r["release_id"])
-        y = synthesize_training_price(
-            r["median_price"],
-            r["lowest_price"],
-            mode=mode,
-            blend_median_weight=blend_w,
-            spread_lowest_floor_ratio=spread_floor,
-            spread_min_median_weight=spread_min_mw,
-            num_for_sale=r["num_for_sale"],
-            spread_num_for_sale_reference=spread_n_ref,
-        )
+        rd = {k: r[k] for k in r.keys()}
+        y, m_anchor = dollar_target_and_residual_anchor_from_marketplace_row(rd, tl)
         if y is not None and y > 0:
+            m_use = (
+                float(m_anchor)
+                if m_anchor is not None and float(m_anchor) > 0
+                else float(y)
+            )
             labels[rid] = float(y)
-            medians[rid] = float(r["median_price"])
+            medians[rid] = m_use
+            marketplace_extra[rid] = {
+                "community_want": rd.get("community_want"),
+                "community_have": rd.get("community_have"),
+                "release_num_for_sale": rd.get("release_num_for_sale"),
+                "lowest_price": rd.get("lowest_price"),
+                "median_price": rd.get("median_price"),
+                "release_lowest_price": rd.get("release_lowest_price"),
+                "num_for_sale": rd.get("num_for_sale"),
+            }
     conn_m.close()
 
     conn_f = sqlite3.connect(str(feature_store_db))
@@ -206,7 +220,27 @@ def load_training_frame(
         y = labels[rid]
         if y <= 0:
             continue
-        labeled.append(r)
+        mx = marketplace_extra.get(rid, {})
+        r_cat = dict(r)
+        w0 = int(r_cat.get("want_count") or 0)
+        h0 = int(r_cat.get("have_count") or 0)
+        cw = mx.get("community_want")
+        ch = mx.get("community_have")
+        if cw is not None and w0 == 0:
+            try:
+                r_cat["want_count"] = int(cw)
+            except (TypeError, ValueError):
+                pass
+        if ch is not None and h0 == 0:
+            try:
+                r_cat["have_count"] = int(ch)
+            except (TypeError, ValueError):
+                pass
+        h1 = int(r_cat.get("have_count") or 0)
+        w1 = int(r_cat.get("want_count") or 0)
+        if h1 > 0:
+            r_cat["want_have_ratio"] = float(w1) / float(h1)
+        labeled.append(r_cat)
 
     artist_ids_per_row = [first_artist_id(r) for r in labeled]
     label_ids_per_row = [first_label_id(r) for r in labeled]
@@ -263,7 +297,13 @@ def load_training_frame(
         cidx = c2i.get(str(r.get("country") or "").strip().lower(), 0.0)
         aidx = a2i.get(first_artist_id(r), 0.0)
         lbidx = l2i.get(first_label_id(r), 0.0)
-        stats = {"median_price": 0.0, "lowest_price": 0.0, "num_for_sale": 0}
+        mx = marketplace_extra.get(rid, {})
+        stats = {
+            "median_price": mx.get("median_price"),
+            "lowest_price": mx.get("lowest_price"),
+            "release_lowest_price": mx.get("release_lowest_price"),
+            "num_for_sale": int(mx.get("num_for_sale") or 0),
+        }
         row = row_dict_for_inference(
             rid,
             "Near Mint (NM or M-)",

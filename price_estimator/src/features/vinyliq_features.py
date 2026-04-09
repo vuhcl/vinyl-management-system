@@ -194,7 +194,13 @@ def row_dict_for_inference(
     """
     media_ord = condition_string_to_ordinal(media_condition)
     sleeve_ord = condition_string_to_ordinal(sleeve_condition)
-    lowest = stats.get("median_price") or stats.get("lowest_price") or 0.0
+    # Prefer GET /releases lowest, then marketplace aggregates (median often mirrors lowest).
+    lowest = (
+        stats.get("release_lowest_price")
+        or stats.get("lowest_price")
+        or stats.get("median_price")
+        or 0.0
+    )
     if lowest is None:
         lowest = 0.0
     num_sale = int(stats.get("num_for_sale") or 0)

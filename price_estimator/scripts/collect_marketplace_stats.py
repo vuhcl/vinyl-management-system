@@ -1,6 +1,28 @@
 #!/usr/bin/env python3
 """
-Collect Discogs marketplace/stats for a list of release IDs (labels + cache).
+Collect Discogs marketplace data for a list of release IDs (labels + cache).
+
+**Endpoints (see Discogs API docs):**
+
+- ``GET /releases/{id}`` — catalog + ``community.want`` / ``community.have``,
+  ``lowest_price``, ``num_for_sale`` (``curr_abbr`` for currency). In ``full``
+  mode these populate the same SQLite listing columns that
+  ``GET /marketplace/stats`` would (except ``blocked_from_sale``, which only
+  exists on marketplace/stats).
+- ``GET /marketplace/price_suggestions/{id}`` — **full** grade → suggested price map
+  (all Discogs media conditions in one JSON object); **auth required**; returns
+  ``{}`` if seller settings are incomplete. Stored verbatim in
+  ``price_suggestions_json`` (empty responses do not overwrite a previously stored
+  ladder in SQLite).
+- ``GET /marketplace/stats/{id}`` — optional; used only in ``stats_only`` mode:
+  lowest, ``num_for_sale``, ``blocked_from_sale`` (no true median in the API).
+
+**Collect modes**
+
+- ``full`` (default): ``/releases`` + ``/marketplace/price_suggestions`` (2 requests
+  per id, each counted against ``--req-per-minute``). Listing scalars in SQLite
+  come from the release response.
+- ``stats_only``: legacy — only ``/marketplace/stats`` (1 request per id).
 
 Loads repo-root ``.env`` automatically (``DISCOGS_TOKEN``, OAuth vars, etc.).
 
@@ -12,11 +34,6 @@ Auth (first match):
   1. Personal token: ``DISCOGS_USER_TOKEN`` or ``DISCOGS_TOKEN``
   2. OAuth 1.0a: consumer key/secret + ``DISCOGS_OAUTH_TOKEN`` + secret
 
-For ~19M releases with **one** Discogs token, wall-clock is still dominated by
-Discogs' per-app rate limit; parallel workers mainly **overlap I/O wait** and
-keep the pipe full. For higher throughput you need **multiple tokens** (separate
-runs / machines with different ``DISCOGS_TOKEN`` and disjoint ID files).
-
 One-time OAuth:
   PYTHONPATH=. python price_estimator/scripts/collect_marketplace_stats.py --oauth-login
 
@@ -24,14 +41,11 @@ Examples:
   PYTHONPATH=. python price_estimator/scripts/collect_marketplace_stats.py \\
       --release-ids dump_release_ids.txt --workers 12 --req-per-minute 55
 
-  # Huge DB: avoid loading all keys for --resume
   PYTHONPATH=. python price_estimator/scripts/collect_marketplace_stats.py \\
-      --release-ids dump_release_ids.txt --resume --resume-mode query
+      --collect-mode stats_only --release-ids dump_release_ids.txt --resume
 
-  # Parallel collectors (different accounts): token overrides .env for this process
   PYTHONPATH=. python price_estimator/scripts/collect_marketplace_stats.py \\
-      --personal-token-file ~/.config/discogs_token_account_b.txt \\
-      --release-ids queue_shard_ab.txt --resume
+      --collect-mode full --curr-abbr USD --release-ids queue_shard_ab.txt --resume
 """
 from __future__ import annotations
 
@@ -46,6 +60,7 @@ import requests
 from collections import deque
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from pathlib import Path
+from functools import partial
 from typing import Callable, Iterator
 
 
@@ -132,19 +147,64 @@ def _process_one_rid(
     backoff_base: float,
     backoff_max: float,
     timeout: float,
+    collect_mode: str = "full",
+    curr_abbr: str | None = None,
 ) -> None:
-    limiter.acquire()
     client = _thread_discogs_client()
-    raw = client.get_marketplace_stats_with_retries(
+    store = _thread_store(db_path)
+
+    if collect_mode == "stats_only":
+        limiter.acquire()
+        raw = client.get_marketplace_stats_with_retries(
+            rid,
+            max_retries=max_retries,
+            backoff_base=backoff_base,
+            backoff_max=backoff_max,
+            timeout=timeout,
+        )
+        if not isinstance(raw, dict):
+            raw = {}
+        store.upsert(rid, raw)
+        return
+
+    release_pl: dict | None = None
+    sugg_pl: dict | None = None
+
+    limiter.acquire()
+    try:
+        release_pl = client.get_release_with_retries(
+            rid,
+            curr_abbr=curr_abbr,
+            max_retries=max_retries,
+            backoff_base=backoff_base,
+            backoff_max=backoff_max,
+            timeout=timeout,
+        )
+    except requests.RequestException:
+        release_pl = None
+    if not isinstance(release_pl, dict):
+        release_pl = None
+
+    limiter.acquire()
+    try:
+        sugg_pl = client.get_price_suggestions_with_retries(
+            rid,
+            max_retries=max_retries,
+            backoff_base=backoff_base,
+            backoff_max=backoff_max,
+            timeout=timeout,
+        )
+    except requests.RequestException:
+        sugg_pl = {}
+    if not isinstance(sugg_pl, dict):
+        sugg_pl = {}
+
+    store.upsert(
         rid,
-        max_retries=max_retries,
-        backoff_base=backoff_base,
-        backoff_max=backoff_max,
-        timeout=timeout,
+        {},
+        release_payload=release_pl,
+        price_suggestions_payload=sugg_pl,
     )
-    if not isinstance(raw, dict):
-        raw = {}
-    _thread_store(db_path).upsert(rid, raw)
 
 
 def _run_parallel(
@@ -160,6 +220,8 @@ def _run_parallel(
     max_new: int | None,
     should_skip: Callable[[str], bool],
     progress_every: int,
+    collect_mode: str = "full",
+    curr_abbr: str | None = None,
 ) -> tuple[int, int, int]:
     """
     Returns (fetched_ok, skipped_filter, errors).
@@ -217,14 +279,18 @@ def _run_parallel(
                     st["skip"] += 1
                 continue
             fut = ex.submit(
-                _process_one_rid,
+                partial(
+                    _process_one_rid,
+                    db_path=db_path,
+                    limiter=limiter,
+                    max_retries=max_retries,
+                    backoff_base=backoff_base,
+                    backoff_max=backoff_max,
+                    timeout=timeout,
+                    collect_mode=collect_mode,
+                    curr_abbr=curr_abbr,
+                ),
                 rid,
-                db_path=db_path,
-                limiter=limiter,
-                max_retries=max_retries,
-                backoff_base=backoff_base,
-                backoff_max=backoff_max,
-                timeout=timeout,
             )
             futures.add(fut)
             while len(futures) >= inflight:
@@ -244,7 +310,22 @@ def _run_parallel(
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Collect marketplace/stats into SQLite (parallel + limiter)",
+        description="Collect Discogs release + marketplace data into SQLite (parallel + limiter)",
+    )
+    parser.add_argument(
+        "--collect-mode",
+        choices=("full", "stats_only"),
+        default="full",
+        help=(
+            "full=/releases + /marketplace/price_suggestions (default, 2 req/id). "
+            "stats_only=legacy /marketplace/stats only (1 req/id)."
+        ),
+    )
+    parser.add_argument(
+        "--curr-abbr",
+        default=None,
+        metavar="USD",
+        help="Optional currency for GET /releases (e.g. USD, EUR).",
     )
     parser.add_argument(
         "--release-ids",
@@ -449,8 +530,8 @@ def main() -> int:
         )
 
     try:
-        # Same endpoint the collector uses (personal token + OAuth both supported).
-        probe.get_marketplace_stats("1")
+        # Same class of call as ``full`` mode (personal token + OAuth both supported).
+        probe.get_release("1")
     except requests.HTTPError as e:
         sc = e.response.status_code if e.response is not None else None
         if sc == 429:
@@ -529,10 +610,12 @@ def main() -> int:
 
     id_iter = iter_release_ids_from_file(args.release_ids)
 
+    ca = args.curr_abbr.strip().upper() if args.curr_abbr else None
+
     print(
-        f"Collecting marketplace stats → {db_path} "
-        f"(workers={args.workers}, req/min≈{req_per_minute:.1f}, "
-        f"resume={args.resume}/{args.resume_mode})",
+        f"Collecting marketplace data → {db_path} "
+        f"(mode={args.collect_mode}, workers={args.workers}, "
+        f"req/min≈{req_per_minute:.1f}, resume={args.resume}/{args.resume_mode})",
         flush=True,
     )
 
@@ -548,6 +631,8 @@ def main() -> int:
         max_new=max_new,
         should_skip=should_skip,
         progress_every=max(0, args.progress_every),
+        collect_mode=args.collect_mode,
+        curr_abbr=ca,
     )
 
     msg = f"Done. fetched={ok} skipped={skipped} errors={err} db={db_path}"

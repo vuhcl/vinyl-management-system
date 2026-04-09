@@ -13,7 +13,8 @@ Dedicated **price microservice** and training pipeline: Discogs `marketplace/sta
 | `src/models/xgb_vinyliq.py` | XGBoost artifact load/save |
 | `src/storage/` | SQLite: marketplace cache/labels + `releases_features` |
 | `src/training/train_vinyliq.py` | Train booster (requires joined labels + features) |
-| `scripts/collect_marketplace_stats.py` | Rate-limited stats collector (`--resume`, `--max`) |
+| `scripts/collect_marketplace_stats.py` | Rate-limited collector: `full` = `/releases` + price suggestions (2 req/release), or `stats_only` = `/marketplace/stats` only |
+| `scripts/backfill_feature_store_community.py` | API backfill of `want_count` / `have_count` for dump rows |
 | `scripts/ingest_discogs_dump.py` | Monthly `releases.xml(.gz)` → feature store + optional ID list |
 | `scripts/export_release_ids.py` | `feature_store.sqlite` → IDs (`--sort-by release_id`, `have`, or `want`) |
 | `scripts/build_stats_collection_queue.py` | Merge catalog-proxy (or community) + stratified IDs → queue for stats collector |
@@ -81,7 +82,16 @@ PYTHONPATH=. python price_estimator/scripts/ingest_discogs_dump.py \
 
 Deleted releases (`status="Deleted"`) are skipped by default; use **`--include-deleted`** to keep them. **`label_tier`** stays `0` in dump mode (no label-frequency tiering yet). If Discogs changes XML shape and parsing fails, use an external tool such as [`discogs-xml2db`](https://github.com/philipmat/discogs-xml2db) and export a CSV for **`build_feature_store.py`**.
 
-### B. Marketplace labels (`/marketplace/stats`)
+### B. Discogs API: what we store (labels + features)
+
+| Endpoint | Auth | Use |
+|----------|------|-----|
+| `GET /releases/{release_id}` | **`full` mode** | Catalog metadata, **`community.want` / `community.have`**, **`lowest_price`**, **`num_for_sale`** (same currency family as `curr_abbr`). These populate the same listing columns in SQLite that marketplace/stats would (except **`blocked_from_sale`**). |
+| `GET /marketplace/price_suggestions/{release_id}` | **`full` mode** | **Full ladder:** every Discogs media grade → `{value, currency}` in one object (pseudo-labels for training **and** future condition-rule fitting). Persisted in `price_suggestions_json`. If a later fetch returns `{}`, the DB **keeps** a non-empty ladder already on that row. |
+| `GET /marketplace/stats/{release_id}` | **`stats_only` mode** | Lowest listed price, `num_for_sale`, `blocked_from_sale`. Documented **without** a true median; our normalizer may set `median_price` = lowest when the payload omits median. |
+| `GET /releases/{release_id}/stats` | Optional | Lightweight `{num_have, num_want}` only — redundant if you already call full `GET /releases`. |
+
+**Collector (`collect_marketplace_stats.py`)** — default **`--collect-mode full`**: **two** requests per release (`/releases` + price suggestions; each counts toward **`--req-per-minute`**). Legacy: **`--collect-mode stats_only`** (one request, `/marketplace/stats` only; use if you need **`blocked_from_sale`**). Optional **`--curr-abbr USD`** for release/suggestion currency alignment.
 
 The collector loads repo-root **`.env`** automatically. Use either:
 
@@ -92,11 +102,26 @@ The collector loads repo-root **`.env`** automatically. Use either:
 # Optional one-time: print OAuth lines for .env
 PYTHONPATH=. python price_estimator/scripts/collect_marketplace_stats.py --oauth-login
 
+# Default: full snapshot (release + price_suggestions; listing scalars from release)
 PYTHONPATH=. python price_estimator/scripts/collect_marketplace_stats.py \
   --release-ids price_estimator/data/raw/dump_release_ids.txt \
-  --delay 2.5 \
+  --curr-abbr USD \
   --resume \
   --max 10000
+
+# Stats endpoint only (legacy; no release JSON / suggestions in SQLite)
+PYTHONPATH=. python price_estimator/scripts/collect_marketplace_stats.py \
+  --collect-mode stats_only \
+  --release-ids price_estimator/data/raw/dump_release_ids.txt \
+  --resume
+```
+
+**Backfill community counts** on dump-ingested `releases_features` rows:
+
+```bash
+PYTHONPATH=. uv run python price_estimator/scripts/backfill_feature_store_community.py \
+  --db price_estimator/data/feature_store.sqlite \
+  --limit 10000
 ```
 
 After adding **`requests-oauthlib`** to **`shared`**, run **`uv sync`** once at the repo root.
@@ -160,7 +185,9 @@ Then train: `PYTHONPATH=. python -m price_estimator.src.training.train_vinyliq`.
 ## Targets, leakage, and train/serve alignment
 
 - **Default target (`vinyliq.training_target.kind: residual_log_median`)**  
-  The model predicts **`z = log1p(y_label) - log1p(median_price)`** where `y_label` comes from `training_label` (e.g. `spread_signal` in [`label_synthesis`](src/training/label_synthesis.py)) and `median_price` is from the same `marketplace_stats` row. **Features** omit same-snapshot Discogs price and liquidity (`baseline_median`, `log1p_baseline_median`, `num_for_sale`, `log_num_for_sale`). At **inference** and in the **MLflow pyfunc** bundle, the service adds **`log1p(median_live)`** to the model output, then applies the usual **condition** adjustment and `expm1`. Batch/pyfunc inputs must include **`discogs_median_price`** when the saved manifest has `target_kind: residual_log_median`.
+  The model predicts **`z = log1p(y_label) - log1p(anchor)`** where `y_label` comes from `training_label` (see [`label_synthesis`](src/training/label_synthesis.py): `spread_signal`, `release_lowest`, `price_suggestion`, etc.). The **anchor** prefers **`release_lowest_price`** from `GET /releases`, then marketplace stats `lowest_price` / `median_price` (the latter often duplicates lowest — not a separate API median). **Features** omit same-snapshot Discogs price and liquidity (`baseline_median`, `log1p_baseline_median`, `num_for_sale`, `log_num_for_sale`). Training merges **`community_want` / `community_have`** from `marketplace_stats` into rows when the feature store still has zeros (e.g. after dump ingest). At **inference** and in the **MLflow pyfunc** bundle, the service adds **`log1p(anchor_live)`** (same preference order), then condition adjustment and `expm1`. Batch/pyfunc still use the column name **`discogs_median_price`** for that anchor when `target_kind: residual_log_median`.
+
+- **`price_suggestion` targets** are **Discogs suggested prices**, not observed sales — treat as teacher / pseudo-labels. Use `price_suggestion_fallback_lowest: true` when suggestions are often empty.
 
 - **Legacy (`dollar_log1p`)**  
   Direct `log1p(y_label)` target; training rows still pass **zeroed** marketplace stats into `row_dict_for_inference` in [`train_vinyliq`](src/training/train_vinyliq.py), while inference may fill live stats—prefer **residual** mode to avoid that skew.

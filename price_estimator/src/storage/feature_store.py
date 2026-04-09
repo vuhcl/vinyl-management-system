@@ -163,6 +163,7 @@ class FeatureStoreDB:
         proxy_weight_artist: float = 1.0,
         exclude_various_artists: bool = False,
         exclude_file_formats: bool = False,
+        exclude_unofficial_releases: bool = False,
         prefer_vinyl_tiebreak: bool = False,
     ) -> Iterator[str]:
         """
@@ -183,8 +184,11 @@ class FeatureStoreDB:
         excludes those rows).
         ``exclude_file_formats``: if True, drop Discogs **File** / digital rows
         (not applied for ``catalog_proxy``; proxy SQL always excludes them).
-        ``prefer_vinyl_tiebreak``: if True, sort vinyl-looking rows before
-        others when community scores tie (have / want / popularity sorts only).
+        ``exclude_unofficial_releases``: if True, drop rows tagged **Unofficial
+        Release** in ``format_desc`` or format descriptions (not applied for
+        ``catalog_proxy``; proxy SQL always excludes them).
+        ``prefer_vinyl_tiebreak``: if True, break ties with vinyl **format rank**
+        (LP before 12\"/10\"/7\") on community sorts (have / want / popularity only).
         """
         valid = (
             "release_id",
@@ -234,13 +238,21 @@ class FeatureStoreDB:
             clauses.append(
                 sql_exclude_file_format_releases("formats_json", "format_desc")
             )
+        if exclude_unofficial_releases:
+            from price_estimator.src.catalog_proxy import (
+                sql_exclude_unofficial_releases,
+            )
+
+            clauses.append(
+                sql_exclude_unofficial_releases("formats_json", "format_desc")
+            )
         where = f"WHERE {' AND '.join(clauses)} " if clauses else ""
 
         vinyl_k = None
         if prefer_vinyl_tiebreak:
-            from price_estimator.src.catalog_proxy import sql_vinyl_preference_key
+            from price_estimator.src.catalog_proxy import sql_vinyl_format_rank
 
-            vinyl_k = sql_vinyl_preference_key("formats_json", "format_desc")
+            vinyl_k = sql_vinyl_format_rank("formats_json", "format_desc")
 
         if sort_by == "have_count":
             if vinyl_k:
@@ -284,13 +296,15 @@ class FeatureStoreDB:
         min_want: int = 0,
         exclude_various_artists: bool = False,
         exclude_file_formats: bool = False,
+        exclude_unofficial_releases: bool = False,
         prefer_vinyl_tiebreak: bool = False,
     ) -> Iterator[tuple[str, int]]:
         """
         Like ``iter_release_ids`` for community sorts, but yields
-        ``(release_id, vinyl_flag)`` with vinyl_flag 0/1 from catalog heuristics.
+        ``(release_id, vinyl_rank)`` (0–4, LP highest) from catalog heuristics.
 
         ``sort_by``: ``have_count``, ``want_count``, or ``popularity`` only.
+        Honors ``exclude_unofficial_releases`` like ``iter_release_ids``.
         """
         valid = ("have_count", "want_count", "popularity")
         if sort_by not in valid:
@@ -320,13 +334,21 @@ class FeatureStoreDB:
             clauses.append(
                 sql_exclude_file_format_releases("formats_json", "format_desc")
             )
+        if exclude_unofficial_releases:
+            from price_estimator.src.catalog_proxy import (
+                sql_exclude_unofficial_releases,
+            )
+
+            clauses.append(
+                sql_exclude_unofficial_releases("formats_json", "format_desc")
+            )
         where = f"WHERE {' AND '.join(clauses)} " if clauses else ""
 
         vinyl_k = None
         if prefer_vinyl_tiebreak:
-            from price_estimator.src.catalog_proxy import sql_vinyl_preference_key
+            from price_estimator.src.catalog_proxy import sql_vinyl_format_rank
 
-            vinyl_k = sql_vinyl_preference_key("formats_json", "format_desc")
+            vinyl_k = sql_vinyl_format_rank("formats_json", "format_desc")
 
         if sort_by == "have_count":
             if vinyl_k:

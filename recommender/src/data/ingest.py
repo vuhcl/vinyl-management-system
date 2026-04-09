@@ -7,13 +7,6 @@ Data ingestion for the recommender subproject.
   aoty loader.
   Scrapers and scraped data live elsewhere; point config to that directory.
 
-<<<<<<< Updated upstream
-When Discogs token or AOTY path is not set, falls back to CSV files in
-data_dir.
-=======
-<<<<<<< Updated upstream
-When Discogs token or AOTY path is not set, falls back to CSV files in data_dir.
-=======
 When Discogs token or AOTY path is not set, falls back to CSV files in
 data_dir.
 
@@ -22,8 +15,6 @@ Optional **precomputed** Discogs release → AOTY album id JSON (see
 ``discogs["release_to_aoty_map_path"]`` and either use
 ``discogs["skip_live_discogs_aoty_mapping"]=true`` to avoid live HTTP
 matching, or rely on automatic fallback when live matching raises.
->>>>>>> Stashed changes
->>>>>>> Stashed changes
 """
 from pathlib import Path
 from typing import cast
@@ -350,18 +341,10 @@ def ingest_all(
         aoty_albums_file=aoty.get("albums_file", "albums.csv"),
     )
 
-<<<<<<< Updated upstream
-=======
-<<<<<<< Updated upstream
-=======
->>>>>>> Stashed changes
     # If Discogs data came from the API, `collection`/`wantlist` album_id
     # values are Discogs release IDs. Map them to canonical AOTY album_id so
     # the recommender interactions align across sources.
     ingest_metadata: dict = {"discogs_aoty_mapping": None}
-<<<<<<< Updated upstream
-    if use_discogs and not albums.empty and discogs_token_resolved:
-=======
 
     def _resolve_release_to_aoty_path(raw_path: str | Path | None) -> Path | None:
         if not raw_path:
@@ -432,7 +415,6 @@ def ingest_all(
                 ),
             }
     elif use_discogs and not albums.empty and discogs_token_resolved:
->>>>>>> Stashed changes
         if "album_title" in albums.columns and (
             albums["album_title"].astype(str).str.strip().ne("").any()
         ):
@@ -456,10 +438,7 @@ def ingest_all(
                 )
                 mapping_report: dict = {
                     "attempted": True,
-<<<<<<< Updated upstream
-=======
                     "mode": "live_discogs_http",
->>>>>>> Stashed changes
                     "catalog_build": {},
                     "collection_release_map": None,
                     "wantlist_release_map": None,
@@ -503,15 +482,6 @@ def ingest_all(
                     http.save_disk()
                 ingest_metadata["discogs_aoty_mapping"] = mapping_report
             except Exception as exc:
-<<<<<<< Updated upstream
-                # Mapping is best-effort; downstream preprocess will filter
-                # based on available album metadata.
-                ingest_metadata["discogs_aoty_mapping"] = {
-                    "attempted": True,
-                    "error": str(exc),
-                }
-
-=======
                 if release_map:
                     rep = _apply_release_artifact()
                     rep["live_error"] = str(exc)
@@ -523,8 +493,6 @@ def ingest_all(
                         "error": str(exc),
                     }
 
->>>>>>> Stashed changes
->>>>>>> Stashed changes
     return {
         "collection": collection,
         "wantlist": wantlist,
