@@ -20,6 +20,7 @@ from recommender.src.retrieval.candidates import (
 
 
 def test_candidate_pool_includes_genre_and_artist_neighbors() -> None:
+    """Genre expansion and same-artist expansion add neighbors; cold albums need relaxed train filters."""
     albums = pd.DataFrame(
         [
             {
@@ -56,9 +57,12 @@ def test_candidate_pool_includes_genre_and_artist_neighbors() -> None:
         }
     )
     meta = build_retrieval_metadata(albums, train)
+    # Album 3 is only reached via same-artist expansion and has no train rows;
+    # default min_train_count / min_distinct_users would drop it after expansion.
     cfg = CandidateRetrievalConfig(
         min_avg_rating=0.0,
-        min_train_count=1,
+        min_train_count=0,
+        min_distinct_users=0,
         max_candidates=100,
     )
     pool = candidate_album_ids_for_user({"1"}, meta, cfg)

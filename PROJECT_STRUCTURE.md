@@ -4,6 +4,26 @@ This document describes the **master project structure** that houses and coordin
 
 ---
 
+## Workspace packages (uv)
+
+| Package | Path | Role |
+|--------|------|------|
+| **vinyl-core** | `core/` | Repo-root config (`core.config.load_config`), Discogs token storage, ingest jobs |
+| **vinyl-shared** | `shared/` | Discogs client, AOTY loader |
+| **vinyl-recommender** | `recommender/` | Hybrid recommender pipeline |
+| **vinyl-grader** | `grader/` | Condition grader + optional FastAPI serving (`grader.serving`) |
+| **vinyl-price-estimator** | `price_estimator/` | VinylIQ training + `/estimate` API + local `estimate()` |
+| **vinyl-web** | `web/` | Dashboard FastAPI app; routers use `web.app.deps.get_current_username` (session middleware sets `request.state.username` from cookie) |
+
+Root `pyproject.toml` lists these as `[tool.uv.workspace]` members.
+
+### Two config roots
+
+- **Repository root:** `configs/base.yaml` loaded with `core.config.load_config()`. Relative `paths.*` and `aoty_scraped.dir` are resolved against the repo root. Used by `core.jobs`, the web app, and `recommender.pipeline` (same file for training).
+- **Price estimator package:** `price_estimator/configs/base.yaml` is loaded by `price_estimator.src.pipeline` using the package root (not the repo root). Override path via env `VINYLIQ_CONFIG` where supported. Do not assume `core.config` applies to VinylIQ paths without an explicit integration step.
+
+---
+
 ## High-level layout
 
 ```
@@ -48,16 +68,20 @@ vinyl_management_system/
 │   ├── pipeline.py
 │   └── README.md
 │
-├── price_estimator/               # ML component 3: price estimation
-│   ├── data/raw/                   # sales.csv, metadata.csv
+├── price_estimator/               # ML component 3: VinylIQ price API + training
+│   ├── data/cache/, feature_store.sqlite
 │   ├── src/
-│   │   ├── data/                   # ingest, preprocess
-│   │   ├── features/               # historical_price, condition_features, embeddings
-│   │   ├── models/                  # baseline (linear), gradient_boosting (LightGBM)
-│   │   ├── evaluation/             # metrics, prediction_interval
-│   │   └── pipeline.py             # run_pipeline(), estimate()
+│   │   ├── api/                    # FastAPI microservice (/estimate, /health)
+│   │   ├── inference/              # orchestration
+│   │   ├── features/               # vinyliq_features
+│   │   ├── models/                 # xgb_vinyliq, condition_adjustment
+│   │   ├── storage/                # SQLite marketplace + feature store
+│   │   ├── training/               # train_vinyliq
+│   │   └── pipeline.py             # estimate(), run_pipeline → train
+│   ├── scripts/                    # collect stats, build_feature_store, seed_demo
 │   ├── configs/base.yaml
 │   └── README.md
+├── vinyliq-extension/             # Chrome extension (MV3) → price API
 │
 ├── web/                           # Web interface
 │   ├── app/
@@ -82,7 +106,7 @@ vinyl_management_system/
 
 | Concern | Where it lives | How it’s used |
 |--------|----------------|----------------|
-| **Config** | `configs/base.yaml` + `core/config.py` | All components and web app load config via `core.config.load_config()`. Paths are resolved relative to project root. |
+| **Config** | `configs/base.yaml` + `core/config.py` | Shared stack: `core.config.load_config()` resolves paths under the **repo root**. VinylIQ uses its own YAML under `price_estimator/configs/` (see **Two config roots** above). |
 | **Discogs** | `shared/discogs_api/` | Recommender ingest, web ingest, and (future) price_estimator use the same client. Token comes from env or from web login (stored in `core.auth`). |
 | **AOTY data** | `shared/aoty/` | Recommender reads ratings/albums from a scraped directory or CSV fallback. |
 | **Ingest** | `core/jobs.py` | Web app calls `run_discogs_ingest(username, token)` or `run_full_ingest(...)` after login; writes to `data/raw/`. |
@@ -96,7 +120,7 @@ vinyl_management_system/
 2. **User triggers ingest** (web): POST `/ingest/sync` or `/ingest/full` → `core.jobs` fetches collection/wantlist (and optionally AOTY) → writes CSVs to `data/raw/`.
 3. **Recommender**: Run `python -m recommender.pipeline` (reads `data/raw/`, writes `data/processed/` and `artifacts/`). Web API `/api/recommendations` loads artifacts and returns recommendations for the logged-in user.
 4. **Vinyl condition grader**: Run from project root (see `grader/README.md`). Web API `/api/condition` calls it for seller-notes → condition.
-5. **Price estimator**: Stub; pipeline and `/api/price/{release_id}` are in place for future implementation.
+5. **VinylIQ / price estimator**: FastAPI in `price_estimator/src/api`; web `/api/price/...` proxies when `PRICE_SERVICE_URL` is set, else in-process `estimate()`. Chrome: `vinyliq-extension/`.
 
 ---
 
@@ -107,7 +131,7 @@ vinyl_management_system/
 - **Ingest**: Use the web UI (Login → Ingest) or call POST `/ingest/sync` with a logged-in session.
 - **Recommender**: After ingest, run `python -m recommender.pipeline --config configs/base.yaml`.
 - **Vinyl condition grader**: `python -m grader.src.pipeline train --baseline-only`.
-- **Price estimator**: `python -m price_estimator.src.pipeline --phase baseline` (or `--phase gradient_boosting`).
+- **Price estimator**: `uvicorn price_estimator.src.api.main:app --port 8801` (see `price_estimator/README.md`); train: `python -m price_estimator.src.training.train_vinyliq`.
 
 ---
 

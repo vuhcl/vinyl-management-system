@@ -9,12 +9,13 @@ from fastapi.responses import HTMLResponse
 
 from core.auth import get_user_token
 from core.jobs import run_discogs_ingest, run_full_ingest
+from web.app.deps import get_current_username
 
 router = APIRouter()
 
 
 def _get_username_and_token(request: Request) -> tuple[str, str]:
-    username = getattr(request.state, "username", None)
+    username = get_current_username(request)
     if not username:
         raise HTTPException(
             status_code=401,
@@ -73,7 +74,7 @@ async def full_ingest(request: Request):
 @router.get("/", response_class=HTMLResponse)
 async def ingest_page(request: Request):
     """Simple page to trigger sync (requires login)."""
-    username = getattr(request.state, "username", None)
+    username = get_current_username(request)
     if not username:
         return """
         <!DOCTYPE html><html><head><meta charset="utf-8"><title>Ingest</title></head>

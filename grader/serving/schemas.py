@@ -1,4 +1,10 @@
-"""Pydantic request/response models for the grader API."""
+"""
+Pydantic request/response models for the grader serving API.
+
+``PredictRequest`` accepts either a single ``text`` or a batch ``items`` list
+(see ``MAX_BATCH`` / ``MAX_TEXT_LEN``). The FastAPI handler builds a dataframe
+from whichever mode was used.
+"""
 
 from __future__ import annotations
 
@@ -17,7 +23,7 @@ class PredictItem(BaseModel):
 
 
 class PredictRequest(BaseModel):
-    """Exactly one of ``text`` (single) or ``items`` (batch)."""
+    """Exactly one of: non-empty ``text`` or non-empty ``items``."""
 
     text: Optional[str] = Field(None, max_length=MAX_TEXT_LEN)
     items: Optional[list[PredictItem]] = Field(None, max_length=MAX_BATCH)

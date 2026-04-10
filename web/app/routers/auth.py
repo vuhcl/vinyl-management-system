@@ -6,17 +6,13 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel
 
 from core.auth import set_user_token
+from web.app.deps import get_current_username
 
 router = APIRouter()
 
 
 class TokenSubmit(BaseModel):
     token: str
-
-
-def get_current_username(request: Request) -> str | None:
-    """Resolve current user from request state (set after login)."""
-    return getattr(request.state, "username", None)
 
 
 @router.post("/token")
@@ -57,9 +53,7 @@ async def submit_token(
 @router.get("/me")
 async def me(request: Request):
     """Return current username if logged in (from cookie, set by middleware)."""
-    username = getattr(
-        request.state, "username", None
-    ) or request.cookies.get("username")
+    username = get_current_username(request) or request.cookies.get("username")
     return {"username": username, "logged_in": username is not None}
 
 

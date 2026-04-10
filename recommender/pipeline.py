@@ -9,6 +9,8 @@ import yaml
 import numpy as np
 import pandas as pd
 
+from core.config import load_config as load_project_config
+
 from recommender.src.data.ingest import ingest_all
 from recommender.src.data.preprocess import preprocess, save_processed, load_processed
 from recommender.src.features.build_matrix import build_user_item_matrix, get_user_item_mappers
@@ -24,11 +26,6 @@ from recommender.src.models.hybrid import rank_hybrid
 from recommender.src.evaluation.evaluate import leave_one_out_split, run_evaluation
 
 
-def load_config(config_path: Path) -> dict:
-    with open(config_path) as f:
-        return yaml.safe_load(f)
-
-
 def run_pipeline(
     config_path: Path,
     data_dir: Path,
@@ -37,7 +34,7 @@ def run_pipeline(
     skip_ingest: bool = False,
     log_mlflow: bool = True,
 ):
-    config = load_config(config_path)
+    config = load_project_config(config_path)
     seed = config.get("seed", 42)
     np.random.seed(seed)
     weights = config.get("interaction_weights", {})

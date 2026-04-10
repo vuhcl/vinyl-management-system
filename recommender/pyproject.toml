@@ -8,6 +8,7 @@ version = "0.1.0"
 description = "Vinyl recommender (ALS, hybrid retrieval)"
 requires-python = ">=3.12"
 dependencies = [
+    "vinyl-core",
     "vinyl-shared",
     "numpy>=1.26.0",
     "pandas>=2.0.0",
@@ -23,4 +24,5 @@ dependencies = [
 where = [".."]
 include = ["recommender*"]
 [tool.uv.sources]
+vinyl-core = { workspace = true }
 vinyl-shared = { workspace = true }
