@@ -118,11 +118,6 @@ python -m recommender.pipeline --config configs/base.yaml --data-dir data/raw --
 
 See **`recommender/README.md`** for details.
 
-<<<<<<< Updated upstream
-=======
-<<<<<<< Updated upstream
-### NLP condition classifier
-=======
 ### Grader API
 
 Standalone **FastAPI** service for the vinyl condition grader: loads the **MLflow-registered** DistilBERT pyfunc, runs the same **preprocessor + rule engine** as pipeline inference, and serves **`POST /predict`** (JSON in/out). Docker build uses image tag **`vinyl-grader-api:latest`** (see `grader/Dockerfile`).
@@ -131,16 +126,11 @@ Standalone **FastAPI** service for the vinyl condition grader: loads the **MLflo
 
 The monolith web app’s **`POST /api/condition`** uses the **baseline** (TF‑IDF) pipeline instead—see *Vinyl condition grader* below.
 
->>>>>>> Stashed changes
 ### Vinyl condition grader (personal use)
 
 This component (and the `/api/condition` endpoint) is intended for **personal use**. It loads the **baseline** model on the server and applies the rule engine, but it is not hardened for public traffic yet.
 
 #### Run the grader locally (baseline)
-<<<<<<< Updated upstream
-=======
->>>>>>> Stashed changes
->>>>>>> Stashed changes
 
 ```bash
 export PYTHONPATH=/path/to/vinyl_management_system

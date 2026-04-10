@@ -39,20 +39,12 @@ Config and paths live at project root: `configs/base.yaml`, `data/raw`, `data/pr
 
 Set in `configs/base.yaml`:
 
-<<<<<<< Updated upstream
-- **Discogs**: `discogs.use_api: true`, `discogs.usernames: ["your_username"]`, and `DISCOGS_USER_TOKEN` in env (or `DISCOGS_TOKEN`), or put either key in the **repo-root `.env`** — `python -m recommender.pipeline` and `scripts/smoke_recommender_ingest.py` load `.env` automatically (via `shared.project_env`).
-=======
-<<<<<<< Updated upstream
-- **Discogs**: `discogs.use_api: true`, `discogs.usernames: ["your_username"]`, and `DISCOGS_USER_TOKEN` in env (or `discogs.token`).
-=======
-- **Discogs**: `discogs.use_api: true`, `discogs.usernames: ["your_username"]`, and `DISCOGS_USER_TOKEN` in env (or `DISCOGS_TOKEN`), or put either key in the **repo-root `.env`** — `python -m recommender.pipeline` and `scripts/smoke_recommender_ingest.py` load `.env` automatically (via `shared.project_env`).
+- **Discogs**: `discogs.use_api: true`, `discogs.usernames: ["your_username"]`, and `DISCOGS_USER_TOKEN` in env (or `DISCOGS_TOKEN`), or put either key in the **repo-root `.env`** — `python -m recommender.pipeline` and `scripts/smoke_recommender_ingest.py` load `.env` automatically (via `shared.project_env`). You can also set `discogs.token` in YAML instead of env.
 - **Discogs → AOTY (recommended)**: incremental Mongo-backed pipeline (candidate masters from your collection ∪ wantlist only — **no** full AOTY catalog Discogs search):
   1. `scripts/build_discogs_master_to_aoty_artifact.py` — release→master + master→AOTY (Mongo upserts + `artifacts/discogs_master_to_aoty.json`).
   2. `scripts/build_discogs_release_to_aoty_artifact.py` — compose `artifacts/discogs_release_to_aoty.json` + Mongo `discogs_release_aoty`.
   Then set `discogs.release_to_aoty_map_path` / `skip_live_discogs_aoty_mapping` as in the smoke config comments.
 - **Legacy monolithic script**: `scripts/build_discogs_aoty_release_map.py` (full old flow; avoid for large catalogs).
->>>>>>> Stashed changes
->>>>>>> Stashed changes
 - **AOTY**: `aoty_scraped.dir: "data/aoty_scraped"` (or path to your scraped output).
 
 ### Two-stage retrieval (optional)
