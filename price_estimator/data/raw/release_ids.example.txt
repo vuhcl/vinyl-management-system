@@ -1,0 +1,6 @@
+# One Discogs release ID per line. Replace with your own list.
+# Export from collection/wantlist URLs, or use:
+#   python price_estimator/scripts/ingest_from_discogs.py --username YOUR_USER
+#
+# Example IDs (well-known releases; delete and use yours):
+249504
