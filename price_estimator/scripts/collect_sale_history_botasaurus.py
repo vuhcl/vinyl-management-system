@@ -37,6 +37,17 @@ import threading
 import time
 from pathlib import Path
 
+from price_estimator.src.scrape.discogs_sale_history_parse import looks_like_login_or_challenge
+
+
+class _Output:
+    """Default is compact stderr; set ``verbose=True`` for step-by-step diagnostics."""
+
+    verbose: bool = False
+
+
+out = _Output()
+
 
 def _root() -> Path:
     return Path(__file__).resolve().parents[1]
@@ -68,8 +79,77 @@ def _line_buffer_stdio() -> None:
 
 
 def _progress(msg: str) -> None:
-    """Progress to stderr so it still shows if something interferes with stdout."""
+    """Always printed (compact status, outcomes, errors)."""
     print(msg, file=sys.stderr, flush=True)
+
+
+def _detail(msg: str) -> None:
+    """Verbose-only (DOM polls, heartbeats, sub-steps)."""
+    if out.verbose:
+        print(msg, file=sys.stderr, flush=True)
+
+
+_JS_CF_CHALLENGE_KIND = r"""
+(function () {
+  const t = (document.title || "").trim().toLowerCase();
+  if (t.includes("just a moment")) return "interstitial_title";
+  if (t.includes("attention required") || t.includes("access denied"))
+    return "title_block";
+  const body = (document.body && document.body.innerText) || "";
+  const blow = body.toLowerCase();
+  if (blow.includes("checking your browser") && blow.includes("cloudflare"))
+    return "checking_browser";
+  const h =
+    (document.documentElement && document.documentElement.innerHTML) || "";
+  const hlow = h.toLowerCase();
+  if (hlow.includes("why have i been blocked")) return "blocked_page";
+  if (hlow.includes("cf-challenge") && hlow.includes("cloudflare")) return "challenge_markup";
+  if (hlow.includes("challenges.cloudflare.com")) return "challenge_iframe";
+  return "none";
+})()
+"""
+
+
+def _cloudflare_challenge_kind(driver) -> str:
+    """Small probe; returns ``none`` or a short reason token."""
+    try:
+        v = driver.run_js(_JS_CF_CHALLENGE_KIND)
+    except Exception:
+        return "unknown_js_error"
+    if not isinstance(v, str):
+        return "none"
+    return v.strip() or "none"
+
+
+def _cloudflare_stderr_banner(*, kind: str, release_id: str, url: str, hint_extra: str) -> None:
+    print(
+        "\n*** Cloudflare / bot challenge detected ***\n"
+        f"  kind: {kind}\n"
+        f"  release_id: {release_id}\n"
+        f"  url: {url}\n"
+        f"  {hint_extra}\n",
+        file=sys.stderr,
+        flush=True,
+    )
+
+
+def _cloudflare_blocks_scrape(kind: str, html: str, parsed) -> bool:
+    """Whether we should treat the tab as blocked by Cloudflare (not a normal Discogs error)."""
+    if kind in ("none", "unknown_js_error"):
+        return False
+    if kind in (
+        "interstitial_title",
+        "checking_browser",
+        "title_block",
+        "blocked_page",
+    ):
+        return True
+    parse_bad = looks_like_login_or_challenge(html) or (
+        "sales_table_not_found" in getattr(parsed, "parse_warnings", [])
+    )
+    if not parse_bad:
+        return False
+    return kind in ("challenge_markup", "challenge_iframe")
 
 
 def _is_cloudflare_just_a_moment_title(driver) -> bool:
@@ -98,7 +178,7 @@ def _discogs_get(
         return
     driver.get(url, bypass_cloudflare=False, timeout=timeout)
     if _is_cloudflare_just_a_moment_title(driver):
-        _progress(
+        _detail(
             '         Cloudflare interstitial (title "Just a moment...") — '
             "running Botasaurus bypass once …"
         )
@@ -133,7 +213,7 @@ def _discogs_get_resilient(
                     "connection",
                 )
             ):
-                _progress(
+                _detail(
                     f"         Navigation CDP error ({e!r}); sleeping 2s and retrying once …"
                 )
                 time.sleep(2.0)
@@ -153,9 +233,9 @@ def _heartbeat_while(
     while not stop.wait(timeout=interval):
         n += 1
         if n <= max_lines:
-            _progress(f"         … still busy ({label}), {n * interval:.0f}s elapsed …")
+            _detail(f"         … still busy ({label}), {n * interval:.0f}s elapsed …")
         elif n == max_lines + 1:
-            _progress(
+            _detail(
                 f"         … ({label}) still running (no more heartbeat lines). "
                 "If this hangs past a few minutes, try Ctrl+C and re-run with "
                 "--assume-logged-in if your profile is already signed in."
@@ -214,29 +294,32 @@ def _wait_for_discogs_login(driver, max_seconds: float) -> None:
         except Exception:
             state = "unknown"
         if state in ("logged_in", "logged_in_maybe"):
-            _progress(
-                "Signed in detected in the browser — continuing (no need to wait out the timer)."
-            )
+            _progress("Signed in — continuing.")
             return
         if not announced:
-            _progress(
-                f"Waiting for Discogs sign-in (checking every 2s, max {max_seconds:.0f}s; "
-                "continues immediately once logged in) …"
-            )
+            if out.verbose:
+                _detail(
+                    f"Waiting for Discogs sign-in (checking every 2s, max {max_seconds:.0f}s; "
+                    "continues as soon as you are logged in) …"
+                )
+            else:
+                _progress(
+                    f"Waiting for Discogs sign-in (up to {max_seconds:.0f}s) …"
+                )
             announced = True
         now = time.monotonic()
         if now - last_status >= 12.0:
             left = max(0.0, deadline - now)
             extra = ""
             if state == "challenge":
-                extra = " (Cloudflare challenge in progress — finish it in the browser) "
+                extra = " (Cloudflare challenge — finish in the browser) "
             elif state == "logged_out":
                 extra = " (still on sign-in — log in in the browser) "
-            _progress(f"         …{extra}~{left:.0f}s left before proceeding anyway …")
+            _detail(f"         …{extra}~{left:.0f}s left …")
             last_status = now
         time.sleep(2.0)
     _progress(
-        "Login poll window ended — proceeding. If you are not signed in, the next pages may fail."
+        "Login poll ended — proceeding (if you are not signed in, scrapes may fail)."
     )
 
 
@@ -272,7 +355,7 @@ def _pull_sale_history_html(
             try:
                 raw = el.html
             except Exception as exc:
-                _progress(f"         {label}: CDP get_outer_html failed: {exc!r}")
+                _detail(f"         {label}: CDP get_outer_html failed: {exc!r}")
                 continue
             if not isinstance(raw, str) or len(raw) <= 300:
                 continue
@@ -287,14 +370,14 @@ def _pull_sale_history_html(
         polls += 1
         got = try_extract()
         if got is not None:
-            _progress(
+            _detail(
                 f"         Sale history DOM via CDP ({len(got) // 1024} KiB) after "
                 f"{polls} poll(s); parsing …"
             )
             return _wrap_sale_history_html(got)
         now = time.monotonic()
         if now - last_log >= 6.0:
-            _progress(
+            _detail(
                 f"         Waiting for sale-history in DOM (poll #{polls}, "
                 f"CDP probe every {poll:.0f}s) …"
             )
@@ -305,19 +388,19 @@ def _pull_sale_history_html(
         probe = driver.run_js(
             "return document.body ? document.body.innerHTML.length : -1"
         )
-        _progress(f"         Debug: document.body.innerHTML length ≈ {probe!r}")
+        _detail(f"         Debug: document.body.innerHTML length ≈ {probe!r}")
     except Exception as exc:
-        _progress(f"         Debug: could not read body length: {exc!r}")
+        _detail(f"         Debug: could not read body length: {exc!r}")
 
-    _progress("         Blocking up to 12s for table.sales-history-table …")
+    _detail("         Blocking up to 12s for table.sales-history-table …")
     try:
         el = driver.wait_for_element("table.sales-history-table", wait=12)
         raw = el.html
         if isinstance(raw, str) and len(raw) > 200:
-            _progress(f"         Sale history table ({len(raw) // 1024} KiB); parsing …")
+            _detail(f"         Sale history table ({len(raw) // 1024} KiB); parsing …")
             return _wrap_sale_history_html(raw)
     except Exception as exc:
-        _progress(f"         Final table wait: {exc!r}")
+        _detail(f"         Final table wait: {exc!r}")
 
     try:
         el = driver.wait_for_element("#page_content", wait=8)
@@ -325,12 +408,12 @@ def _pull_sale_history_html(
         if isinstance(raw, str) and len(raw) > 200:
             low = raw.lower()
             if "sales-history" in low or "sell/history" in low:
-                _progress(f"         #page_content ({len(raw) // 1024} KiB); parsing …")
+                _detail(f"         #page_content ({len(raw) // 1024} KiB); parsing …")
                 return _wrap_sale_history_html(raw)
     except Exception as exc:
-        _progress(f"         Final #page_content wait: {exc!r}")
+        _detail(f"         Final #page_content wait: {exc!r}")
 
-    _progress("         No extractable HTML — returning empty wrapper.")
+    _detail("         No extractable HTML — returning empty wrapper.")
     return _wrap_sale_history_html("")
 
 
@@ -427,7 +510,42 @@ def main() -> int:
         metavar="N",
         help="Stop after N successful scrapes (0 = no limit)",
     )
+    parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Verbose stderr (heartbeats, DOM polls, navigation sub-steps). Default is compact.",
+    )
+    parser.add_argument(
+        "--progress-every",
+        type=int,
+        default=40,
+        metavar="N",
+        help=(
+            "When not using --verbose, print one summary line every N queue positions "
+            "(1..N) finished — counts skips and scrape outcomes. 0 disables. "
+            "Individual errors still print immediately."
+        ),
+    )
+    parser.add_argument(
+        "--on-cloudflare",
+        choices=("stop", "backoff"),
+        default="stop",
+        help=(
+            "After navigation + parse, if a Cloudflare-style challenge is detected: "
+            "'stop' exits the whole run immediately (exit code 3). "
+            "'backoff' waits --cloudflare-backoff-seconds then retries navigation once "
+            "for that release before giving up."
+        ),
+    )
+    parser.add_argument(
+        "--cloudflare-backoff-seconds",
+        type=float,
+        default=120.0,
+        metavar="SEC",
+        help="Used with --on-cloudflare backoff before the extra navigation retry.",
+    )
     args = parser.parse_args()
+    out.verbose = bool(args.verbose)
     _line_buffer_stdio()
     if args.assume_logged_in and args.login_pause:
         print(
@@ -473,7 +591,6 @@ def main() -> int:
     from botasaurus_driver.window_size import WindowSize
 
     from price_estimator.src.scrape.discogs_sale_history_parse import (
-        looks_like_login_or_challenge,
         parse_sale_history_html,
         sale_history_url,
     )
@@ -494,9 +611,10 @@ def main() -> int:
             file=sys.stderr,
         )
         return 1
-    _progress(f"Queued {n_ids} release ID(s) from {rp} → SQLite {db_path}")
-    _progress(
-        "Progress lines below go to stderr; the browser will navigate each sale-history URL."
+    _progress(f"Queued {n_ids} release ID(s) from {rp.name} → {db_path}")
+    _detail(
+        "Progress on stderr; the browser navigates each sale-history URL. "
+        "Omit --verbose for compact output."
     )
 
     # Botasaurus defaults wait_for_complete_page_load=True → driver.get blocks until
@@ -516,16 +634,16 @@ def main() -> int:
         login_wait = 120.0 if args.no_headless else 0.0
 
     if args.assume_logged_in:
-        _progress(
-            "--assume-logged-in: skipping www.discogs.com (avoids long Cloudflare / "
-            "google_get hangs). Going straight to sale-history pages."
+        _detail(
+            "--assume-logged-in: skipping www.discogs.com; going straight to sale-history URLs."
         )
     elif args.login_pause or login_wait > 0:
         try:
-            _progress(
-                "Opening https://www.discogs.com/ — log in if needed, then continue… "
-                "(using direct get, 75s cap — faster than google_get for warmup.)"
-            )
+            if out.verbose:
+                _progress("Opening https://www.discogs.com/ (log in if needed) …")
+            else:
+                _detail("Opening https://www.discogs.com/ …")
+            _detail("Warmup uses direct get, 75s cap.")
             hb_stop = threading.Event()
             hb = threading.Thread(
                 target=_heartbeat_while,
@@ -549,11 +667,10 @@ def main() -> int:
                 try:
                     input()
                 except EOFError:
-                    _progress("(no stdin; continuing immediately)")
-                _progress("Starting sale-history requests now (watch for [1/N] lines next).")
+                    _detail("(no stdin; continuing immediately)")
             else:
                 _wait_for_discogs_login(driver, float(login_wait))
-                _progress("Starting sale-history requests now (watch for [1/N] lines next).")
+            _detail("Starting sale-history requests …")
         except Exception as e:
             print(f"Login warmup navigation failed: {e}", file=sys.stderr)
             try:
@@ -563,13 +680,20 @@ def main() -> int:
             return 1
 
     if not (args.login_pause or login_wait > 0) and not args.assume_logged_in:
-        _progress(
-            f"No login countdown (--login-wait-seconds 0 or headless). "
-            f"Starting {n_ids} sale-history page(s) immediately."
+        _detail(
+            f"No login countdown (--login-wait-seconds 0 or headless); "
+            f"starting {n_ids} sale-history page(s) immediately."
         )
 
     ok = skip = err = 0
     max_ok = args.max if args.max and args.max > 0 else None
+    exit_code = 0
+
+    def periodic_line(i_pos: int) -> None:
+        pe = args.progress_every
+        if out.verbose or pe <= 0 or i_pos % pe != 0:
+            return
+        _progress(f"Progress: ok={ok} skip={skip} err={err} ({i_pos}/{n_ids})")
 
     try:
         for i, rid in enumerate(ids, start=1):
@@ -579,105 +703,164 @@ def main() -> int:
                 if args.resume_hours and args.resume_hours > 0:
                     if store.should_skip_resume(rid, ok_hours=args.resume_hours):
                         skip += 1
-                        _progress(f"[skip] {i}/{n_ids} release {rid} (resume)")
+                        if out.verbose:
+                            _progress(f"[skip] {i}/{n_ids} release {rid} (resume)")
+                        periodic_line(i)
                         continue
                 else:
                     st = store.last_status(rid)
                     if st and st.get("status") == "ok":
                         skip += 1
-                        _progress(
-                            f"[skip] {i}/{n_ids} release {rid} (already ok in DB)"
-                        )
+                        if out.verbose:
+                            _progress(
+                                f"[skip] {i}/{n_ids} release {rid} (already ok in DB)"
+                            )
+                        periodic_line(i)
                         continue
 
             url = sale_history_url(rid)
-            _progress(f"[{i}/{n_ids}] Navigating to sale history for release {rid} …")
-            _progress(f"         {url}")
-            _progress(
-                "         One navigation (driver.get). Heartbeat every 10s only while "
-                "get() is blocked. Cloudflare: auto-bypass only if title is "
-                '"Just a moment..."; use --bypass-cloudflare to force in-get bypass.'
+            _detail(f"[{i}/{n_ids}] release {rid}")
+            _detail(f"         {url}")
+            _detail(
+                "         driver.get (heartbeat only with --verbose). "
+                'Cloudflare bypass only if title is "Just a moment..."; '
+                "else use --bypass-cloudflare."
             )
-            try:
-                hb_stop = threading.Event()
-                hb = threading.Thread(
-                    target=_heartbeat_while,
-                    args=(f"GET sale history {rid}", hb_stop),
-                    daemon=True,
-                )
-                hb.start()
+
+            max_cf = 2 if args.on_cloudflare == "backoff" else 1
+            cf_try = 0
+            rid_done = False
+            while cf_try < max_cf and not rid_done:
+                cf_try += 1
                 try:
-                    _discogs_get_resilient(
-                        driver,
-                        url,
-                        timeout=60,
-                        force_bypass_inside_get=args.bypass_cloudflare,
+                    hb_stop = threading.Event()
+                    hb = threading.Thread(
+                        target=_heartbeat_while,
+                        args=(f"GET sale history {rid}", hb_stop),
+                        daemon=True,
                     )
-                finally:
-                    hb_stop.set()
-                _progress(
-                    "         Navigation finished; polling DOM for sale table (no reloads) …"
-                )
-                html = _pull_sale_history_html(driver)
-                _progress(f"         HTML ready ({len(html) // 1024} KiB), parsing …")
-            except Exception as e:
-                store.record_failure(rid, f"navigation: {e}")
-                err += 1
-                print(f"[err] {i}/{n_ids} release {rid}: navigation failed: {e}", file=sys.stderr)
-                time.sleep(args.delay)
-                continue
+                    hb.start()
+                    try:
+                        _discogs_get_resilient(
+                            driver,
+                            url,
+                            timeout=60,
+                            force_bypass_inside_get=args.bypass_cloudflare,
+                        )
+                    finally:
+                        hb_stop.set()
+                    _detail(
+                        "         Navigation finished; polling DOM for sale table (no reloads) …"
+                    )
+                    html = _pull_sale_history_html(driver)
+                    _detail(f"         HTML ready ({len(html) // 1024} KiB), parsing …")
+                except Exception as e:
+                    store.record_failure(rid, f"navigation: {e}")
+                    err += 1
+                    print(
+                        f"[err] {i}/{n_ids} release {rid}: navigation failed: {e}",
+                        file=sys.stderr,
+                    )
+                    rid_done = True
+                    break
 
-            if looks_like_login_or_challenge(html):
-                store.record_failure(
-                    rid,
-                    "login_or_bot_challenge_page",
-                    warnings=["expected_sale_history_after_login"],
-                )
-                err += 1
-                print(
-                    f"[err] {i}/{n_ids} release {rid}: login/challenge page — refresh session in profile",
-                    file=sys.stderr,
-                )
-                time.sleep(args.delay)
-                continue
+                parsed = parse_sale_history_html(html, rid)
+                kind = _cloudflare_challenge_kind(driver)
+                if _cloudflare_blocks_scrape(kind, html, parsed):
+                    _cloudflare_stderr_banner(
+                        kind=kind,
+                        release_id=rid,
+                        url=url,
+                        hint_extra=(
+                            "Exiting (--on-cloudflare stop). "
+                            "Solve the challenge in the browser (--no-headless), then retry."
+                            if args.on_cloudflare == "stop"
+                            else (
+                                f"Sleeping {args.cloudflare_backoff_seconds:.0f}s then "
+                                "retrying navigation once for this release."
+                            )
+                        ),
+                    )
+                    if args.on_cloudflare == "stop":
+                        store.record_failure(rid, f"cloudflare:{kind}")
+                        err += 1
+                        exit_code = 3
+                        rid_done = True
+                        break
+                    if cf_try < max_cf:
+                        time.sleep(max(1.0, args.cloudflare_backoff_seconds))
+                        continue
+                    store.record_failure(rid, f"cloudflare:{kind}")
+                    err += 1
+                    rid_done = True
+                    break
 
-            parsed = parse_sale_history_html(html, rid)
-            if (
-                parsed.parse_warnings
-                and "sales_table_not_found" in parsed.parse_warnings
-            ):
-                store.record_failure(
-                    rid,
-                    "sales_table_not_found",
-                    warnings=parsed.parse_warnings,
-                )
-                err += 1
-                print(
-                    f"[err] {i}/{n_ids} release {rid}: could not find sales table",
-                    file=sys.stderr,
-                )
-            else:
+                if looks_like_login_or_challenge(html):
+                    store.record_failure(
+                        rid,
+                        "login_or_bot_challenge_page",
+                        warnings=["expected_sale_history_after_login"],
+                    )
+                    err += 1
+                    print(
+                        f"[err] {i}/{n_ids} release {rid}: login/challenge page — refresh session in profile",
+                        file=sys.stderr,
+                    )
+                    rid_done = True
+                    break
+
+                if (
+                    parsed.parse_warnings
+                    and "sales_table_not_found" in parsed.parse_warnings
+                ):
+                    store.record_failure(
+                        rid,
+                        "sales_table_not_found",
+                        warnings=parsed.parse_warnings,
+                    )
+                    err += 1
+                    print(
+                        f"[err] {i}/{n_ids} release {rid}: could not find sales table",
+                        file=sys.stderr,
+                    )
+                    rid_done = True
+                    break
+
                 store.upsert_parsed(parsed, status="ok", error=None)
                 ok += 1
-                _progress(
-                    f"[ok] {i}/{n_ids} release {rid}: stored {len(parsed.rows)} sale row(s)"
-                )
+                if out.verbose:
+                    _progress(
+                        f"[ok] {i}/{n_ids} release {rid}: stored {len(parsed.rows)} sale row(s)"
+                    )
+                rid_done = True
+                break
+
+            if exit_code == 3:
+                periodic_line(i)
+                break
 
             if i < n_ids:
                 d = max(0.5, args.delay)
-                _progress(f"         Pausing {d:.1f}s before next release …")
+                _detail(f"         Pausing {d:.1f}s before next release …")
+            periodic_line(i)
             time.sleep(max(0.5, args.delay))
     finally:
-        _progress("Closing browser …")
+        _detail("Closing browser …")
         try:
             driver.close()
         except Exception:
             pass
 
-    _progress(
-        f"Finished. ok={ok} skipped={skip} errors={err} (of {n_ids} queued) → {db_path}"
-    )
-    return 0
+    if exit_code == 0:
+        _progress(
+            f"Finished. ok={ok} skipped={skip} errors={err} (of {n_ids} queued) → {db_path}"
+        )
+    else:
+        _progress(
+            f"Stopped early (exit {exit_code}, cloudflare). "
+            f"ok={ok} skipped={skip} errors={err} ({n_ids} queued) → {db_path}"
+        )
+    return exit_code
 
 
 if __name__ == "__main__":
