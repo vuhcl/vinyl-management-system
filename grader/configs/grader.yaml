@@ -81,7 +81,7 @@ data:
     inventory_sort_order: desc
     # Send format=Vinyl (etc.) on inventory GET — not in official docs; if 400, we retry without.
     inventory_format_api_param: true
-    target_per_grade:   10000        # max listings to fetch per canonical grade
+    target_per_grade:   15000        # max listings to fetch per canonical grade
                                    # grades: Mint, Near Mint, VG+, VG, Good, Poor
                                    # Excellent excluded — Discogs has no EX grade
                                    # Generic excluded — not a searchable condition
