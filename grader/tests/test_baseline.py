@@ -34,6 +34,25 @@ def trained_baseline(
     return baseline
 
 
+class TestLoadTrainedFromArtifacts:
+    def test_load_eval_from_disk(
+        self,
+        test_config,
+        saved_encoder_paths,
+        saved_vectorizer_paths,
+        saved_feature_paths,
+        saved_calibrated_model_paths,
+    ):
+        from grader.src.models.baseline import BaselineModel
+
+        bl, bundle = BaselineModel.load_trained_from_artifacts(test_config)
+        assert "eval" in bundle
+        assert "test" in bundle["eval"]
+        for target in ("sleeve", "media"):
+            assert target in bl.calibrated
+            assert bundle["eval"]["test"][target]["macro_f1"] >= 0.0
+
+
 class TestTraining:
     def test_train_returns_both_heads(
         self, baseline, sample_feature_matrices, fitted_encoders

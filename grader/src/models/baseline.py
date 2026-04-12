@@ -32,7 +32,7 @@ import json
 import logging
 import pickle
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Tuple
 
 import mlflow
 import numpy as np
@@ -515,6 +515,45 @@ class BaselineModel:
     def load_model(path: str):
         with open(path, "rb") as f:
             return pickle.load(f)
+
+    @classmethod
+    def load_trained_from_artifacts(cls, config_path: str) -> Tuple["BaselineModel", dict]:
+        """
+        Load pickled baseline heads + encoders from ``paths.artifacts`` and
+        evaluate train/val/test using on-disk TF-IDF features.
+
+        Used when skipping training (e.g. Colab after local baseline train).
+        Expects the same artifacts as ``run()`` would write.
+        """
+        inst = cls(config_path=config_path)
+        inst.encoders = inst.load_encoders()
+        for target in TARGETS:
+            raw_path = inst.model_paths[target]
+            cal_path = inst.calibrated_paths[target]
+            if not raw_path.is_file() or not cal_path.is_file():
+                raise FileNotFoundError(
+                    f"Missing baseline artifact(s) for {target}: "
+                    f"{raw_path} and/or {cal_path} — train baseline locally first "
+                    "or copy artifacts into paths.artifacts."
+                )
+            inst.models[target] = cls.load_model(str(raw_path))
+            inst.calibrated[target] = cls.load_model(str(cal_path))
+
+        features = inst.load_all_features()
+        eval_results: dict[str, dict[str, dict]] = {}
+        for split in SPLITS:
+            eval_results[split] = inst.evaluate(features, split)
+
+        bundle = {
+            "models": inst.models,
+            "calibrated": inst.calibrated,
+            "eval": eval_results,
+        }
+        logger.info(
+            "Loaded baseline from artifacts — evaluated %s (no training).",
+            ", ".join(SPLITS),
+        )
+        return inst, bundle
 
     # -----------------------------------------------------------------------
     # MLflow logging
