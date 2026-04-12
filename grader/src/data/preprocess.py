@@ -3,17 +3,19 @@ grader/src/data/preprocess.py
 
 Text preprocessing pipeline for the vinyl condition grader.
 Reads unified.jsonl, applies text normalization and abbreviation
-expansion, detects unverified media signals, assigns train/val/test
+expansion, detects unverified media signals and media evidence strength,
+assigns train/val/test
 splits using adaptive stratification, and writes output JSONL files.
 
 Transformation order (strictly enforced):
-  1. Detect unverified media signals  — on raw text
-  2. Detect Generic sleeve signals    — on raw text
-  3. Lowercase
-  4. Normalize whitespace
-  5. Strip stray single-digit tokens    — boilerplate / price leftovers (optional)
-  6. Expand abbreviations             — after lowercase
-  7. Verify protected terms survive   — sanity check
+  1. Detect unverified media signals — on raw text
+  2. Detect media evidence strength (none / weak / strong) — on raw text
+  3. Detect Generic sleeve signals — on raw text
+  4. Lowercase
+  5. Normalize whitespace
+  6. Strip stray single-digit tokens — boilerplate / price leftovers (optional)
+  7. Expand abbreviations — after lowercase
+  8. Verify protected terms survive — sanity check
 
 The original `text` field is preserved. Cleaned text is written
 to a new `text_clean` field. Labels are never modified.
@@ -177,6 +179,10 @@ class Preprocessor:
         self.test_ratio: float = split_cfg["test"]
         self.random_seed: int = split_cfg.get("random_seed", 42)
 
+        self._description_adequacy_cfg: dict = pp_cfg.get(
+            "description_adequacy", {}
+        )
+
         # Paths
         processed_dir = Path(self.config["paths"]["processed"])
         splits_dir = Path(self.config["paths"]["splits"])
@@ -238,6 +244,115 @@ class Preprocessor:
         return not any(
             signal in text_lower for signal in self.unverified_signals
         )
+
+    def detect_media_evidence_strength(self, text: str) -> str:
+        """
+        Heuristic 3-way label for how much the listing supports a media grade:
+        ``none``, ``weak``, or ``strong``. Aligns with the transformer
+        ``media_evidence_aux`` head. Must run on **raw** text before
+        ``clean_text()``.
+        """
+        tl = text.lower()
+        strong_markers = (
+            "plays perfectly",
+            "plays great",
+            "plays fine",
+            "plays well",
+            "plays cleanly",
+            "plays through",
+            "tested",
+            "spin tested",
+            "surface noise",
+            "light scratches",
+            "heavy scratches",
+            "skips",
+            "distortion",
+            "crackle",
+            "crackling",
+            "pops",
+            "no skips",
+            "quiet pressing",
+            "clean audio",
+            "sounds great",
+        )
+        if any(m in tl for m in strong_markers):
+            return "strong"
+        weak_markers = ("plays", "playback", "needle", "turntable", "spins")
+        if any(m in tl for m in weak_markers):
+            return "weak"
+        return "none"
+
+    def compute_description_quality(
+        self, text_raw: str, text_clean: str
+    ) -> dict:
+        """
+        Thin-note / adequacy flags for inference metadata (and training splits
+        when preprocessing assigns splits). Uses ``preprocessing.description_adequacy``
+        from grader config.
+        """
+        da = self._description_adequacy_cfg
+        if not da.get("enabled", True):
+            return {
+                "sleeve_note_adequate": True,
+                "media_note_adequate": True,
+                "adequate_for_training": True,
+                "needs_richer_note": False,
+                "description_quality_gaps": [],
+                "description_quality_prompts": [],
+            }
+
+        tl = text_clean.lower()
+        tr = text_raw.lower()
+        terms = [str(x).lower() for x in da.get("sleeve_evidence_terms", [])]
+        min_fb = int(da.get("min_chars_sleeve_fallback", 56))
+        sleeve_ok = any(t in tl for t in terms) or len(text_clean) >= min_fb
+
+        sealed_markers = (
+            "factory sealed",
+            "still sealed",
+            "never opened",
+            "unopened",
+            "shrink wrapped",
+            "shrinkwrap",
+            "brand new",
+        )
+        sealed = any(m in tr for m in sealed_markers) or (
+            re.search(r"\bsealed\b", tr) is not None
+            and "opened" not in tr
+            and "reopened" not in tr
+        )
+        verifiable = self.detect_unverified_media(text_raw)
+        strength = self.detect_media_evidence_strength(text_raw)
+        media_ok = sealed or (verifiable and strength != "none")
+
+        require_both = da.get("require_both_for_training", True)
+        if require_both:
+            adequate = sleeve_ok and media_ok
+        else:
+            adequate = sleeve_ok or media_ok
+
+        gaps: list[str] = []
+        if not sleeve_ok:
+            gaps.append("sleeve")
+        if not media_ok:
+            gaps.append("media")
+
+        prompts: list[str] = []
+        us = da.get("user_prompt_sleeve")
+        um = da.get("user_prompt_media")
+        if not sleeve_ok and isinstance(us, str) and us.strip():
+            prompts.append(us.strip())
+        if not media_ok and isinstance(um, str) and um.strip():
+            prompts.append(um.strip())
+
+        return {
+            "sleeve_note_adequate": sleeve_ok,
+            "media_note_adequate": media_ok,
+            "adequate_for_training": adequate,
+            "needs_richer_note": not adequate,
+            "description_quality_gaps": gaps,
+            "description_quality_prompts": prompts,
+        }
 
     def detect_generic_sleeve(self, text: str) -> bool:
         """

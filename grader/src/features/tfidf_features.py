@@ -238,6 +238,21 @@ class TFIDFFeatureBuilder:
         )
         return vectorizer.transform(texts)
 
+    def transform_records(
+        self,
+        *,
+        vectorizer: TfidfVectorizer,
+        records: list[dict],
+        target: str,
+        split: str,
+    ) -> sp.csr_matrix:
+        """
+        Vectorize JSONL-shaped ``records`` (``text_clean`` / ``text``) for
+        inference or offline evaluation. ``split`` is for logging only.
+        """
+        texts = self.extract_texts(records)
+        return self.transform(vectorizer, texts, split=split, target=target)
+
     # -----------------------------------------------------------------------
     # Label encoder — fit on train only
     # -----------------------------------------------------------------------
