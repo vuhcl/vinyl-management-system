@@ -68,8 +68,17 @@ data:
     - discogs
     - ebay_jp
 
+  # Optional JSONL of {item_id, source, …} merges after ingest (see label_patches.py).
+  # Uncomment and create the file to persist manual relabels across re-ingestion.
+  # label_patches_path: grader/data/label_patches.jsonl
+
   discogs:
     format_filter:      Vinyl    # default when omitted: Vinyl (see ingest_discogs.DEFAULT_DISCOGS_FORMAT_FILTER)
+    # Where client-side vinyl matching runs (see vinyl_format.py + pipeline.train):
+    #   fetch      — during inventory fetch (default); non-vinyl rows never enter buckets.
+    #   post_patch — keep all formats at fetch; after label patches, drop non-vinyl
+    #                Discogs rows using saved release_format / release_description.
+    vinyl_format_filter_stage: post_patch
     # Discogs forbids page > 100 on *other users'* inventories (403). Own shop
     # via OAuth can go deeper; personal token alone still hits this cap.
     max_public_inventory_pages: 100

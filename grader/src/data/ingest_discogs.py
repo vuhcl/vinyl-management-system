@@ -886,6 +886,8 @@ class DiscogsIngester:
         title = release.get("title", "")
         year = release.get("year")
         country = release.get("country", "")
+        release_format = (release.get("format") or "").strip()
+        release_description = (release.get("description") or "").strip()
 
         return {
             "item_id": str(listing.get("id", "")),
@@ -902,6 +904,9 @@ class DiscogsIngester:
             "title": title,
             "year": int(year) if year else None,
             "country": country,
+            # Used when vinyl_format_filter_stage is post_patch (pipeline vinyl filter).
+            "release_format": release_format,
+            "release_description": release_description,
         }
 
     def _get_drop_reason(
@@ -955,6 +960,7 @@ class DiscogsIngester:
                 "ingest_mode": "user_inventory",
                 "target_per_grade": self.target_per_grade,
                 "format_filter": self.format_filter,
+                "vinyl_format_filter_stage": self.vinyl_format_filter_stage,
                 "max_public_inventory_pages": self.max_public_inventory_pages,
                 "inventory_per_page": self.inventory_per_page,
                 "inventory_format_api_param": self.inventory_format_api_param,
