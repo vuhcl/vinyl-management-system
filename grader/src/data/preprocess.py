@@ -11,8 +11,9 @@ Transformation order (strictly enforced):
   2. Detect Generic sleeve signals    — on raw text
   3. Lowercase
   4. Normalize whitespace
-  5. Expand abbreviations             — after lowercase
-  6. Verify protected terms survive   — sanity check
+  5. Strip stray single-digit tokens    — boilerplate / price leftovers (optional)
+  6. Expand abbreviations             — after lowercase
+  7. Verify protected terms survive   — sanity check
 
 The original `text` field is preserved. Cleaned text is written
 to a new `text_clean` field. Labels are never modified.
@@ -53,6 +54,7 @@ class Preprocessor:
     Config keys read from grader.yaml:
         preprocessing.lowercase
         preprocessing.normalize_whitespace
+        preprocessing.strip_stray_numeric_tokens
         preprocessing.abbreviation_map
         preprocessing.min_text_length_discogs
         data.splits.train / val / test
@@ -76,6 +78,22 @@ class Preprocessor:
         self.do_lowercase: bool = pp_cfg.get("lowercase", True)
         self.do_normalize_whitespace: bool = pp_cfg.get(
             "normalize_whitespace", True
+        )
+        self.do_strip_stray_numeric_tokens: bool = pp_cfg.get(
+            "strip_stray_numeric_tokens", True
+        )
+        # Lone digits left after ingest boilerplate stripping (e.g. "$6 / …")
+        # become junk TF-IDF terms; drop them unless they look like counts
+        # ("2 lp", "2 of 3", "3 x lp"), fractions, prices, or size cues
+        # ("2\" split", "2 \" split", "6 inch seam", double prime U+2033).
+        self._stray_digit_token: re.Pattern[str] = re.compile(
+            r"(?<![0-9/\"'$])\b\d\b"
+            r"(?![0-9/\"'])"
+            r'(?!\s*["\u201c\u201d\u2033])'
+            r"(?!\s*inch(?:es)?\b)"
+            r"(?!\s*(?:lp|lps|vinyl|record|records|disc|discs|cd|cds)\b)"
+            r"(?!\s*of\b)"
+            r"(?!\s*x\b)"
         )
 
         # Build ordered abbreviation list — order from config is preserved.
@@ -229,6 +247,12 @@ class Preprocessor:
         # and strip leading/trailing whitespace
         return re.sub(r"\s+", " ", text).strip()
 
+    def _strip_stray_numeric_tokens(self, text: str) -> str:
+        if not self.do_strip_stray_numeric_tokens:
+            return text
+        text = self._stray_digit_token.sub(" ", text)
+        return re.sub(r"\s+", " ", text).strip() if self.do_normalize_whitespace else text.strip()
+
     def _expand_abbreviations(self, text: str) -> str:
         """
         Expand abbreviations using ordered regex patterns.
@@ -263,10 +287,12 @@ class Preprocessor:
         Steps:
           1. Lowercase
           2. Normalize whitespace
-          3. Expand abbreviations
+          3. Strip stray single-digit tokens (when enabled)
+          4. Expand abbreviations
         """
         cleaned = self._lowercase(text)
         cleaned = self._normalize_whitespace(cleaned)
+        cleaned = self._strip_stray_numeric_tokens(cleaned)
         cleaned = self._expand_abbreviations(cleaned)
         return cleaned
 
@@ -289,7 +315,7 @@ class Preprocessor:
         media_verifiable = self.detect_unverified_media(raw_text)
         text_based_generic = self.detect_generic_sleeve(raw_text)
 
-        # Step 3-5: text normalization
+        # Step 3-6: text normalization
         text_clean = self.clean_text(raw_text)
 
         # Step 6: protected term sanity check
@@ -515,6 +541,7 @@ class Preprocessor:
             {
                 "lowercase": self.do_lowercase,
                 "normalize_whitespace": self.do_normalize_whitespace,
+                "strip_stray_numeric_tokens": self.do_strip_stray_numeric_tokens,
                 "train_ratio": self.train_ratio,
                 "val_ratio": self.val_ratio,
                 "test_ratio": self.test_ratio,
