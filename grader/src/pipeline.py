@@ -35,15 +35,27 @@ from typing import Optional
 import mlflow
 import yaml
 
+from grader.src.mlflow_tracking import (
+    configure_mlflow_from_config,
+    mlflow_enabled,
+    mlflow_log_artifacts_enabled,
+    vinyl_grader_pyfunc_has_python_model,
+)
 from grader.src.data.harmonize_labels import LabelHarmonizer
 from grader.src.data.ingest_discogs import DiscogsIngester
 from grader.src.data.ingest_ebay import EbayIngester
+from grader.src.data.label_patches import apply_label_patches_after_ingest
+from grader.src.data.vinyl_format import run_post_patch_vinyl_filter_from_config
 from grader.src.data.preprocess import Preprocessor
 from grader.src.evaluation.calibration import CalibrationEvaluator
+from grader.src.evaluation.grade_analysis import build_grade_analysis_report
 from grader.src.evaluation.metrics import (
     compare_models,
     compare_models_per_class,
+    compute_metrics_from_label_strings,
+    compute_rule_override_audit,
     log_comparison_to_mlflow,
+    substitute_model_when_pred_excellent,
 )
 from grader.src.features.tfidf_features import TFIDFFeatureBuilder
 from grader.src.models.baseline import BaselineModel
@@ -97,9 +109,8 @@ class Pipeline:
         # Paths
         self.artifacts_dir = Path(self.config["paths"]["artifacts"])
 
-        # MLflow
-        mlflow.set_tracking_uri(self.config["mlflow"]["tracking_uri"])
-        mlflow.set_experiment(self.config["mlflow"]["experiment_name"])
+        if mlflow_enabled(self.config):
+            configure_mlflow_from_config(self.config)
 
         # Lazy-loaded inference components — initialized on first predict call
         self._preprocessor: Optional[Preprocessor]        = None
@@ -142,16 +153,77 @@ class Pipeline:
         return self._tfidf
 
     # -----------------------------------------------------------------------
-    # Training pipeline
+    # MLflow model registry (full pipeline)
     # -----------------------------------------------------------------------
+    def _register_transformer_to_registry(
+        self,
+        transformer_results: dict,
+        *,
+        want_register: bool,
+        registry_model_name: str,
+    ) -> None:
+        if not want_register:
+            return
+        if not mlflow_log_artifacts_enabled(self.config):
+            logger.info(
+                "Skipping MLflow model registry (mlflow.log_artifacts: false)."
+            )
+            return
+        run_id = (transformer_results or {}).get("mlflow_run_id") or ""
+        if not run_id:
+            logger.warning(
+                "Skipping MLflow model registry: empty mlflow_run_id "
+                "(enable MLflow for the transformer step to register)."
+            )
+            return
+        configure_mlflow_from_config(self.config)
+        if not vinyl_grader_pyfunc_has_python_model(run_id):
+            logger.warning(
+                "Skipping MLflow model registry: run %s has no "
+                "vinyl_grader/python_model.pkl. Remote pyfunc logging likely failed "
+                "(see training logs for 'pyfunc logging failed'); increase "
+                "MLFLOW_HTTP_REQUEST_TIMEOUT and related upload settings — "
+                "grader/serving/README.md.",
+                run_id,
+            )
+            return
+        model_uri = f"runs:/{run_id}/vinyl_grader"
+        try:
+            ev = transformer_results.get("eval", {}).get("test", {})
+            s_f1 = float(ev.get("sleeve", {}).get("macro_f1", 0.0))
+            m_f1 = float(ev.get("media", {}).get("macro_f1", 0.0))
+            mean_f1 = (s_f1 + m_f1) / 2.0
+            mv = mlflow.register_model(
+                model_uri=model_uri,
+                name=registry_model_name,
+                tags={
+                    "source": "full_pipeline",
+                    "test_mean_macro_f1": str(round(mean_f1, 4)),
+                },
+            )
+            logger.info(
+                "Registered model '%s' version %s from run %s (%s)",
+                registry_model_name,
+                mv.version,
+                run_id,
+                model_uri,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Model registration failed: %s", exc)
+
     def train(
         self,
         skip_ingest: bool = False,
+        skip_ebay_ingest: bool = False,
         skip_harmonize: bool = False,
         skip_preprocess: bool = False,
         skip_features: bool = False,
         skip_transformer: bool = False,
         baseline_only: bool = False,
+        register_after_pipeline: bool | None = None,
+        registry_model_name_override: str | None = None,
+        no_mlflow: bool = False,
+        mlflow_no_artifacts: bool = False,
     ) -> dict:
         """
         Run the full training pipeline end to end.
@@ -169,11 +241,16 @@ class Pipeline:
 
         Args:
             skip_ingest:      skip steps 1 — use existing raw data
+            skip_ebay_ingest: in step 1, run Discogs only (no eBay API / tokens)
             skip_harmonize:   skip step 2 — use existing unified.jsonl
             skip_preprocess:  skip step 3 — use existing split files
             skip_features:    skip step 4 — use existing feature matrices
             skip_transformer: skip step 6 — baseline only
             baseline_only:    alias for skip_transformer=True
+            register_after_pipeline: if None, use config ``mlflow.register_after_pipeline``
+            registry_model_name_override: if set, overrides ``mlflow.registry_model_name``
+            no_mlflow: if True, same as ``mlflow.enabled: false`` (no tracking).
+            mlflow_no_artifacts: if True, params/metrics only; ignored if ``no_mlflow``.
 
         Returns:
             Dict with results from all completed steps.
@@ -181,7 +258,38 @@ class Pipeline:
         skip_transformer = skip_transformer or baseline_only
         results = {}
 
-        with mlflow.start_run(run_name="full_training_pipeline"):
+        ml = self.config.setdefault("mlflow", {})
+        if no_mlflow:
+            ml["enabled"] = False
+            logger.info("MLflow disabled (--no-mlflow).")
+        elif mlflow_no_artifacts and ml.get("enabled", True):
+            ml["log_artifacts"] = False
+            logger.info(
+                "MLflow metrics-only (--mlflow-no-artifacts / "
+                "mlflow.log_artifacts: false)."
+            )
+
+        if mlflow_enabled(self.config):
+            configure_mlflow_from_config(self.config)
+
+        mlflow_cfg = self.config.get("mlflow", {})
+        if register_after_pipeline is None:
+            want_registry = bool(mlflow_cfg.get("register_after_pipeline", True))
+        else:
+            want_registry = register_after_pipeline
+        want_registry = (
+            want_registry
+            and mlflow_enabled(self.config)
+            and mlflow_log_artifacts_enabled(self.config)
+        )
+        registry_model_name = (
+            (registry_model_name_override or "").strip()
+            or str(mlflow_cfg.get("registry_model_name", "VinylGrader"))
+        )
+
+        # Sub-steps (ingest/features/models/calibration) open their own MLflow runs.
+        # Avoid opening an outer run here, otherwise nested start_run() calls fail.
+        if True:
 
             # Step 1 — Ingestion
             if not skip_ingest:
@@ -192,17 +300,44 @@ class Pipeline:
                 discogs_ingester = DiscogsIngester(
                     config_path=self.config_path,
                     guidelines_path=self.guidelines_path,
+                    config=self.config,
                 )
                 discogs_ingester.run()
 
-                ebay_ingester = EbayIngester(
-                    config_path=self.config_path,
-                    guidelines_path=self.guidelines_path,
-                )
-                ebay_ingester.run()
+                if skip_ebay_ingest:
+                    logger.info(
+                        "Skipping eBay ingestion (--skip-ebay-ingest) — "
+                        "harmonizer will use Discogs only if ebay_processed.jsonl "
+                        "is missing."
+                    )
+                else:
+                    ebay_ingester = EbayIngester(
+                        config_path=self.config_path,
+                        guidelines_path=self.guidelines_path,
+                        config=self.config,
+                    )
+                    ebay_ingester.run()
+
+                patch_stats = apply_label_patches_after_ingest(self.config)
+                if patch_stats.get("enabled"):
+                    results["label_patches"] = patch_stats
+                    if patch_stats.get("updated_total", 0):
+                        logger.info(
+                            "Label patches applied: %d row(s) updated "
+                            "(see data.label_patches_path).",
+                            patch_stats["updated_total"],
+                        )
+
+                vinyl_post = run_post_patch_vinyl_filter_from_config(self.config)
+                if vinyl_post.get("ran"):
+                    results["discogs_vinyl_post_filter"] = vinyl_post
+                    logger.info(
+                        "Discogs post-patch vinyl filter: dropped=%s kept=%s",
+                        vinyl_post.get("dropped"),
+                        vinyl_post.get("kept"),
+                    )
             else:
                 logger.info("Skipping ingestion — using existing raw data.")
-
             # Step 2 — Label harmonization
             if not skip_harmonize:
                 logger.info("=" * 50)
@@ -212,6 +347,7 @@ class Pipeline:
                 harmonizer = LabelHarmonizer(
                     config_path=self.config_path,
                     guidelines_path=self.guidelines_path,
+                    config=self.config,
                 )
                 results["harmonize"] = harmonizer.run()
             else:
@@ -226,6 +362,7 @@ class Pipeline:
                 preprocessor = Preprocessor(
                     config_path=self.config_path,
                     guidelines_path=self.guidelines_path,
+                    config=self.config,
                 )
                 results["preprocess"] = preprocessor.run()
             else:
@@ -237,7 +374,10 @@ class Pipeline:
                 logger.info("STEP 4 — TF-IDF FEATURE EXTRACTION")
                 logger.info("=" * 50)
 
-                tfidf = TFIDFFeatureBuilder(config_path=self.config_path)
+                tfidf = TFIDFFeatureBuilder(
+                    config_path=self.config_path,
+                    config=self.config,
+                )
                 results["features"] = tfidf.run()
             else:
                 logger.info("Skipping feature extraction — using existing matrices.")
@@ -247,7 +387,10 @@ class Pipeline:
             logger.info("STEP 5 — BASELINE MODEL (TF-IDF + LR)")
             logger.info("=" * 50)
 
-            baseline = BaselineModel(config_path=self.config_path)
+            baseline = BaselineModel(
+                config_path=self.config_path,
+                config=self.config,
+            )
             baseline_results = baseline.run()
             results["baseline"] = baseline_results
 
@@ -258,13 +401,17 @@ class Pipeline:
 
             # Step 6 — Transformer model
             transformer_test_metrics = None
+            trainer: Optional[TransformerTrainer] = None
 
             if not skip_transformer:
                 logger.info("=" * 50)
                 logger.info("STEP 6 — TRANSFORMER MODEL (DistilBERT)")
                 logger.info("=" * 50)
 
-                trainer = TransformerTrainer(config_path=self.config_path)
+                trainer = TransformerTrainer(
+                    config_path=self.config_path,
+                    config=self.config,
+                )
                 transformer_results = trainer.run()
                 results["transformer"] = transformer_results
 
@@ -272,6 +419,11 @@ class Pipeline:
                     target: transformer_results["eval"]["test"][target]
                     for target in ["sleeve", "media"]
                 }
+                self._register_transformer_to_registry(
+                    transformer_results,
+                    want_register=want_registry,
+                    registry_model_name=registry_model_name,
+                )
             else:
                 logger.info(
                     "Skipping transformer — baseline only mode."
@@ -293,8 +445,36 @@ class Pipeline:
                     transformer_metrics=transformer_test_metrics,
                 )
 
+                thin_compare_table = None
+                thin_per_class_table = None
+                if (
+                    "test_thin" in baseline_results["eval"]
+                    and "test_thin" in transformer_results["eval"]
+                ):
+                    b_thin = {
+                        t: baseline_results["eval"]["test_thin"][t]
+                        for t in ["sleeve", "media"]
+                    }
+                    t_thin = {
+                        t: transformer_results["eval"]["test_thin"][t]
+                        for t in ["sleeve", "media"]
+                    }
+                    thin_compare_table = compare_models(
+                        baseline_metrics=b_thin,
+                        transformer_metrics=t_thin,
+                        split="test_thin",
+                    )
+                    thin_per_class_table = compare_models_per_class(
+                        baseline_metrics=b_thin,
+                        transformer_metrics=t_thin,
+                        split_title="TEST_THIN SPLIT",
+                    )
+
                 print("\n" + comparison_table)
                 print(per_class_table)
+                if thin_compare_table is not None:
+                    print("\n" + thin_compare_table)
+                    print(thin_per_class_table)
 
                 # Save comparison tables as artifacts
                 comparison_path = (
@@ -302,17 +482,39 @@ class Pipeline:
                 )
                 with open(comparison_path, "w") as f:
                     f.write(comparison_table + "\n\n" + per_class_table)
+                    if thin_compare_table is not None:
+                        f.write(
+                            "\n\n"
+                            + thin_compare_table
+                            + "\n\n"
+                            + thin_per_class_table
+                        )
 
-                mlflow.log_artifact(str(comparison_path))
-                log_comparison_to_mlflow(
-                    baseline_metrics=baseline_test_metrics,
-                    transformer_metrics=transformer_test_metrics,
-                )
+                if mlflow_enabled(self.config):
+                    if mlflow_log_artifacts_enabled(self.config):
+                        mlflow.log_artifact(str(comparison_path))
+                    log_comparison_to_mlflow(
+                        baseline_metrics=baseline_test_metrics,
+                        transformer_metrics=transformer_test_metrics,
+                    )
+                    if thin_compare_table is not None:
+                        log_comparison_to_mlflow(
+                            baseline_metrics=b_thin,
+                            transformer_metrics=t_thin,
+                            key_suffix="test_thin",
+                        )
 
                 results["comparison"] = {
                     "table":     comparison_table,
                     "per_class": per_class_table,
                 }
+                if thin_compare_table is not None:
+                    results["comparison"]["test_thin_table"] = (
+                        thin_compare_table
+                    )
+                    results["comparison"]["test_thin_per_class"] = (
+                        thin_per_class_table
+                    )
 
             # Step 8 — Calibration plots
             logger.info("=" * 50)
@@ -325,6 +527,10 @@ class Pipeline:
 
             # Load test features for calibration plots
             tfidf_builder = self._get_tfidf()
+            _cal_mlf = (
+                mlflow_enabled(self.config)
+                and mlflow_log_artifacts_enabled(self.config)
+            )
             for target in ["sleeve", "media"]:
                 X_test, y_test = TFIDFFeatureBuilder.load_features(
                     str(self.artifacts_dir / "features"),
@@ -346,7 +552,7 @@ class Pipeline:
                     class_names=encoder.classes_,
                     target=target,
                     model_name="baseline",
-                    log_to_mlflow=True,
+                    log_to_mlflow=_cal_mlf,
                 )
 
                 # Transformer calibration — if available
@@ -360,57 +566,39 @@ class Pipeline:
                         class_names=encoder.classes_,
                         target=target,
                         model_name="transformer",
-                        log_to_mlflow=True,
+                        log_to_mlflow=_cal_mlf,
                     )
 
-            # Step 9 — Rule engine coverage on test split
+            # Step 9 — Rule engine: compare model vs adjusted; audit overrides
             logger.info("=" * 50)
-            logger.info("STEP 9 — RULE ENGINE COVERAGE")
+            logger.info("STEP 9 — RULE ENGINE EVAL (test + test_thin)")
             logger.info("=" * 50)
 
-            rule_engine  = self._get_rule_engine()
-            test_records = self._load_split("test")
-            test_texts   = [
-                r.get("text_clean") or r.get("text", "")
-                for r in test_records
-            ]
+            rule_engine = self._get_rule_engine()
+            use_transformer = transformer_test_metrics is not None
 
-            # Use transformer predictions if available, else baseline
-            if transformer_test_metrics is not None:
-                test_predictions = trainer.predict(
-                    texts=test_texts,
-                    item_ids=[r.get("item_id") for r in test_records],
-                    records=test_records,
+            rule_eval, rule_mlflow, grade_paths = (
+                self._run_rule_engine_evaluation(
+                    rule_engine=rule_engine,
+                    trainer=trainer if use_transformer else None,
+                    baseline=baseline,
+                    use_transformer=use_transformer,
                 )
-            else:
-                # Rebuild baseline predictions on test set
-                test_predictions = self._baseline_predict_from_features(
-                    baseline, target="sleeve"
-                )
-
-            coverage = rule_engine.coverage_report(
-                test_predictions, test_texts
             )
 
-            logger.info(
-                "Rule engine coverage — overrides: %d (%.1f%%) | "
-                "contradictions: %d (%.1f%%)",
-                coverage["overrides_applied"],
-                coverage["override_rate"] * 100,
-                coverage["contradictions"],
-                coverage["contradiction_rate"] * 100,
-            )
+            if mlflow_enabled(self.config):
+                mlflow.log_metrics(rule_mlflow)
+                if mlflow_log_artifacts_enabled(self.config):
+                    for _p in grade_paths.values():
+                        mlflow.log_artifact(_p)
 
-            mlflow.log_metrics(
-                {
-                    "rule_override_rate":      coverage["override_rate"],
-                    "rule_contradiction_rate": coverage["contradiction_rate"],
-                    "rule_overrides_applied":  coverage["overrides_applied"],
-                    "rule_contradictions":     coverage["contradictions"],
-                }
-            )
-
-            results["rule_coverage"] = coverage
+            results["rule_eval"] = rule_eval
+            results["grade_analysis_reports"] = grade_paths
+            if "test" in rule_eval:
+                results["rule_adjusted_test_metrics"] = rule_eval["test"][
+                    "adjusted"
+                ]
+                results["rule_coverage"] = rule_eval["test"]["coverage"]
 
             logger.info("=" * 50)
             logger.info("TRAINING PIPELINE COMPLETE")
@@ -495,6 +683,9 @@ class Pipeline:
 
         for i, (text, meta) in enumerate(zip(texts, metadata_list)):
             media_verifiable = preprocessor.detect_unverified_media(text)
+            media_evidence_strength = preprocessor.detect_media_evidence_strength(
+                text
+            )
             text_clean       = preprocessor.clean_text(text)
             clean_texts.append(text_clean)
 
@@ -503,9 +694,13 @@ class Pipeline:
                 "text":            text,
                 "text_clean":      text_clean,
                 "media_verifiable": media_verifiable,
+                "media_evidence_strength": media_evidence_strength,
                 "source":          meta.get("source", "user_input"),
                 **meta,
             }
+            record.update(
+                preprocessor.compute_description_quality(text, text_clean)
+            )
             records.append(record)
 
         # Step 2 — Model prediction
@@ -514,6 +709,7 @@ class Pipeline:
             item_ids=item_ids,
             records=records,
         )
+        self._merge_description_metadata(predictions, records)
 
         # Step 3 — Rule engine post-processing
         final_predictions = rule_engine.apply_batch(
@@ -522,6 +718,26 @@ class Pipeline:
         )
 
         return final_predictions
+
+    @staticmethod
+    def _merge_description_metadata(
+        predictions: list[dict],
+        records: list[dict],
+    ) -> None:
+        """Copy note-adequacy fields from preprocess records into model metadata."""
+        keys = (
+            "sleeve_note_adequate",
+            "media_note_adequate",
+            "adequate_for_training",
+            "needs_richer_note",
+            "description_quality_gaps",
+            "description_quality_prompts",
+        )
+        for pred, rec in zip(predictions, records):
+            meta = pred.setdefault("metadata", {})
+            for k in keys:
+                if k in rec:
+                    meta[k] = rec[k]
 
     # -----------------------------------------------------------------------
     # Model prediction dispatch
@@ -590,14 +806,25 @@ class Pipeline:
 
         tfidf = self._get_tfidf()
 
-        # Vectorize texts using fitted vectorizers
-        X_sleeve = TFIDFFeatureBuilder.load_vectorizer(
+        # Vectorize texts (TF-IDF + optional engineered features)
+        sleeve_vectorizer = TFIDFFeatureBuilder.load_vectorizer(
             str(self.artifacts_dir / "tfidf_vectorizer_sleeve.pkl")
-        ).transform(clean_texts)
-
-        X_media = TFIDFFeatureBuilder.load_vectorizer(
+        )
+        media_vectorizer = TFIDFFeatureBuilder.load_vectorizer(
             str(self.artifacts_dir / "tfidf_vectorizer_media.pkl")
-        ).transform(clean_texts)
+        )
+        X_sleeve = tfidf.transform_records(
+            vectorizer=sleeve_vectorizer,
+            records=records,
+            target="sleeve",
+            split="inference",
+        )
+        X_media = tfidf.transform_records(
+            vectorizer=media_vectorizer,
+            records=records,
+            target="media",
+            split="inference",
+        )
 
         return self._baseline.predict(
             X_sleeve=X_sleeve,
@@ -609,43 +836,262 @@ class Pipeline:
     def _baseline_predict_from_features(
         self,
         baseline: BaselineModel,
-        target: str,
+        split: str = "test",
     ) -> list[dict]:
         """
-        Helper to rebuild baseline predictions from saved test features.
-        Used in rule engine coverage step when transformer is not run.
+        Rebuild baseline predictions from saved TF-IDF features for a split.
+        Used when the transformer is not run (rule eval uses the same path).
         """
-        X_test, _ = TFIDFFeatureBuilder.load_features(
+        X_sleeve, _ = TFIDFFeatureBuilder.load_features(
             str(self.artifacts_dir / "features"),
-            split="test",
-            target=target,
+            split=split,
+            target="sleeve",
         )
-        test_records = self._load_split("test")
-        item_ids = [r.get("item_id", str(i)) for i, r in enumerate(test_records)]
-
-        X_sleeve = X_test if target == "sleeve" else None
-        X_media  = X_test if target == "media"  else None
-
-        # Load both if not provided
-        if X_sleeve is None:
-            X_sleeve, _ = TFIDFFeatureBuilder.load_features(
-                str(self.artifacts_dir / "features"),
-                split="test",
-                target="sleeve",
-            )
-        if X_media is None:
-            X_media, _ = TFIDFFeatureBuilder.load_features(
-                str(self.artifacts_dir / "features"),
-                split="test",
-                target="media",
-            )
+        X_media, _ = TFIDFFeatureBuilder.load_features(
+            str(self.artifacts_dir / "features"),
+            split=split,
+            target="media",
+        )
+        split_records = self._load_split(split)
+        item_ids = [r.get("item_id", str(i)) for i, r in enumerate(split_records)]
 
         return baseline.predict(
             X_sleeve=X_sleeve,
             X_media=X_media,
             item_ids=item_ids,
-            records=test_records,
+            records=split_records,
         )
+
+    def _predictions_for_rule_eval(
+        self,
+        split: str,
+        trainer: Optional[TransformerTrainer],
+        baseline: BaselineModel,
+        use_transformer: bool,
+    ) -> tuple[list[dict], list[str]]:
+        """Model-only predictions and aligned text for rule evaluation."""
+        records = self._load_split(split)
+        texts = [r.get("text_clean") or r.get("text", "") for r in records]
+        item_ids = [r.get("item_id") for r in records]
+        if use_transformer:
+            if trainer is None:
+                raise RuntimeError("use_transformer=True but trainer is None")
+            preds = trainer.predict(
+                texts=texts,
+                item_ids=item_ids,
+                records=records,
+            )
+        else:
+            preds = self._baseline_predict_from_features(baseline, split=split)
+        self._merge_description_metadata(preds, records)
+        return preds, texts
+
+    def _run_rule_engine_evaluation(
+        self,
+        rule_engine: RuleEngine,
+        trainer: Optional[TransformerTrainer],
+        baseline: BaselineModel,
+        use_transformer: bool,
+    ) -> tuple[dict, dict[str, float], dict[str, str]]:
+        """
+        Rule-adjusted metrics, model-only metrics, and override audit on
+        test and test_thin (when split + features exist).
+
+        Also writes ``grade_analysis_{split}.txt`` under ``paths.reports``.
+        """
+        features_dir = str(self.artifacts_dir / "features")
+        splits_dir = Path(self.config["paths"]["splits"])
+        out: dict = {}
+        mlflow_flat: dict[str, float] = {}
+        grade_analysis_paths: dict[str, str] = {}
+        use_excellent_blend = bool(
+            self.config.get("evaluation", {}).get(
+                "excellent_eval_use_model_prediction", False
+            )
+        )
+
+        for split_name in ("test", "test_thin"):
+            if split_name == "test_thin" and not (splits_dir / "test_thin.jsonl").exists():
+                logger.info(
+                    "Rule eval — skip split=test_thin (no test_thin.jsonl)"
+                )
+                continue
+            if split_name == "test_thin":
+                try:
+                    TFIDFFeatureBuilder.load_features(
+                        features_dir, split="test_thin", target="sleeve"
+                    )
+                except OSError:
+                    logger.info(
+                        "Rule eval — skip split=test_thin (no feature matrices)"
+                    )
+                    continue
+
+            raw, texts = self._predictions_for_rule_eval(
+                split_name, trainer, baseline, use_transformer
+            )
+            adjusted = rule_engine.apply_batch(raw, texts)
+            coverage = rule_engine.summarize_results(adjusted)
+
+            adjusted_m: dict[str, dict] = {}
+            adjusted_raw_m: dict[str, dict] = {}
+            model_m: dict[str, dict] = {}
+            audit_m: dict[str, dict] = {}
+            grade_report_sections: list[str] = []
+
+            for target in ("sleeve", "media"):
+                _, y = TFIDFFeatureBuilder.load_features(
+                    features_dir, split=split_name, target=target
+                )
+                encoder = TFIDFFeatureBuilder.load_encoder(
+                    str(self.artifacts_dir / f"label_encoder_{target}.pkl")
+                )
+                pred_key = f"predicted_{target}_condition"
+                before = [str(p[pred_key]) for p in raw]
+                after = [str(p[pred_key]) for p in adjusted]
+                after_eval = (
+                    substitute_model_when_pred_excellent(after, before)
+                    if use_excellent_blend
+                    else after
+                )
+                n_ex_subst = (
+                    sum(1 for a, e in zip(after, after_eval) if a != e)
+                    if use_excellent_blend
+                    else 0
+                )
+                adjusted_m[target] = compute_metrics_from_label_strings(
+                    y,
+                    after_eval,
+                    encoder.classes_,
+                    target=target,
+                    split=split_name,
+                )
+                if use_excellent_blend:
+                    adjusted_raw_m[target] = compute_metrics_from_label_strings(
+                        y,
+                        after,
+                        encoder.classes_,
+                        target=target,
+                        split=split_name,
+                    )
+                model_m[target] = compute_metrics_from_label_strings(
+                    y,
+                    before,
+                    encoder.classes_,
+                    target=target,
+                    split=split_name,
+                )
+                audit_m[target] = compute_rule_override_audit(
+                    y,
+                    before,
+                    after,
+                    encoder.classes_,
+                    target=target,
+                    split=split_name,
+                )
+                logger.info(
+                    "Rule eval — split=%s target=%s | model macro-F1 %.4f → "
+                    "adjusted %.4f (Δ %+.4f) | helpful=%d harmful=%d neutral=%d "
+                    "override_precision=%s | excellent→model rows=%d",
+                    split_name,
+                    target,
+                    model_m[target]["macro_f1"],
+                    adjusted_m[target]["macro_f1"],
+                    audit_m[target]["delta_macro_f1"],
+                    audit_m[target]["n_helpful"],
+                    audit_m[target]["n_harmful"],
+                    audit_m[target]["n_neutral"],
+                    audit_m[target]["override_precision"],
+                    n_ex_subst,
+                )
+                grade_report_sections.append(
+                    build_grade_analysis_report(
+                        y,
+                        before,
+                        after,
+                        encoder.classes_,
+                        target=target,
+                        split=split_name,
+                        after_for_scoring=after_eval
+                        if use_excellent_blend
+                        else None,
+                    )
+                )
+
+            reports_dir = Path(self.config["paths"]["reports"])
+            reports_dir.mkdir(parents=True, exist_ok=True)
+            gap = "\n\n" + "=" * 72 + "\n\n"
+            ga_path = reports_dir / f"grade_analysis_{split_name}.txt"
+            ga_path.write_text(
+                gap.join(grade_report_sections),
+                encoding="utf-8",
+            )
+            grade_analysis_paths[split_name] = str(ga_path)
+            logger.info("Grade analysis report — %s", ga_path)
+
+            out[split_name] = {
+                "adjusted": adjusted_m,
+                "model":    model_m,
+                "audit":    audit_m,
+                "coverage": coverage,
+            }
+            if use_excellent_blend:
+                out[split_name]["adjusted_raw"] = adjusted_raw_m
+
+            sk = split_name
+            for target in ("sleeve", "media"):
+                adj = adjusted_m[target]
+                aud = audit_m[target]
+                mlflow_flat[f"rule_adjusted_{sk}_{target}_macro_f1"] = float(
+                    adj["macro_f1"]
+                )
+                mlflow_flat[f"rule_adjusted_{sk}_{target}_accuracy"] = float(
+                    adj["accuracy"]
+                )
+                if use_excellent_blend:
+                    rawm = adjusted_raw_m[target]
+                    mlflow_flat[
+                        f"rule_adjusted_raw_{sk}_{target}_macro_f1"
+                    ] = float(rawm["macro_f1"])
+                    mlflow_flat[
+                        f"rule_adjusted_raw_{sk}_{target}_accuracy"
+                    ] = float(rawm["accuracy"])
+                mlflow_flat[f"rule_model_{sk}_{target}_macro_f1"] = float(
+                    model_m[target]["macro_f1"]
+                )
+                mlflow_flat[f"rule_model_{sk}_{target}_accuracy"] = float(
+                    model_m[target]["accuracy"]
+                )
+                mlflow_flat[f"rule_audit_{sk}_{target}_delta_macro_f1"] = float(
+                    aud["delta_macro_f1"]
+                )
+                mlflow_flat[f"rule_audit_{sk}_{target}_delta_accuracy"] = float(
+                    aud["delta_accuracy"]
+                )
+                mlflow_flat[f"rule_audit_{sk}_{target}_helpful"] = float(
+                    aud["n_helpful"]
+                )
+                mlflow_flat[f"rule_audit_{sk}_{target}_harmful"] = float(
+                    aud["n_harmful"]
+                )
+                mlflow_flat[f"rule_audit_{sk}_{target}_neutral"] = float(
+                    aud["n_neutral"]
+                )
+                if aud["override_precision"] is not None:
+                    mlflow_flat[
+                        f"rule_audit_{sk}_{target}_override_precision"
+                    ] = float(aud["override_precision"])
+
+        if "test" in out:
+            for k in ("sleeve", "media"):
+                mlflow_flat[f"rule_adjusted_{k}_macro_f1"] = float(
+                    out["test"]["adjusted"][k]["macro_f1"]
+                )
+                mlflow_flat[f"rule_adjusted_{k}_accuracy"] = float(
+                    out["test"]["adjusted"][k]["accuracy"]
+                )
+
+        return out, mlflow_flat, grade_analysis_paths
 
     # -----------------------------------------------------------------------
     # Utilities
@@ -694,6 +1140,11 @@ def main() -> None:
         help="Skip ingestion — use existing raw data",
     )
     train_parser.add_argument(
+        "--skip-ebay-ingest",
+        action="store_true",
+        help="Ingest Discogs only (omit eBay JP; needs DISCOGS_TOKEN only)",
+    )
+    train_parser.add_argument(
         "--skip-harmonize",
         action="store_true",
         help="Skip harmonization — use existing unified.jsonl",
@@ -712,6 +1163,29 @@ def main() -> None:
         "--baseline-only",
         action="store_true",
         help="Train baseline only — skip transformer",
+    )
+    train_parser.add_argument(
+        "--no-mlflow",
+        action="store_true",
+        help="Disable MLflow entirely (same as mlflow.enabled: false in config).",
+    )
+    train_parser.add_argument(
+        "--mlflow-no-artifacts",
+        action="store_true",
+        help=(
+            "Log params/metrics only — no artifact uploads or registry "
+            "(mlflow.log_artifacts: false). Ignored with --no-mlflow."
+        ),
+    )
+    train_parser.add_argument(
+        "--no-register",
+        action="store_true",
+        help="Skip registering the transformer pyfunc to the MLflow model registry",
+    )
+    train_parser.add_argument(
+        "--registry-model-name",
+        default=None,
+        help="Override mlflow.registry_model_name for this run",
     )
 
     # --- predict subcommand ---
@@ -763,12 +1237,21 @@ def main() -> None:
             config_path=args.config,
             guidelines_path=args.guidelines,
         )
+        train_kw = {}
+        if args.no_register:
+            train_kw["register_after_pipeline"] = False
+        if args.registry_model_name:
+            train_kw["registry_model_name_override"] = args.registry_model_name
         pipeline.train(
             skip_ingest=args.skip_ingest,
+            skip_ebay_ingest=args.skip_ebay_ingest,
             skip_harmonize=args.skip_harmonize,
             skip_preprocess=args.skip_preprocess,
             skip_features=args.skip_features,
             baseline_only=args.baseline_only,
+            no_mlflow=args.no_mlflow,
+            mlflow_no_artifacts=args.mlflow_no_artifacts,
+            **train_kw,
         )
 
     elif args.command == "predict":
