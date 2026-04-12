@@ -148,6 +148,9 @@ data:
 preprocessing:
   lowercase:              true
   normalize_whitespace:   true
+  # Strip lone digits from seller text (boilerplate leftovers); also applied
+  # when building TF-IDF inputs so stale splits cannot keep junk terms.
+  strip_stray_numeric_tokens: true
 
   # Abbreviation expansion — applied before any feature extraction.
   # Order matters: longest/most specific patterns first to avoid
