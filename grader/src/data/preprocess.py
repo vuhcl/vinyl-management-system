@@ -48,6 +48,34 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Lone digits left after ingest boilerplate (e.g. "$6 / …"); used by
+# Preprocessor and TF-IDF so feature text cannot reintroduce junk via
+# stale splits or ``text`` fallback when ``text_clean`` is empty.
+_STRAY_DIGIT_TOKEN_RE = re.compile(
+    r"(?<![0-9/\"'$])\b\d\b"
+    r"(?![0-9/\"'])"
+    r'(?!\s*["\u201c\u201d\u2033])'
+    r"(?!\s*inch(?:es)?\b)"
+    r"(?!\s*(?:lp|lps|vinyl|record|records|disc|discs|cd|cds)\b)"
+    r"(?!\s*of\b)"
+    r"(?!\s*x\b)"
+)
+
+
+def strip_stray_numeric_tokens_from_text(
+    text: str,
+    *,
+    normalize_whitespace: bool = True,
+) -> str:
+    """
+    Remove standalone single-digit tokens unless they look like counts,
+    fractions, inches, or prices (same rules as ``Preprocessor``).
+    """
+    text = _STRAY_DIGIT_TOKEN_RE.sub(" ", text)
+    if normalize_whitespace:
+        return re.sub(r"\s+", " ", text).strip()
+    return text.strip()
+
 
 # ---------------------------------------------------------------------------
 # Preprocessor
@@ -86,19 +114,6 @@ class Preprocessor:
         )
         self.do_strip_stray_numeric_tokens: bool = pp_cfg.get(
             "strip_stray_numeric_tokens", True
-        )
-        # Lone digits left after ingest boilerplate stripping (e.g. "$6 / …")
-        # become junk TF-IDF terms; drop them unless they look like counts
-        # ("2 lp", "2 of 3", "3 x lp"), fractions, prices, or size cues
-        # ("2\" split", "2 \" split", "6 inch seam", double prime U+2033).
-        self._stray_digit_token: re.Pattern[str] = re.compile(
-            r"(?<![0-9/\"'$])\b\d\b"
-            r"(?![0-9/\"'])"
-            r'(?!\s*["\u201c\u201d\u2033])'
-            r"(?!\s*inch(?:es)?\b)"
-            r"(?!\s*(?:lp|lps|vinyl|record|records|disc|discs|cd|cds)\b)"
-            r"(?!\s*of\b)"
-            r"(?!\s*x\b)"
         )
 
         # Build ordered abbreviation list — order from config is preserved.
@@ -254,8 +269,10 @@ class Preprocessor:
     def _strip_stray_numeric_tokens(self, text: str) -> str:
         if not self.do_strip_stray_numeric_tokens:
             return text
-        text = self._stray_digit_token.sub(" ", text)
-        return re.sub(r"\s+", " ", text).strip() if self.do_normalize_whitespace else text.strip()
+        return strip_stray_numeric_tokens_from_text(
+            text,
+            normalize_whitespace=self.do_normalize_whitespace,
+        )
 
     def _expand_abbreviations(self, text: str) -> str:
         """

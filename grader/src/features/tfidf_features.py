@@ -33,6 +33,7 @@ import yaml
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.preprocessing import LabelEncoder
 
+from grader.src.data.preprocess import strip_stray_numeric_tokens_from_text
 from grader.src.mlflow_tracking import (
     configure_mlflow_from_config,
     mlflow_pipeline_step_run_ctx,
@@ -103,6 +104,14 @@ class TFIDFFeatureBuilder:
         artifacts_dir.mkdir(parents=True, exist_ok=True)
         self.features_dir.mkdir(parents=True, exist_ok=True)
 
+        pp_cfg = self.config.get("preprocessing") or {}
+        self._strip_stray_numeric_tokens: bool = pp_cfg.get(
+            "strip_stray_numeric_tokens", True
+        )
+        self._normalize_whitespace_for_strip: bool = pp_cfg.get(
+            "normalize_whitespace", True
+        )
+
         # Fitted objects — populated during run()
         self.vectorizers: dict[str, TfidfVectorizer] = {}
         self.encoders: dict[str, LabelEncoder]       = {}
@@ -141,12 +150,23 @@ class TFIDFFeatureBuilder:
     def extract_texts(self, records: list[dict]) -> list[str]:
         """
         Extract text_clean field from records.
-        Falls back to text field if text_clean is absent —
-        handles edge cases where preprocess.py was not run.
+        Falls back to ``text`` if ``text_clean`` is missing or blank —
+        in that case other cleaning may be absent, so we re-apply stray
+        digit stripping here (same rule as ``Preprocessor``) so TF-IDF
+        top terms are not polluted by boilerplate ``6`` tokens.
         """
         texts = []
         for record in records:
-            text = record.get("text_clean") or record.get("text", "")
+            raw = record.get("text_clean")
+            if raw is not None and str(raw).strip() != "":
+                text = str(raw)
+            else:
+                text = record.get("text", "") or ""
+            if self._strip_stray_numeric_tokens:
+                text = strip_stray_numeric_tokens_from_text(
+                    text,
+                    normalize_whitespace=self._normalize_whitespace_for_strip,
+                )
             texts.append(text)
         return texts
 

@@ -2,11 +2,8 @@
 grader/tests/test_baseline.py
 """
 
-import pickle
-
 import numpy as np
 import pytest
-from sklearn.calibration import CalibratedClassifierCV
 
 from grader.src.models.baseline import BaselineModel
 
@@ -70,7 +67,7 @@ class TestCalibration:
         """
         baseline.encoders = fitted_encoders
         baseline.models = fitted_baseline
-        # Use train for calibration in this test to ensure all classes present
+        # Train as val so every grade appears (tiny val split may omit classes).
         cal_features = {
             "val": sample_feature_matrices["train"],
             "train": sample_feature_matrices["train"],
@@ -79,6 +76,35 @@ class TestCalibration:
         calibrated = baseline.calibrate(baseline.models, cal_features)
         assert "sleeve" in calibrated
         assert "media" in calibrated
+
+    def test_calibration_preserves_lr_coefficients(
+        self,
+        baseline,
+        sample_feature_matrices,
+        fitted_encoders,
+        fitted_baseline,
+    ):
+        """Frozen base: logistic regression weights must not change on val."""
+        baseline.encoders = fitted_encoders
+        baseline.models = fitted_baseline
+        coef_before = {
+            t: np.asarray(m.coef_.copy()) for t, m in fitted_baseline.items()
+        }
+        cal_features = {
+            "val": sample_feature_matrices["train"],
+            "train": sample_feature_matrices["train"],
+            "test": sample_feature_matrices["test"],
+        }
+        calibrated = baseline.calibrate(baseline.models, cal_features)
+        for target in ("sleeve", "media"):
+            inner = calibrated[target].calibrated_classifiers_[0].estimator
+            lr = inner.estimator if hasattr(inner, "estimator") else inner
+            np.testing.assert_allclose(
+                np.asarray(lr.coef_),
+                coef_before[target],
+                rtol=0,
+                atol=0,
+            )
 
     def test_calibrated_probas_sum_to_one(
         self,
