@@ -38,6 +38,7 @@ import mlflow
 import numpy as np
 import yaml
 from sklearn.calibration import CalibratedClassifierCV
+from sklearn.frozen import FrozenEstimator
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import (
     accuracy_score,
@@ -76,6 +77,7 @@ class BaselineModel:
     Config keys read from grader.yaml:
         models.baseline.logistic_regression.*  — LR hyperparameters
         evaluation.calibration.method          — calibration method
+        evaluation.calibration.cv_folds        — CV folds on val for calibrator
         paths.artifacts                         — artifact directory
         mlflow (URI from MLFLOW_TRACKING_URI / tracking_uri_fallback)
         mlflow.experiment_name
@@ -93,6 +95,7 @@ class BaselineModel:
 
         cal_cfg = self.config["evaluation"]["calibration"]
         self.calibration_method: str = cal_cfg.get("method", "isotonic")
+        self.calibration_cv_folds: int = int(cal_cfg.get("cv_folds", 5))
 
         # Paths
         self.artifacts_dir = Path(self.config["paths"]["artifacts"])
@@ -224,11 +227,17 @@ class BaselineModel:
         features: dict,
     ) -> dict[str, CalibratedClassifierCV]:
         """
-        Wrap each fitted model in CalibratedClassifierCV and fit
+        Wrap each train-fitted head in CalibratedClassifierCV and fit
         calibration on the val split.
 
-        Calibration is fitted on val — NOT train — to prevent
-        calibration from absorbing training signal.
+        The base classifier is wrapped in ``FrozenEstimator`` so sklearn
+        does not re-fit logistic regression on held-out folds of the
+        calibration set (which would inflate val metrics vs train). Only
+        the calibrator is learned from val; ``ensemble=False`` keeps a
+        single calibrator paired with the frozen base.
+
+        Calibration is fitted on val — NOT train — so calibration does
+        not absorb training labels.
 
         Args:
             models:   fitted LogisticRegression heads
@@ -240,16 +249,19 @@ class BaselineModel:
         calibrated = {}
         for target in TARGETS:
             logger.info(
-                "Calibrating model — target=%s method=%s ...",
+                "Calibrating model — target=%s method=%s cv=%s ...",
                 target,
                 self.calibration_method,
+                self.calibration_cv_folds,
             )
             X_val = features["val"][target]["X"]
             y_val = features["val"][target]["y"]
 
             calibrator = CalibratedClassifierCV(
-                estimator=models[target],
+                estimator=FrozenEstimator(models[target]),
                 method=self.calibration_method,
+                cv=self.calibration_cv_folds,
+                ensemble=False,
             )
             calibrator.fit(X_val, y_val)
             calibrated[target] = calibrator
@@ -520,6 +532,7 @@ class BaselineModel:
                 "lr_class_weight": self.class_weight,
                 "lr_solver": self.solver,
                 "calibration_method": self.calibration_method,
+                "calibration_cv_folds": self.calibration_cv_folds,
             }
         )
 
