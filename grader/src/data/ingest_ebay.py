@@ -34,6 +34,8 @@ import mlflow
 import requests
 import yaml
 
+from grader.src.mlflow_tracking import mlflow_pipeline_step_run_ctx
+
 # ---------------------------------------------------------------------------
 # Logging
 # ---------------------------------------------------------------------------
@@ -685,7 +687,7 @@ class EbayIngester:
             "drops":         {},
         }
 
-        with mlflow.start_run(run_name="ingest_ebay"):
+        with mlflow_pipeline_step_run_ctx(self.config, "ingest_ebay") as mlf:
             all_items = self.fetch_all()
             processed_records: list[dict] = []
 
@@ -726,7 +728,8 @@ class EbayIngester:
                 return processed_records
 
             self.save_processed(processed_records)
-            self._log_mlflow()
+            if mlf:
+                self._log_mlflow()
 
         return processed_records
 

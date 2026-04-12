@@ -63,6 +63,34 @@ def mlflow_start_run_ctx(
         yield
 
 
+@contextlib.contextmanager
+def mlflow_pipeline_step_run_ctx(
+    config: MutableMapping[str, Any],
+    run_name: str,
+) -> Iterator[bool]:
+    """
+    Optional nested run for lightweight ETL / feature steps (ingest,
+    harmonize, preprocess, TF-IDF, …).
+
+    Yields True when an ``mlflow.start_run`` is active and callers may call
+    ``mlflow.log_*``. Yields False when MLflow is disabled **or** when
+    ``mlflow.log_pipeline_step_runs`` is false (default) — the pipeline step
+    still executes; only server noise is skipped. Model training
+    (baseline, transformer, …) opens its own runs regardless of this flag.
+    """
+    if not mlflow_enabled(config):
+        yield False
+        return
+    if not bool(_mlflow_section(config).get("log_pipeline_step_runs", False)):
+        yield False
+        return
+    import mlflow
+
+    configure_mlflow_from_config(config)
+    with mlflow.start_run(run_name=run_name):
+        yield True
+
+
 def is_remote_mlflow_tracking_uri(uri: str | None) -> bool:
     """
     True when the client talks to a remote MLflow tracking server (HTTP(S) or
@@ -130,17 +158,75 @@ def _walk_run_artifact_paths(run_id: str, path: str | None) -> list[str]:
 
 def vinyl_grader_pyfunc_has_python_model(run_id: str) -> bool:
     """
-    True if the run has a pyfunc pickle under ``vinyl_grader/``.
+    True if the run has a usable pyfunc bundle under ``vinyl_grader/``.
+
+    Accepts either legacy ``python_model.pkl`` (CloudPickle) or MLflow 2.12+
+    models-from-code (``python_function.model_code_path`` in ``MLmodel``).
 
     Call before ``register_model(..., "runs:/<id>/vinyl_grader")`` so a failed
-    remote ``log_pyfunc_model`` (fallback to loose artifacts only) does not
-    register a broken version.
+    remote ``log_pyfunc_model`` does not register a broken version.
     """
+    import yaml
+    from mlflow.tracking import MlflowClient
+
     paths = _walk_run_artifact_paths(run_id, "vinyl_grader")
-    return any(
+    if any(
         p.endswith("python_model.pkl") or p.endswith("python_model.pkl.gz")
         for p in paths
-    )
+    ):
+        return True
+    client = MlflowClient()
+    for p in paths:
+        if not p.endswith("MLmodel"):
+            continue
+        try:
+            local = client.download_artifacts(run_id, p)
+            with open(local, encoding="utf-8") as fh:
+                doc = yaml.safe_load(fh)
+        except Exception:
+            continue
+        pyfunc = (doc or {}).get("flavors", {}).get("python_function", {})
+        if pyfunc.get("model_code_path"):
+            return True
+    return False
+
+
+def configure_mlflow_for_transformer_init(
+    config: MutableMapping[str, Any],
+    *,
+    tuning: bool,
+) -> None:
+    """
+    Point the MLflow client at the right store before ``TransformerTrainer``
+    calls ``set_tracking_uri`` / ``set_experiment``.
+
+    When ``tuning`` is true (``transformer_tune``), use the tuning SQLite URI
+    and experiment so sweep runs do not flood the remote tracking server
+    (Option A). Override with ``MLFLOW_TUNING_TRACKING_URI`` for a dedicated
+    remote tuning experiment if desired.
+    """
+    if not mlflow_enabled(config):
+        return
+
+    import mlflow
+
+    ml = config.setdefault("mlflow", {})
+    if tuning:
+        load_project_dotenv()
+        uri = os.environ.get("MLFLOW_TUNING_TRACKING_URI", "").strip()
+        if not uri:
+            uri = str(ml.get("tuning_tracking_uri_fallback") or "").strip()
+        if not uri:
+            uri = "sqlite:///grader/experiments/mlflow_tuning.db"
+        exp = str(ml.get("tuning_experiment_name") or "vinyl_grader_tune")
+        mlflow.set_tracking_uri(uri)
+        mlflow.set_experiment(exp)
+        ml["tracking_uri"] = uri
+        ml["experiment_name"] = exp
+        logger.info("MLflow tuning session — uri=%s experiment=%s", uri, exp)
+        return
+
+    configure_mlflow_from_config(config)
 
 
 def configure_mlflow_from_config(

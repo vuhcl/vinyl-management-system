@@ -28,6 +28,7 @@ Usage:
     python -m grader.src.models.transformer --unfreeze  (full fine-tuning)
 """
 
+import contextlib
 import json
 import logging
 import pickle
@@ -48,6 +49,10 @@ from transformers import (
 )
 
 from grader.src.evaluation.metrics import compute_metrics, log_metrics_to_mlflow
+from grader.src.mlflow_tracking import (
+    configure_mlflow_for_transformer_init,
+    mlflow_enabled,
+)
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -253,8 +258,11 @@ class TransformerTrainer:
         self,
         config_path: str,
         freeze_encoder_override: Optional[bool] = None,
+        *,
+        tuning: bool = False,
     ) -> None:
         self.config = self._load_yaml(config_path)
+        self._mlflow_tuning: bool = tuning
 
         t_cfg = self.config["models"]["transformer"]
         self.base_model: str = t_cfg["base_model"]
@@ -292,9 +300,10 @@ class TransformerTrainer:
         torch.manual_seed(self.random_state)
         np.random.seed(self.random_state)
 
-        # MLflow
-        mlflow.set_tracking_uri(self.config["mlflow"]["tracking_uri"])
-        mlflow.set_experiment(self.config["mlflow"]["experiment_name"])
+        # MLflow (remote production vs local tuning — see transformer_tune)
+        configure_mlflow_for_transformer_init(
+            self.config, tuning=self._mlflow_tuning
+        )
 
         # Populated during run()
         self.model: Optional[TwoHeadClassifier] = None
@@ -576,15 +585,16 @@ class TransformerTrainer:
                 val_mean_f1,
             )
 
-            mlflow.log_metrics(
-                {
-                    "train_loss": train_loss,
-                    "val_sleeve_f1": val_sleeve_f1,
-                    "val_media_f1": val_media_f1,
-                    "val_mean_f1": val_mean_f1,
-                },
-                step=epoch,
-            )
+            if mlflow.active_run() is not None:
+                mlflow.log_metrics(
+                    {
+                        "train_loss": train_loss,
+                        "val_sleeve_f1": val_sleeve_f1,
+                        "val_media_f1": val_media_f1,
+                        "val_mean_f1": val_mean_f1,
+                    },
+                    step=epoch,
+                )
 
             history.append(
                 {
@@ -841,10 +851,23 @@ class TransformerTrainer:
         mlflow.log_artifact(str(self.weights_path))
         mlflow.log_artifact(str(self.config_path_out))
 
+        try:
+            from grader.src.models.grader_pyfunc import log_pyfunc_model
+
+            log_pyfunc_model(self)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("pyfunc logging failed: %s", exc)
+
     # -----------------------------------------------------------------------
     # Orchestration
     # -----------------------------------------------------------------------
-    def run(self, dry_run: bool = False) -> dict:
+    def run(
+        self,
+        dry_run: bool = False,
+        *,
+        mlflow_run_name: str | None = None,
+        skip_mlflow: bool = False,
+    ) -> dict:
         """
         Full transformer training pipeline:
           1. Load split records and label encoders
@@ -858,11 +881,20 @@ class TransformerTrainer:
 
         Args:
             dry_run: train for 1 epoch without saving or logging.
+            mlflow_run_name: optional run name (e.g. ``tune_preset``).
+            skip_mlflow: if True, train without an MLflow run.
 
         Returns:
             Dict with model, encoders, and eval results.
         """
-        with mlflow.start_run(run_name="transformer_distilbert_two_head"):
+        run_name = mlflow_run_name or "transformer_distilbert_two_head"
+        use_mlflow = mlflow_enabled(self.config) and not skip_mlflow
+        ctx = (
+            mlflow.start_run(run_name=run_name)
+            if use_mlflow
+            else contextlib.nullcontext()
+        )
+        with ctx:
 
             # Load data
             split_records = {
@@ -985,20 +1017,26 @@ class TransformerTrainer:
                 logger.info(
                     "Dry run — skipping artifact saves and MLflow logging."
                 )
+                run = mlflow.active_run()
                 return {
                     "model": self.model,
                     "encoders": self.encoders,
                     "eval": eval_results,
+                    "mlflow_run_id": run.info.run_id if run else "",
                 }
 
             self.save_model()
-            self._log_mlflow(eval_results, training_summary)
+            if mlflow.active_run() is not None:
+                self._log_mlflow(eval_results, training_summary)
 
-        return {
-            "model": self.model,
-            "encoders": self.encoders,
-            "eval": eval_results,
-        }
+            run = mlflow.active_run()
+            run_id = run.info.run_id if run else ""
+            return {
+                "model": self.model,
+                "encoders": self.encoders,
+                "eval": eval_results,
+                "mlflow_run_id": run_id,
+            }
 
 
 # ---------------------------------------------------------------------------
@@ -1035,7 +1073,5 @@ def main() -> None:
     trainer.run(dry_run=args.dry_run)
 
 
-if __name__ == "__main__":
-    main()
 if __name__ == "__main__":
     main()

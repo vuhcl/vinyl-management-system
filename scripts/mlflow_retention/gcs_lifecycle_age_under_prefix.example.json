@@ -1,0 +1,19 @@
+{
+  "lifecycle": {
+    "rule": [
+      {
+        "action": { "type": "AbortIncompleteMultipartUpload" },
+        "condition": { "age": 7 }
+      },
+      {
+        "action": { "type": "Delete" },
+        "condition": {
+          "age": 180,
+          "matchesPrefix": [
+            "REPLACE_WITH_PATH_AFTER_BUCKET/"
+          ]
+        }
+      }
+    ]
+  }
+}

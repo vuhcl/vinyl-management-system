@@ -1,0 +1,239 @@
+"""
+grader/src/models/grader_pyfunc.py
+
+MLflow PythonModel wrapper for the two-head DistilBERT vinyl grader.
+
+Logged with MLflow models-from-code (``python_model`` = path to
+``vinyl_grader_pyfunc_entry.py``) to avoid CloudPickle warnings.
+
+Artifacts expected in context.artifacts:
+    transformer_weights  — transformer_weights.pt
+    transformer_config   — transformer_config.json
+    tokenizer_dir        — directory with HuggingFace tokenizer files
+    encoder_sleeve       — label_encoder_sleeve.pkl
+    encoder_media        — label_encoder_media.pkl
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import os
+import pickle
+from pathlib import Path
+from typing import Any
+
+import mlflow
+import mlflow.pyfunc
+import pandas as pd
+import torch
+import torch.nn as nn
+
+logger = logging.getLogger(__name__)
+
+_DEFAULT_BATCH_SIZE = 32
+_DEFAULT_MAX_LENGTH = 128
+
+
+def _torch_load_state_dict_cpu(path: str) -> Any:
+    return torch.load(
+        path,
+        map_location=lambda storage, _: storage,
+        weights_only=False,
+    )
+
+
+class _TwoHeadClassifier(nn.Module):
+    """Inference-only copy of ``transformer.TwoHeadClassifier`` (two heads)."""
+
+    def __init__(
+        self,
+        n_sleeve_classes: int,
+        n_media_classes: int,
+        dropout: float = 0.3,
+        base_model: str = "distilbert-base-uncased",
+    ) -> None:
+        super().__init__()
+        from transformers import DistilBertModel
+
+        self.encoder = DistilBertModel.from_pretrained(base_model)
+        hidden_size = self.encoder.config.hidden_size
+
+        self.sleeve_dropout = nn.Dropout(dropout)
+        self.sleeve_head = nn.Linear(hidden_size, n_sleeve_classes)
+
+        self.media_dropout = nn.Dropout(dropout)
+        self.media_head = nn.Linear(hidden_size, n_media_classes)
+
+    def forward(
+        self,
+        input_ids: torch.Tensor,
+        attention_mask: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        outputs = self.encoder(
+            input_ids=input_ids, attention_mask=attention_mask
+        )
+        cls = outputs.last_hidden_state[:, 0, :]
+        s = self.sleeve_head(self.sleeve_dropout(cls))
+        m = self.media_head(self.media_dropout(cls))
+        return s, m
+
+
+def _get_device() -> torch.device:
+    if torch.backends.mps.is_available():
+        return torch.device("mps")
+    if torch.cuda.is_available():
+        return torch.device("cuda")
+    return torch.device("cpu")
+
+
+class VinylGraderModel(mlflow.pyfunc.PythonModel):
+    """MLflow pyfunc wrapper for the vinyl grader transformer."""
+
+    def load_context(self, context: mlflow.pyfunc.PythonModelContext) -> None:
+        from transformers import DistilBertTokenizerFast
+
+        arts = context.artifacts
+
+        with open(arts["transformer_config"]) as f:
+            cfg = json.load(f)
+
+        self.device = _get_device()
+        self.max_length = int(cfg.get("max_length", _DEFAULT_MAX_LENGTH))
+        self.batch_size = _DEFAULT_BATCH_SIZE
+
+        self.tokenizer = DistilBertTokenizerFast.from_pretrained(
+            arts["tokenizer_dir"]
+        )
+
+        with open(arts["encoder_sleeve"], "rb") as f:
+            self.enc_sleeve = pickle.load(f)
+        with open(arts["encoder_media"], "rb") as f:
+            self.enc_media = pickle.load(f)
+
+        self.model = _TwoHeadClassifier(
+            n_sleeve_classes=cfg["n_sleeve_classes"],
+            n_media_classes=cfg["n_media_classes"],
+            dropout=float(cfg.get("dropout", 0.3)),
+            base_model=cfg["base_model"],
+        )
+        state = _torch_load_state_dict_cpu(arts["transformer_weights"])
+        self.model.load_state_dict(state)
+        self.model.to(self.device)
+        self.model.eval()
+        logger.info(
+            "VinylGraderModel loaded — device=%s "
+            "sleeve_classes=%d media_classes=%d",
+            self.device,
+            cfg["n_sleeve_classes"],
+            cfg["n_media_classes"],
+        )
+
+    def predict(
+        self,
+        context: mlflow.pyfunc.PythonModelContext,
+        model_input: pd.DataFrame,
+    ) -> pd.DataFrame:
+        texts = model_input["text"].tolist()
+        item_ids = (
+            model_input["item_id"].tolist()
+            if "item_id" in model_input.columns
+            else list(range(len(texts)))
+        )
+
+        all_sleeve_preds: list[int] = []
+        all_sleeve_conf: list[float] = []
+        all_media_preds: list[int] = []
+        all_media_conf: list[float] = []
+
+        with torch.no_grad():
+            for i in range(0, len(texts), self.batch_size):
+                end = i + self.batch_size
+                batch = texts[i:end]
+                enc = self.tokenizer(
+                    batch,
+                    max_length=self.max_length,
+                    padding="max_length",
+                    truncation=True,
+                    return_tensors="pt",
+                )
+                input_ids = enc["input_ids"].to(self.device)
+                attention_mask = enc["attention_mask"].to(self.device)
+
+                sleeve_logits, media_logits = self.model(
+                    input_ids, attention_mask
+                )
+                s_proba = torch.softmax(sleeve_logits, dim=-1).cpu().numpy()
+                m_proba = torch.softmax(media_logits, dim=-1).cpu().numpy()
+
+                all_sleeve_preds.extend(s_proba.argmax(axis=1).tolist())
+                all_sleeve_conf.extend(s_proba.max(axis=1).tolist())
+                all_media_preds.extend(m_proba.argmax(axis=1).tolist())
+                all_media_conf.extend(m_proba.max(axis=1).tolist())
+
+        sleeve_grades = self.enc_sleeve.inverse_transform(all_sleeve_preds)
+        media_grades = self.enc_media.inverse_transform(all_media_preds)
+        sleeve_conf = [round(float(c), 4) for c in all_sleeve_conf]
+        media_conf = [round(float(c), 4) for c in all_media_conf]
+        return pd.DataFrame(
+            {
+                "item_id": item_ids,
+                "predicted_sleeve_condition": sleeve_grades,
+                "predicted_media_condition": media_grades,
+                "sleeve_confidence": sleeve_conf,
+                "media_confidence": media_conf,
+            }
+        )
+
+
+_SERVING_REQUIREMENTS = [
+    "torch>=2.2.0",
+    "transformers>=4.38.0",
+    "numpy>=1.26.0",
+    "pandas>=2.0.0",
+    "scikit-learn>=1.3.0",
+]
+
+
+def log_pyfunc_model(trainer: Any) -> str:
+    """
+    Log the current trainer state as an MLflow pyfunc model.
+
+    Must be called inside an active ``mlflow.start_run()`` context.
+    Uses ``name=`` and a path-based ``python_model`` (models-from-code)
+    so MLflow does not emit CloudPickle / ``artifact_path`` deprecation
+    warnings.
+    """
+    artifacts = {
+        "transformer_weights": str(trainer.weights_path),
+        "transformer_config": str(trainer.config_path_out),
+        "tokenizer_dir": str(trainer.tokenizer_dir),
+        "encoder_sleeve": str(
+            trainer.artifacts_dir / "label_encoder_sleeve.pkl"
+        ),
+        "encoder_media": str(
+            trainer.artifacts_dir / "label_encoder_media.pkl"
+        ),
+    }
+
+    input_example = pd.DataFrame(
+        {"text": ["Mint sleeve, still in shrink. Vinyl unplayed."]}
+    )
+
+    _models_dir = Path(__file__).resolve().parent
+    _entry = _models_dir / "vinyl_grader_pyfunc_entry.py"
+    _impl = _models_dir / "grader_pyfunc.py"
+
+    mlflow.pyfunc.log_model(
+        name="vinyl_grader",
+        python_model=os.fspath(_entry),
+        code_paths=[os.fspath(_impl)],
+        artifacts=artifacts,
+        input_example=input_example,
+        pip_requirements=_SERVING_REQUIREMENTS,
+    )
+
+    run_id = mlflow.active_run().info.run_id
+    uri = f"runs:/{run_id}/vinyl_grader"
+    logger.info("Logged pyfunc model → %s", uri)
+    return uri

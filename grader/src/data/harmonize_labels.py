@@ -24,6 +24,8 @@ from typing import Optional
 import mlflow
 import yaml
 
+from grader.src.mlflow_tracking import mlflow_pipeline_step_run_ctx
+
 # ---------------------------------------------------------------------------
 # Logging
 # ---------------------------------------------------------------------------
@@ -465,7 +467,7 @@ class LabelHarmonizer:
           6. Compute and save class distribution report
           7. Flag rare classes
           8. Save unified JSONL
-          9. Log metrics to MLflow
+          9. Optionally log metrics to MLflow (``mlflow.log_pipeline_step_runs``)
 
         Args:
             dry_run: if True, run all validation and reporting steps
@@ -484,7 +486,9 @@ class LabelHarmonizer:
             "cross_source_duplicates": 0,
         }
 
-        with mlflow.start_run(run_name="harmonize_labels"):
+        with mlflow_pipeline_step_run_ctx(
+            self.config, "harmonize_labels"
+        ) as mlf:
             all_records: list[dict] = []
 
             for source, path in self.source_paths.items():
@@ -544,7 +548,8 @@ class LabelHarmonizer:
 
             self.save_unified(all_records)
             self.save_report(report_text)
-            self._log_mlflow(distribution)
+            if mlf:
+                self._log_mlflow(distribution)
 
         return all_records
 

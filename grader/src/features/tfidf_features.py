@@ -33,6 +33,8 @@ import yaml
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.preprocessing import LabelEncoder
 
+from grader.src.mlflow_tracking import mlflow_pipeline_step_run_ctx
+
 # ---------------------------------------------------------------------------
 # Logging
 # ---------------------------------------------------------------------------
@@ -421,7 +423,7 @@ class TFIDFFeatureBuilder:
              e. Save feature matrices and label arrays
              f. Save fitted vectorizer and encoder
           3. Generate top terms report
-          4. Log to MLflow
+          4. Optionally log to MLflow (``mlflow.log_pipeline_step_runs``)
 
         Args:
             dry_run: fit and transform but do not save artifacts
@@ -431,7 +433,9 @@ class TFIDFFeatureBuilder:
             Dict with fitted vectorizers, encoders, and feature
             matrices for inspection or direct use by baseline.py.
         """
-        with mlflow.start_run(run_name="tfidf_features"):
+        with mlflow_pipeline_step_run_ctx(
+            self.config, "tfidf_features"
+        ) as mlf:
 
             # Load all splits
             split_data: dict[str, list[dict]] = {}
@@ -528,7 +532,8 @@ class TFIDFFeatureBuilder:
             top_terms_path = self.save_top_terms_report(
                 top_terms_sleeve, top_terms_media
             )
-            self._log_mlflow(split_sizes, vocab_sizes, top_terms_path)
+            if mlf:
+                self._log_mlflow(split_sizes, vocab_sizes, top_terms_path)
 
             results["vectorizers"] = self.vectorizers
             results["encoders"]    = self.encoders

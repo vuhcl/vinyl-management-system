@@ -34,7 +34,7 @@ import yaml
 from grader.src.mlflow_tracking import (
     configure_mlflow_from_config,
     mlflow_enabled,
-    mlflow_start_run_ctx,
+    mlflow_pipeline_step_run_ctx,
 )
 from grader.src.data.vinyl_format import release_format_looks_like_physical_vinyl
 from grader.src.project_env import load_project_dotenv
@@ -1011,7 +1011,7 @@ class DiscogsIngester:
         self._inventory_limit_param_rejected = False
         self._logged_inventory_api_page_size_mismatch = False
 
-        with mlflow_start_run_ctx(self.config, "ingest_discogs"):
+        with mlflow_pipeline_step_run_ctx(self.config, "ingest_discogs") as mlf:
             # Fetch raw listings
             all_listings = self.fetch_all()
 
@@ -1055,7 +1055,7 @@ class DiscogsIngester:
                 return processed_records
 
             self.save_processed(processed_records)
-            if mlflow_enabled(self.config):
+            if mlf:
                 self._log_mlflow()
 
         return processed_records

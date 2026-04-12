@@ -1,0 +1,90 @@
+# ============================================================
+# Hyperparameter presets for DistilBERT grader tuning.
+#
+# Run (from repo root):
+#   .venv/bin/python -m grader.src.models.transformer_tune \
+#     --config grader/configs/grader.yaml \
+#     --presets all
+#
+# Each preset is merged on top of grader.yaml → models.transformer.
+# Artifacts: grader/artifacts/tuning/<preset_key>/
+# CSV log:   grader/reports/transformer_tune_results.csv
+#
+# After picking a winner (use the preset key as directory name):
+#   .venv/bin/python -m grader.src.models.transformer_tune --promote partial1_low_lr
+# Then copy winning hyperparameters into grader/configs/grader.yaml.
+# ============================================================
+
+presets:
+  # Current production-ish defaults (sanity / regression check)
+  reference_current:
+    description: "Matches typical grader.yaml — partial unfreeze + aux"
+    learning_rate: 2.0e-4
+    unfreeze_top_n_layers: 2
+    dropout: 0.3
+    weight_decay: 0.01
+    warmup_ratio: 0.1
+    early_stopping_patience: 6
+    media_evidence_aux:
+      enabled: true
+      loss_weight: 0.25
+
+  heads_strong_wd:
+    description: "Heads-only encoder; stronger L2 to close train→test sleeve gap"
+    unfreeze_top_n_layers: 0
+    learning_rate: 4.0e-4
+    dropout: 0.4
+    weight_decay: 0.12
+    warmup_ratio: 0.12
+    early_stopping_patience: 6
+    media_evidence_aux:
+      enabled: true
+      loss_weight: 0.1
+
+  partial1_low_lr:
+    description: "One unfrozen block + small LR + moderate WD"
+    unfreeze_top_n_layers: 1
+    learning_rate: 8.0e-6
+    dropout: 0.35
+    weight_decay: 0.05
+    warmup_ratio: 0.12
+    early_stopping_patience: 6
+    media_evidence_aux:
+      enabled: true
+      loss_weight: 0.15
+
+  partial2_lower_lr:
+    description: "Two blocks like before but gentler LR than 2e-4"
+    unfreeze_top_n_layers: 2
+    learning_rate: 5.0e-6
+    dropout: 0.35
+    weight_decay: 0.06
+    warmup_ratio: 0.12
+    early_stopping_patience: 6
+    media_evidence_aux:
+      enabled: true
+      loss_weight: 0.15
+
+  no_aux_partial2:
+    description: "Drop aux head — sometimes helps primary tasks"
+    unfreeze_top_n_layers: 2
+    learning_rate: 1.0e-5
+    dropout: 0.35
+    weight_decay: 0.05
+    warmup_ratio: 0.1
+    early_stopping_patience: 6
+    media_evidence_aux:
+      enabled: false
+
+  larger_batch:
+    description: "Slightly larger batches, tuned LR"
+    batch_size: 24
+    learning_rate: 1.5e-4
+    unfreeze_top_n_layers: 2
+    dropout: 0.35
+    weight_decay: 0.04
+    warmup_ratio: 0.1
+    early_stopping_patience: 6
+    media_evidence_aux:
+      enabled: true
+      loss_weight: 0.2

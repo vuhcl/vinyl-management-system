@@ -179,8 +179,9 @@ class Pipeline:
         configure_mlflow_from_config(self.config)
         if not vinyl_grader_pyfunc_has_python_model(run_id):
             logger.warning(
-                "Skipping MLflow model registry: run %s has no "
-                "vinyl_grader/python_model.pkl. Remote pyfunc logging likely failed "
+                "Skipping MLflow model registry: run %s has no usable "
+                "vinyl_grader pyfunc (no python_model.pkl and no models-from-code "
+                "entry in MLmodel). Remote pyfunc logging may have failed "
                 "(see training logs for 'pyfunc logging failed'); increase "
                 "MLFLOW_HTTP_REQUEST_TIMEOUT and related upload settings — "
                 "grader/serving/README.md.",
@@ -300,7 +301,6 @@ class Pipeline:
                 discogs_ingester = DiscogsIngester(
                     config_path=self.config_path,
                     guidelines_path=self.guidelines_path,
-                    config=self.config,
                 )
                 discogs_ingester.run()
 
@@ -314,7 +314,6 @@ class Pipeline:
                     ebay_ingester = EbayIngester(
                         config_path=self.config_path,
                         guidelines_path=self.guidelines_path,
-                        config=self.config,
                     )
                     ebay_ingester.run()
 
@@ -347,7 +346,6 @@ class Pipeline:
                 harmonizer = LabelHarmonizer(
                     config_path=self.config_path,
                     guidelines_path=self.guidelines_path,
-                    config=self.config,
                 )
                 results["harmonize"] = harmonizer.run()
             else:
@@ -362,7 +360,6 @@ class Pipeline:
                 preprocessor = Preprocessor(
                     config_path=self.config_path,
                     guidelines_path=self.guidelines_path,
-                    config=self.config,
                 )
                 results["preprocess"] = preprocessor.run()
             else:
@@ -376,7 +373,6 @@ class Pipeline:
 
                 tfidf = TFIDFFeatureBuilder(
                     config_path=self.config_path,
-                    config=self.config,
                 )
                 results["features"] = tfidf.run()
             else:
@@ -387,10 +383,7 @@ class Pipeline:
             logger.info("STEP 5 — BASELINE MODEL (TF-IDF + LR)")
             logger.info("=" * 50)
 
-            baseline = BaselineModel(
-                config_path=self.config_path,
-                config=self.config,
-            )
+            baseline = BaselineModel(config_path=self.config_path)
             baseline_results = baseline.run()
             results["baseline"] = baseline_results
 
@@ -410,7 +403,6 @@ class Pipeline:
 
                 trainer = TransformerTrainer(
                     config_path=self.config_path,
-                    config=self.config,
                 )
                 transformer_results = trainer.run()
                 results["transformer"] = transformer_results

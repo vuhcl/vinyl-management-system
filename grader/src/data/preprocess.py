@@ -34,6 +34,8 @@ import mlflow
 import yaml
 from sklearn.model_selection import StratifiedShuffleSplit
 
+from grader.src.mlflow_tracking import mlflow_pipeline_step_run_ctx
+
 # ---------------------------------------------------------------------------
 # Logging
 # ---------------------------------------------------------------------------
@@ -575,7 +577,7 @@ class Preprocessor:
           2. Process each record (detect + clean)
           3. Adaptive stratified split
           4. Save preprocessed.jsonl and split files
-          5. Log metrics to MLflow
+          5. Optionally log metrics to MLflow (``mlflow.log_pipeline_step_runs``)
 
         Args:
             dry_run: process and split but do not write files
@@ -594,7 +596,7 @@ class Preprocessor:
             "rare_strata_fallback": [],
         }
 
-        with mlflow.start_run(run_name="preprocess"):
+        with mlflow_pipeline_step_run_ctx(self.config, "preprocess") as mlf:
             records = self.load_unified()
 
             # Process each record
@@ -623,7 +625,8 @@ class Preprocessor:
             # Save outputs
             self.save_preprocessed(processed)
             self.save_splits(splits)
-            self._log_mlflow(splits)
+            if mlf:
+                self._log_mlflow(splits)
 
         return splits
 

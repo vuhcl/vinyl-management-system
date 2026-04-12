@@ -314,6 +314,7 @@ evaluation:
 # If unset, tracking_uri_fallback is used (local SQLite metadata DB).
 # Production: point the MLflow server at gs://… for --default-artifact-root and use
 # GOOGLE_APPLICATION_CREDENTIALS (or ADC) on training and serving so artifacts use GCS.
+# Retention (GCS lifecycle, mlflow gc, registry prune): scripts/mlflow_retention/
 #
 # Cost control (same idea as price_estimator train_vinyliq):
 #   enabled: false        — no MLflow runs at all; models still written to paths.artifacts
@@ -323,6 +324,14 @@ evaluation:
 mlflow:
   enabled: true
   log_artifacts: true
+  # When false (default), ingest / harmonize / preprocess / TF-IDF (and eBay
+  # ingest) do not open nested MLflow runs — keeps the server focused on
+  # model training. Set true for per-step ETL metrics while debugging.
+  log_pipeline_step_runs: false
+  # transformer_tune: many sweep runs go here (local SQLite by default).
+  # Remote production tracking stays on tracking_uri_fallback / MLFLOW_TRACKING_URI.
+  tuning_tracking_uri_fallback: sqlite:///grader/experiments/mlflow_tuning.db
+  tuning_experiment_name: vinyl_grader_tune
   experiment_name:    vinyl_grader
   # Register transformer pyfunc after full pipeline train (models:/name/...)
   registry_model_name: VinylGrader

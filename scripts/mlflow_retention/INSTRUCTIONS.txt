@@ -1,0 +1,46 @@
+MLflow retention on cloud storage (GCS / S3-style)
+===================================================
+
+Two different mechanisms:
+
+1) GCS bucket LIFECYCLE (JSON + gcloud)
+   - Operates on object keys and age; good for aborting stale multipart
+     uploads and (optionally) time-based deletion under a prefix.
+   - Risk: if you delete objects that MLflow still considers "active" in the
+     tracking database, the UI/API will show broken artifact links. Prefer
+     soft-deleting runs in MLflow, then running `mlflow gc` (below), and use
+     lifecycle rules only for prefixes you know are safe (scratch, tmp), or
+     after aligning prefixes with your server's --default-artifact-root.
+
+   Files:
+   - gcs_lifecycle_abort_incomplete.json — safe default (multipart cleanup).
+   - gcs_lifecycle_age_under_prefix.example.json — copy, set matchesPrefix to
+     the path segment AFTER gs://BUCKET/ (e.g. mlflow-artifacts/), tune age.
+   - gcs_lifecycle_noncurrent_versions.example.json — only useful if the
+     bucket has Object Versioning enabled; trims old noncurrent generations.
+
+   Apply:
+     chmod +x scripts/mlflow_retention/apply_gcs_bucket_lifecycle.sh
+     ./scripts/mlflow_retention/apply_gcs_bucket_lifecycle.sh gs://YOUR_BUCKET \
+       scripts/mlflow_retention/gcs_lifecycle_abort_incomplete.json
+
+   For S3: translate the same ideas to a BucketLifecycleConfiguration on AWS;
+     this repo only ships GCS JSON for gcloud.
+
+2) MLflow GARBAGE COLLECTION (metadata + artifact store)
+   - Soft-delete runs in the UI or API, then run `mlflow gc` with your backend
+     store URI and artifacts destination (e.g. gs://...). See mlflow docs for
+     `mlflow gc` and `--older-than`.
+
+   Example wrapper:
+     scripts/mlflow_retention/mlflow_gc_deleted.example.sh
+
+3) MODEL REGISTRY version cap
+   - Keeps the newest `--keep` versions; skips Production/Staging unless
+     --force-delete-staged.
+
+     Set MLFLOW_TRACKING_URI in the shell or in repo-root .env (loaded
+     automatically when you use uv run from the repo).
+
+     uv run python scripts/mlflow_retention/prune_mlflow_model_versions.py \
+       --model VinylGrader --keep 25 --dry-run
