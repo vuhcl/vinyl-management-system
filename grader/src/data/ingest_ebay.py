@@ -34,7 +34,10 @@ import mlflow
 import requests
 import yaml
 
-from grader.src.mlflow_tracking import mlflow_pipeline_step_run_ctx
+from grader.src.mlflow_tracking import (
+    configure_mlflow_from_config,
+    mlflow_pipeline_step_run_ctx,
+)
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -86,7 +89,7 @@ class EbayIngester:
         data.ebay.min_text_length       — minimum text length (eBay-specific)
         paths.raw                       — raw output directory
         paths.processed                 — processed output directory
-        mlflow.tracking_uri
+        mlflow (URI from MLFLOW_TRACKING_URI / tracking_uri_fallback)
         mlflow.experiment_name
 
     Config keys read from grading_guidelines.yaml:
@@ -173,9 +176,8 @@ class EbayIngester:
         self.raw_dir.mkdir(parents=True, exist_ok=True)
         self.processed_path.parent.mkdir(parents=True, exist_ok=True)
 
-        # MLflow
-        mlflow.set_tracking_uri(self.config["mlflow"]["tracking_uri"])
-        mlflow.set_experiment(self.config["mlflow"]["experiment_name"])
+        # MLflow — resolve tracking URI (env / fallback / legacy key)
+        configure_mlflow_from_config(self.config)
 
         # Stats counters — reset on each run()
         self._stats: dict = {}

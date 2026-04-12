@@ -47,6 +47,7 @@ from sklearn.metrics import (
 )
 
 from grader.src.features.tfidf_features import TFIDFFeatureBuilder
+from grader.src.mlflow_tracking import configure_mlflow_from_config
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -76,7 +77,7 @@ class BaselineModel:
         models.baseline.logistic_regression.*  — LR hyperparameters
         evaluation.calibration.method          — calibration method
         paths.artifacts                         — artifact directory
-        mlflow.tracking_uri
+        mlflow (URI from MLFLOW_TRACKING_URI / tracking_uri_fallback)
         mlflow.experiment_name
     """
 
@@ -116,9 +117,8 @@ class BaselineModel:
         self.calibrated: dict[str, CalibratedClassifierCV] = {}
         self.encoders: dict = {}
 
-        # MLflow
-        mlflow.set_tracking_uri(self.config["mlflow"]["tracking_uri"])
-        mlflow.set_experiment(self.config["mlflow"]["experiment_name"])
+        # MLflow — resolve tracking URI (env / fallback / legacy key)
+        configure_mlflow_from_config(self.config)
 
     # -----------------------------------------------------------------------
     # Config loading

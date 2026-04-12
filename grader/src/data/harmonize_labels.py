@@ -24,7 +24,10 @@ from typing import Optional
 import mlflow
 import yaml
 
-from grader.src.mlflow_tracking import mlflow_pipeline_step_run_ctx
+from grader.src.mlflow_tracking import (
+    configure_mlflow_from_config,
+    mlflow_pipeline_step_run_ctx,
+)
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -61,7 +64,7 @@ class LabelHarmonizer:
         data.harmonization.min_samples_per_class
         data.harmonization.output_path
         data.harmonization.report_path
-        mlflow.tracking_uri
+        mlflow (URI from MLFLOW_TRACKING_URI / tracking_uri_fallback)
         mlflow.experiment_name
 
     Config keys read from grading_guidelines.yaml:
@@ -96,9 +99,8 @@ class LabelHarmonizer:
         self.output_path.parent.mkdir(parents=True, exist_ok=True)
         self.report_path.parent.mkdir(parents=True, exist_ok=True)
 
-        # MLflow
-        mlflow.set_tracking_uri(self.config["mlflow"]["tracking_uri"])
-        mlflow.set_experiment(self.config["mlflow"]["experiment_name"])
+        # MLflow — resolve tracking URI (env / fallback / legacy key)
+        configure_mlflow_from_config(self.config)
 
         # Stats — reset on each run()
         self._stats: dict = {}

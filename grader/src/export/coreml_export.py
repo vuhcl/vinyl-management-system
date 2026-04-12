@@ -44,6 +44,7 @@ from transformers import DistilBertTokenizerFast
 from grader.src.data.preprocess import Preprocessor
 from grader.src.features.tfidf_features import TFIDFFeatureBuilder
 from grader.src.models.baseline import BaselineModel
+from grader.src.mlflow_tracking import configure_mlflow_from_config
 from grader.src.models.transformer import TwoHeadClassifier
 
 # ---------------------------------------------------------------------------
@@ -87,7 +88,7 @@ class CoreMLExporter:
         export.label_encoder_path
         paths.artifacts                 — artifact directory
         models.transformer.*            — transformer architecture config
-        mlflow.tracking_uri
+        mlflow (URI from MLFLOW_TRACKING_URI / tracking_uri_fallback)
         mlflow.experiment_name
     """
 
@@ -119,9 +120,8 @@ class CoreMLExporter:
         self.max_length  = t_cfg["max_length"]
         self.dropout     = t_cfg["dropout"]
 
-        # MLflow
-        mlflow.set_tracking_uri(self.config["mlflow"]["tracking_uri"])
-        mlflow.set_experiment(self.config["mlflow"]["experiment_name"])
+        # MLflow — resolve tracking URI (env / fallback / legacy key)
+        configure_mlflow_from_config(self.config)
 
     # -----------------------------------------------------------------------
     # Config loading

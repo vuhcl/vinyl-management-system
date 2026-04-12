@@ -34,7 +34,10 @@ import mlflow
 import yaml
 from sklearn.model_selection import StratifiedShuffleSplit
 
-from grader.src.mlflow_tracking import mlflow_pipeline_step_run_ctx
+from grader.src.mlflow_tracking import (
+    configure_mlflow_from_config,
+    mlflow_pipeline_step_run_ctx,
+)
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -63,7 +66,7 @@ class Preprocessor:
         data.splits.random_seed
         paths.processed
         paths.splits
-        mlflow.tracking_uri
+        mlflow (URI from MLFLOW_TRACKING_URI / tracking_uri_fallback)
         mlflow.experiment_name
 
     Config keys read from grading_guidelines.yaml:
@@ -171,9 +174,8 @@ class Preprocessor:
         }
         splits_dir.mkdir(parents=True, exist_ok=True)
 
-        # MLflow
-        mlflow.set_tracking_uri(self.config["mlflow"]["tracking_uri"])
-        mlflow.set_experiment(self.config["mlflow"]["experiment_name"])
+        # MLflow — resolve tracking URI (env / fallback / legacy key)
+        configure_mlflow_from_config(self.config)
 
         # Stats
         self._stats: dict = {}

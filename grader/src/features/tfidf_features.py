@@ -33,7 +33,10 @@ import yaml
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.preprocessing import LabelEncoder
 
-from grader.src.mlflow_tracking import mlflow_pipeline_step_run_ctx
+from grader.src.mlflow_tracking import (
+    configure_mlflow_from_config,
+    mlflow_pipeline_step_run_ctx,
+)
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -64,7 +67,7 @@ class TFIDFFeatureBuilder:
         models.baseline.tfidf.*     — vectorizer hyperparameters
         paths.splits                — train/val/test JSONL files
         paths.artifacts             — output directory for artifacts
-        mlflow.tracking_uri
+        mlflow (URI from MLFLOW_TRACKING_URI / tracking_uri_fallback)
         mlflow.experiment_name
     """
 
@@ -104,9 +107,8 @@ class TFIDFFeatureBuilder:
         self.vectorizers: dict[str, TfidfVectorizer] = {}
         self.encoders: dict[str, LabelEncoder]       = {}
 
-        # MLflow
-        mlflow.set_tracking_uri(self.config["mlflow"]["tracking_uri"])
-        mlflow.set_experiment(self.config["mlflow"]["experiment_name"])
+        # MLflow — resolve tracking URI (env / fallback / legacy key)
+        configure_mlflow_from_config(self.config)
 
     # -----------------------------------------------------------------------
     # Config loading
