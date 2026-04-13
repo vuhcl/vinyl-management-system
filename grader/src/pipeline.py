@@ -44,6 +44,8 @@ from grader.src.mlflow_tracking import (
 from grader.src.data.harmonize_labels import LabelHarmonizer
 from grader.src.data.ingest_discogs import DiscogsIngester
 from grader.src.data.ingest_ebay import EbayIngester
+from grader.src.data.label_patches import apply_label_patches_after_ingest
+from grader.src.data.vinyl_format import run_post_patch_vinyl_filter_from_config
 from grader.src.data.preprocess import Preprocessor
 from grader.src.evaluation.calibration import CalibrationEvaluator
 from grader.src.evaluation.grade_analysis import build_grade_analysis_report
@@ -177,8 +179,9 @@ class Pipeline:
         configure_mlflow_from_config(self.config)
         if not vinyl_grader_pyfunc_has_python_model(run_id):
             logger.warning(
-                "Skipping MLflow model registry: run %s has no "
-                "vinyl_grader/python_model.pkl. Remote pyfunc logging likely failed "
+                "Skipping MLflow model registry: run %s has no usable "
+                "vinyl_grader pyfunc (no python_model.pkl and no models-from-code "
+                "entry in MLmodel). Remote pyfunc logging may have failed "
                 "(see training logs for 'pyfunc logging failed'); increase "
                 "MLFLOW_HTTP_REQUEST_TIMEOUT and related upload settings — "
                 "grader/serving/README.md.",
@@ -218,6 +221,7 @@ class Pipeline:
         skip_features: bool = False,
         skip_transformer: bool = False,
         baseline_only: bool = False,
+        skip_baseline: bool = False,
         register_after_pipeline: bool | None = None,
         registry_model_name_override: str | None = None,
         no_mlflow: bool = False,
@@ -231,7 +235,7 @@ class Pipeline:
           2. Harmonize labels into unified dataset
           3. Preprocess text and split train/val/test
           4. Build TF-IDF features
-          5. Train and evaluate baseline model
+          5. Train and evaluate baseline model (skippable via ``skip_baseline``)
           6. Train and evaluate transformer model (skippable)
           7. Compare baseline vs transformer metrics
           8. Generate calibration plots for both models
@@ -243,8 +247,10 @@ class Pipeline:
             skip_harmonize:   skip step 2 — use existing unified.jsonl
             skip_preprocess:  skip step 3 — use existing split files
             skip_features:    skip step 4 — use existing feature matrices
-            skip_transformer: skip step 6 — baseline only
+            skip_transformer: skip step 6 — no DistilBERT training
             baseline_only:    alias for skip_transformer=True
+            skip_baseline:     skip step 5 training; load baseline pickles from
+                               paths.artifacts and evaluate on disk (Workflow A)
             register_after_pipeline: if None, use config ``mlflow.register_after_pipeline``
             registry_model_name_override: if set, overrides ``mlflow.registry_model_name``
             no_mlflow: if True, same as ``mlflow.enabled: false`` (no tracking).
@@ -254,6 +260,11 @@ class Pipeline:
             Dict with results from all completed steps.
         """
         skip_transformer = skip_transformer or baseline_only
+        if skip_baseline and baseline_only:
+            logger.warning(
+                "Both skip_baseline and baseline_only: loading baseline from "
+                "disk and skipping transformer training."
+            )
         results = {}
 
         ml = self.config.setdefault("mlflow", {})
@@ -265,6 +276,15 @@ class Pipeline:
             logger.info(
                 "MLflow metrics-only (--mlflow-no-artifacts / "
                 "mlflow.log_artifacts: false)."
+            )
+        if (
+            os.environ.get("VINYL_GRADER_MLFLOW_METRICS_ONLY", "").strip().lower()
+            in ("1", "true", "yes")
+            and ml.get("enabled", True)
+        ):
+            ml["log_artifacts"] = False
+            logger.info(
+                "MLflow metrics-only (VINYL_GRADER_MLFLOW_METRICS_ONLY env set)."
             )
 
         if mlflow_enabled(self.config):
@@ -315,9 +335,27 @@ class Pipeline:
                         config=self.config,
                     )
                     ebay_ingester.run()
+
+                patch_stats = apply_label_patches_after_ingest(self.config)
+                if patch_stats.get("enabled"):
+                    results["label_patches"] = patch_stats
+                    if patch_stats.get("updated_total", 0):
+                        logger.info(
+                            "Label patches applied: %d row(s) updated "
+                            "(see data.label_patches_path).",
+                            patch_stats["updated_total"],
+                        )
+
+                vinyl_post = run_post_patch_vinyl_filter_from_config(self.config)
+                if vinyl_post.get("ran"):
+                    results["discogs_vinyl_post_filter"] = vinyl_post
+                    logger.info(
+                        "Discogs post-patch vinyl filter: dropped=%s kept=%s",
+                        vinyl_post.get("dropped"),
+                        vinyl_post.get("kept"),
+                    )
             else:
                 logger.info("Skipping ingestion — using existing raw data.")
-
             # Step 2 — Label harmonization
             if not skip_harmonize:
                 logger.info("=" * 50)
@@ -367,12 +405,22 @@ class Pipeline:
             logger.info("STEP 5 — BASELINE MODEL (TF-IDF + LR)")
             logger.info("=" * 50)
 
-            baseline = BaselineModel(
-                config_path=self.config_path,
-                config=self.config,
-            )
-            baseline_results = baseline.run()
-            results["baseline"] = baseline_results
+            if skip_baseline:
+                logger.info(
+                    "Skipping baseline training — loading encoders + models "
+                    "from paths.artifacts and evaluating on disk features."
+                )
+                baseline, baseline_results = (
+                    BaselineModel.load_trained_from_artifacts(self.config_path)
+                )
+                results["baseline"] = baseline_results
+            else:
+                baseline = BaselineModel(
+                    config_path=self.config_path,
+                    config=self.config,
+                )
+                baseline_results = baseline.run()
+                results["baseline"] = baseline_results
 
             baseline_test_metrics = {
                 target: baseline_results["eval"]["test"][target]
@@ -1142,7 +1190,43 @@ def main() -> None:
     train_parser.add_argument(
         "--baseline-only",
         action="store_true",
-        help="Train baseline only — skip transformer",
+        help="Train baseline only — skip transformer (alias for --skip-transformer)",
+    )
+    train_parser.add_argument(
+        "--skip-transformer",
+        action="store_true",
+        help="Skip DistilBERT training (step 6); use with promoted weights + rule eval on baseline if needed",
+    )
+    train_parser.add_argument(
+        "--skip-baseline",
+        action="store_true",
+        help=(
+            "Skip TF-IDF baseline training (step 5); load baseline_*.pkl from "
+            "paths.artifacts and evaluate on existing feature matrices"
+        ),
+    )
+    train_parser.add_argument(
+        "--no-mlflow",
+        action="store_true",
+        help="Disable MLflow entirely (same as mlflow.enabled: false in config).",
+    )
+    train_parser.add_argument(
+        "--mlflow-no-artifacts",
+        action="store_true",
+        help=(
+            "Log params/metrics only — no artifact uploads or registry "
+            "(mlflow.log_artifacts: false). Ignored with --no-mlflow."
+        ),
+    )
+    train_parser.add_argument(
+        "--no-register",
+        action="store_true",
+        help="Skip registering the transformer pyfunc to the MLflow model registry",
+    )
+    train_parser.add_argument(
+        "--registry-model-name",
+        default=None,
+        help="Override mlflow.registry_model_name for this run",
     )
     train_parser.add_argument(
         "--no-mlflow",
@@ -1228,7 +1312,9 @@ def main() -> None:
             skip_harmonize=args.skip_harmonize,
             skip_preprocess=args.skip_preprocess,
             skip_features=args.skip_features,
+            skip_transformer=args.skip_transformer,
             baseline_only=args.baseline_only,
+            skip_baseline=args.skip_baseline,
             no_mlflow=args.no_mlflow,
             mlflow_no_artifacts=args.mlflow_no_artifacts,
             **train_kw,

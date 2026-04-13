@@ -2,11 +2,8 @@
 grader/tests/test_baseline.py
 """
 
-import pickle
-
 import numpy as np
 import pytest
-from sklearn.calibration import CalibratedClassifierCV
 
 from grader.src.models.baseline import BaselineModel
 
@@ -35,6 +32,26 @@ def trained_baseline(
     # Use raw LR as calibrated — sufficient for schema/wiring tests
     baseline.calibrated = fitted_baseline
     return baseline
+
+
+class TestLoadTrainedFromArtifacts:
+    def test_load_eval_from_disk(
+        self,
+        test_config,
+        saved_encoder_paths,
+        saved_vectorizer_paths,
+        saved_feature_paths,
+        saved_calibrated_model_paths,
+        split_jsonl_paths,
+    ):
+        from grader.src.models.baseline import BaselineModel
+
+        bl, bundle = BaselineModel.load_trained_from_artifacts(test_config)
+        assert "eval" in bundle
+        assert "test" in bundle["eval"]
+        for target in ("sleeve", "media"):
+            assert target in bl.calibrated
+            assert bundle["eval"]["test"][target]["macro_f1"] >= 0.0
 
 
 class TestTraining:
@@ -70,7 +87,7 @@ class TestCalibration:
         """
         baseline.encoders = fitted_encoders
         baseline.models = fitted_baseline
-        # Use train for calibration in this test to ensure all classes present
+        # Train as val so every grade appears (tiny val split may omit classes).
         cal_features = {
             "val": sample_feature_matrices["train"],
             "train": sample_feature_matrices["train"],
@@ -79,6 +96,36 @@ class TestCalibration:
         calibrated = baseline.calibrate(baseline.models, cal_features)
         assert "sleeve" in calibrated
         assert "media" in calibrated
+
+    def test_calibration_preserves_lr_coefficients(
+        self,
+        baseline,
+        sample_feature_matrices,
+        fitted_encoders,
+        fitted_baseline,
+    ):
+        """Frozen base: logistic regression weights must not change on val."""
+        baseline.encoders = fitted_encoders
+        baseline.models = fitted_baseline
+        coef_before = {
+            t: np.asarray(m.coef_.copy()) for t, m in fitted_baseline.items()
+        }
+        cal_features = {
+            "val": sample_feature_matrices["train"],
+            "train": sample_feature_matrices["train"],
+            "test": sample_feature_matrices["test"],
+        }
+        calibrated = baseline.calibrate(baseline.models, cal_features)
+        for target in ("sleeve", "media"):
+            cal = calibrated[target]
+            lr = getattr(cal, "base_clf", None)
+            assert lr is not None, "expected isotonic wrapper with base_clf"
+            np.testing.assert_allclose(
+                np.asarray(lr.coef_),
+                coef_before[target],
+                rtol=0,
+                atol=0,
+            )
 
     def test_calibrated_probas_sum_to_one(
         self,

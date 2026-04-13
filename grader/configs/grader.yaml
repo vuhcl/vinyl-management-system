@@ -68,8 +68,17 @@ data:
     - discogs
     - ebay_jp
 
+  # Optional JSONL of {item_id, source, …} merges after ingest (see label_patches.py).
+  # Uncomment and create the file to persist manual relabels across re-ingestion.
+  # label_patches_path: grader/data/label_patches.jsonl
+
   discogs:
     format_filter:      Vinyl    # default when omitted: Vinyl (see ingest_discogs.DEFAULT_DISCOGS_FORMAT_FILTER)
+    # Where client-side vinyl matching runs (see vinyl_format.py + pipeline.train):
+    #   fetch      — during inventory fetch (default); non-vinyl rows never enter buckets.
+    #   post_patch — keep all formats at fetch; after label patches, drop non-vinyl
+    #                Discogs rows using saved release_format / release_description.
+    vinyl_format_filter_stage: post_patch
     # Discogs forbids page > 100 on *other users'* inventories (403). Own shop
     # via OAuth can go deeper; personal token alone still hits this cap.
     max_public_inventory_pages: 100
@@ -81,7 +90,7 @@ data:
     inventory_sort_order: desc
     # Send format=Vinyl (etc.) on inventory GET — not in official docs; if 400, we retry without.
     inventory_format_api_param: true
-    target_per_grade:   10000        # max listings to fetch per canonical grade
+    target_per_grade:   15000        # max listings to fetch per canonical grade
                                    # grades: Mint, Near Mint, VG+, VG, Good, Poor
                                    # Excellent excluded — Discogs has no EX grade
                                    # Generic excluded — not a searchable condition
@@ -148,6 +157,9 @@ data:
 preprocessing:
   lowercase:              true
   normalize_whitespace:   true
+  # Strip lone digits from seller text (boilerplate leftovers); also applied
+  # when building TF-IDF inputs so stale splits cannot keep junk terms.
+  strip_stray_numeric_tokens: true
 
   # Abbreviation expansion — applied before any feature extraction.
   # Order matters: longest/most specific patterns first to avoid
@@ -314,6 +326,7 @@ evaluation:
 # If unset, tracking_uri_fallback is used (local SQLite metadata DB).
 # Production: point the MLflow server at gs://… for --default-artifact-root and use
 # GOOGLE_APPLICATION_CREDENTIALS (or ADC) on training and serving so artifacts use GCS.
+# Retention (GCS lifecycle, mlflow gc, registry prune): scripts/mlflow_retention/
 #
 # Cost control (same idea as price_estimator train_vinyliq):
 #   enabled: false        — no MLflow runs at all; models still written to paths.artifacts
@@ -323,6 +336,14 @@ evaluation:
 mlflow:
   enabled: true
   log_artifacts: true
+  # When false (default), ingest / harmonize / preprocess / TF-IDF (and eBay
+  # ingest) do not open nested MLflow runs — keeps the server focused on
+  # model training. Set true for per-step ETL metrics while debugging.
+  log_pipeline_step_runs: false
+  # transformer_tune: many sweep runs go here (local SQLite by default).
+  # Remote production tracking stays on tracking_uri_fallback / MLFLOW_TRACKING_URI.
+  tuning_tracking_uri_fallback: sqlite:///grader/experiments/mlflow_tuning.db
+  tuning_experiment_name: vinyl_grader_tune
   experiment_name:    vinyl_grader
   # Register transformer pyfunc after full pipeline train (models:/name/...)
   registry_model_name: VinylGrader

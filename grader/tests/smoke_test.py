@@ -131,10 +131,13 @@ class TestSmokeRuleEngine:
 
         return RuleEngine(guidelines_path=guidelines_path)
 
-    def test_sealed_overrides_to_mint(self, engine, sample_prediction):
+    def test_sealed_does_not_trigger_mint_hard_override(
+        self, engine, sample_prediction
+    ):
+        """Mint is model-owned; sealed text alone does not hard-override to Mint."""
         result = engine.apply(sample_prediction, self.SEALED_TEXT)
-        assert result["predicted_sleeve_condition"] == "Mint"
-        assert result["metadata"]["rule_override_applied"] is True
+        assert result["predicted_sleeve_condition"] == "Very Good Plus"
+        assert result["metadata"]["rule_override_applied"] is False
 
     def test_skipping_overrides_to_poor(self, engine, sample_prediction):
         result = engine.apply(sample_prediction, self.SKIPPING_TEXT)

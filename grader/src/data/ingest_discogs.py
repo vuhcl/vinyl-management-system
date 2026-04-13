@@ -34,8 +34,9 @@ import yaml
 from grader.src.mlflow_tracking import (
     configure_mlflow_from_config,
     mlflow_enabled,
-    mlflow_start_run_ctx,
+    mlflow_pipeline_step_run_ctx,
 )
+from grader.src.data.vinyl_format import release_format_looks_like_physical_vinyl
 from grader.src.project_env import load_project_dotenv
 
 # ---------------------------------------------------------------------------
@@ -213,6 +214,7 @@ class DiscogsIngester:
         data.discogs.inventory_per_page — page size up to 250 (website seller profile)
         data.discogs.inventory_send_limit_param — also send limit= (website mirror)
         data.discogs.inventory_format_api_param — send format=… on inventory GET
+        data.discogs.vinyl_format_filter_stage — ``fetch`` (default) vs ``post_patch``
         data.discogs.generic_note_filter — boilerplate drop, strip_boilerplate, patterns
         paths.raw                   — raw output directory
         paths.processed             — processed output directory
@@ -318,6 +320,12 @@ class DiscogsIngester:
             _DEFAULT_PRESERVATION_KEYWORDS if _k is None else _k
         )
         self.strip_boilerplate_enabled: bool = bool(gnf.get("strip_boilerplate", True))
+        # fetch: drop non-vinyl during inventory fetch (default). post_patch: keep
+        # all formats until after label patches; pipeline runs vinyl_format filter
+        # on discogs_processed.jsonl.
+        self.vinyl_format_filter_stage: str = str(
+            discogs_data.get("vinyl_format_filter_stage", "fetch")
+        ).strip().lower()
         # If True, do not fetch from the network when a raw inventory page
         # is missing; only use already-cached JSON pages on disk.
         self.cache_only: bool = bool(cache_only)
@@ -441,11 +449,11 @@ class DiscogsIngester:
         """
         Keep rows whose release metadata looks like vinyl (configurable).
 
-        Note: Discogs inventory `release.format` is typically values like
-        "LP, Album", "12\", EP, ..." or "CD, Album" (not literally the word
-        "Vinyl"). When `data.discogs.format_filter` is "Vinyl", we therefore
-        treat LP/EP/12\"/etc as vinyl-like and exclude CD/cassette/DVD-like
-        formats.
+        Discogs inventory ``release.format`` is often ``LP, Album``,
+        ``12", EP``, ``CD, Vinyl, LP``, etc. When ``data.discogs.format_filter``
+        is Vinyl-like, we use ``release_format_looks_like_physical_vinyl`` so
+        multi-format box sets still count if any vinyl signal is present, while
+        CD/DVD/cassette/digital-only rows are dropped.
         """
         rel = listing.get("release") or {}
         release_format = (rel.get("format") or "").strip()
@@ -454,44 +462,9 @@ class DiscogsIngester:
 
         needle = (self.format_filter or DEFAULT_DISCOGS_FORMAT_FILTER).lower().strip()
         if needle in {"vinyl", "record", "records"}:
-            rf = release_format.lower()
-
-            # Exclude non-vinyl media types commonly present in `release.format`.
-            non_vinyl_tokens = (
-                "cd",
-                "dvd",
-                "sacd",
-                "blu-ray",
-                "cassette",
-                "tape",
-                "digital",
-                "mp3",
-                "file",
-                "download",
-                "stream",
+            return release_format_looks_like_physical_vinyl(
+                release_format, release_desc
             )
-            if any(tok in rf for tok in non_vinyl_tokens):
-                return False
-
-            # Allow common vinyl-related Discogs format shorthands.
-            vinyl_tokens = (
-                "lp",
-                "2xlp",
-                "3xlp",
-                '12"',
-                '12"',
-                '7"',
-                '7"',
-                "ep",
-                "single",
-                "comp",
-                "album",
-            )
-            if any(tok in rf for tok in vinyl_tokens):
-                return True
-
-            # Fallback: if either format or description literally contains the word.
-            return "vinyl" in blob
 
         # Generic substring match for other needles.
         return needle in blob
@@ -717,7 +690,10 @@ class DiscogsIngester:
                     break
 
                 for listing in listings:
-                    if not self._listing_matches_format_filter(listing):
+                    if (
+                        self.vinyl_format_filter_stage != "post_patch"
+                        and not self._listing_matches_format_filter(listing)
+                    ):
                         continue
                     media_raw = listing.get("condition") or ""
                     canonical = self.normalize_grade(media_raw)
@@ -910,6 +886,8 @@ class DiscogsIngester:
         title = release.get("title", "")
         year = release.get("year")
         country = release.get("country", "")
+        release_format = (release.get("format") or "").strip()
+        release_description = (release.get("description") or "").strip()
 
         return {
             "item_id": str(listing.get("id", "")),
@@ -926,6 +904,9 @@ class DiscogsIngester:
             "title": title,
             "year": int(year) if year else None,
             "country": country,
+            # Used when vinyl_format_filter_stage is post_patch (pipeline vinyl filter).
+            "release_format": release_format,
+            "release_description": release_description,
         }
 
     def _get_drop_reason(
@@ -979,6 +960,7 @@ class DiscogsIngester:
                 "ingest_mode": "user_inventory",
                 "target_per_grade": self.target_per_grade,
                 "format_filter": self.format_filter,
+                "vinyl_format_filter_stage": self.vinyl_format_filter_stage,
                 "max_public_inventory_pages": self.max_public_inventory_pages,
                 "inventory_per_page": self.inventory_per_page,
                 "inventory_format_api_param": self.inventory_format_api_param,
@@ -1035,7 +1017,7 @@ class DiscogsIngester:
         self._inventory_limit_param_rejected = False
         self._logged_inventory_api_page_size_mismatch = False
 
-        with mlflow_start_run_ctx(self.config, "ingest_discogs"):
+        with mlflow_pipeline_step_run_ctx(self.config, "ingest_discogs") as mlf:
             # Fetch raw listings
             all_listings = self.fetch_all()
 
@@ -1079,7 +1061,7 @@ class DiscogsIngester:
                 return processed_records
 
             self.save_processed(processed_records)
-            if mlflow_enabled(self.config):
+            if mlf:
                 self._log_mlflow()
 
         return processed_records

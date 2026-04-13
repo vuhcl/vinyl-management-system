@@ -1,18 +1,26 @@
 """
-Hyperparameter sweeps for the DistilBERT grader.
+Hyperparameter sweeps for the DistilBERT grader (``transformer_tune``).
 
-Presets live in grader/configs/transformer_tune.yaml.
+Presets live in ``grader/configs/transformer_tune.yaml``.
+
+Option A: each preset trains with **local** MLflow (see ``mlflow.tuning_*`` in
+``grader.yaml``) so the remote server is not flooded. After the sweep, the best
+preset is registered on the **remote** tracking server by logging a new pyfunc
+run from the on-disk artifacts under ``paths.artifacts/tuning/<preset>/``.
 """
 
 from __future__ import annotations
 
 import argparse
+import copy
 import csv
 import json
 import logging
 import shutil
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import mlflow
@@ -24,6 +32,7 @@ from grader.src.mlflow_tracking import (
     mlflow_log_artifacts_enabled,
     vinyl_grader_pyfunc_has_python_model,
 )
+from grader.src.models.grader_pyfunc import log_pyfunc_model
 from grader.src.models.transformer import TransformerTrainer
 
 logging.basicConfig(
@@ -40,6 +49,30 @@ def _load_tuning_presets(path: Path) -> dict[str, dict[str, Any]]:
     if not presets:
         raise ValueError(f"No presets found in {path}")
     return presets
+
+
+def _merge_preset_config(
+    base_cfg: dict[str, Any],
+    preset_key: str,
+    overrides: dict[str, Any],
+) -> dict[str, Any]:
+    cfg = copy.deepcopy(base_cfg)
+    t = cfg.setdefault("models", {}).setdefault("transformer", {})
+    for k, v in overrides.items():
+        if k == "description":
+            continue
+        t[k] = v
+    art = Path(cfg["paths"]["artifacts"])
+    cfg["paths"]["artifacts"] = str(art / "tuning" / preset_key)
+    Path(cfg["paths"]["artifacts"]).mkdir(parents=True, exist_ok=True)
+    return cfg
+
+
+def _write_temp_config(cfg: dict[str, Any]) -> str:
+    fd, path = tempfile.mkstemp(prefix="grader_tune_", suffix=".yaml")
+    with open(fd, "w", encoding="utf-8") as f:
+        yaml.safe_dump(cfg, f, sort_keys=False)
+    return path
 
 
 def _eval_summary(eval_results: dict[str, Any]) -> dict[str, float]:
@@ -75,10 +108,7 @@ def _append_results_csv(
 
 
 def promote_preset(artifacts_dir: Path, preset_key: str) -> None:
-    """
-    Copy grader/artifacts/tuning/<preset>/ into grader/artifacts/
-    (inference root).
-    """
+    """Copy ``artifacts/tuning/<preset>/`` into the inference root."""
     src = artifacts_dir / "tuning" / preset_key
     if not src.is_dir():
         raise FileNotFoundError(
@@ -93,6 +123,56 @@ def promote_preset(artifacts_dir: Path, preset_key: str) -> None:
         else:
             shutil.copy2(item, dest)
     logger.info("Promoted %s → %s", src, artifacts_dir)
+
+
+def _register_best_on_remote(
+    base_config_path: str,
+    preset_key: str,
+    artifacts_dir: Path,
+    registry_model_name: str,
+) -> None:
+    """Log pyfunc from disk under *remote* tracking, then register_model."""
+    with open(base_config_path, "r", encoding="utf-8") as f:
+        cfg = yaml.safe_load(f)
+    art = artifacts_dir / "tuning" / preset_key
+    w = art / "transformer_weights.pt"
+    if not w.is_file():
+        logger.warning("Skipping registry: no weights at %s", w)
+        return
+    configure_mlflow_from_config(cfg)
+    fake = SimpleNamespace(
+        weights_path=art / "transformer_weights.pt",
+        config_path_out=art / "transformer_config.json",
+        tokenizer_dir=art / "tokenizer",
+        artifacts_dir=art,
+    )
+    with mlflow.start_run(run_name=f"tune_best_{preset_key}"):
+        log_pyfunc_model(fake)
+        run_id = mlflow.active_run().info.run_id
+    if not vinyl_grader_pyfunc_has_python_model(run_id):
+        logger.warning(
+            "Skipping model registry: run %s has no usable pyfunc bundle.",
+            run_id,
+        )
+        return
+    model_uri = f"runs:/{run_id}/vinyl_grader"
+    try:
+        mv = mlflow.register_model(
+            model_uri=model_uri,
+            name=registry_model_name,
+            tags={
+                "preset": preset_key,
+                "source": "transformer_tune_remote_promote",
+            },
+        )
+        logger.info(
+            "Registered model '%s' version %s from %s",
+            registry_model_name,
+            mv.version,
+            model_uri,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Model registration failed: %s", exc)
 
 
 def main() -> None:
@@ -136,13 +216,16 @@ def main() -> None:
         "--register",
         action="store_true",
         default=True,
-        help="Register the best-performing run to the MLflow model registry (default: true)",
+        help=(
+            "After sweep, log best preset to remote MLflow and register "
+            "(default: true)"
+        ),
     )
     parser.add_argument(
         "--no-register",
         dest="register",
         action="store_false",
-        help="Skip model registry registration",
+        help="Skip remote model registry registration",
     )
     parser.add_argument(
         "--registry-model-name",
@@ -181,6 +264,7 @@ def main() -> None:
         )
 
     artifacts_dir = Path(cfg["paths"]["artifacts"])
+    Path("grader/experiments").mkdir(parents=True, exist_ok=True)
 
     if args.promote.strip():
         promote_preset(artifacts_dir, args.promote.strip())
@@ -219,8 +303,8 @@ def main() -> None:
         "hparams_json",
     ]
 
-    # preset_key → {"run_id": str, "test_mean_macro_f1": float}
-    run_registry: dict[str, dict] = {}
+    run_registry: dict[str, dict[str, Any]] = {}
+    skip_mlf = args.skip_mlflow or args.no_mlflow
 
     for key in chosen:
         spec = all_presets[key]
@@ -228,21 +312,21 @@ def main() -> None:
         overrides = dict(spec)
         overrides.pop("description", None)
 
-        subdir = Path("tuning") / key
         logger.info("=== Tuning preset %s ===", key)
         logger.info("Overrides: %s", json.dumps(overrides, default=str))
 
-        trainer = TransformerTrainer(
-            config_path=args.config,
-            transformer_overrides=overrides,
-            artifact_subdir=str(subdir),
-            config=cfg,
-        )
-        out = trainer.run(
-            dry_run=args.dry_run,
-            skip_mlflow=args.skip_mlflow or args.no_mlflow,
-            mlflow_run_name=f"tune_{key}",
-        )
+        merged = _merge_preset_config(cfg, key, overrides)
+        tmp_path = _write_temp_config(merged)
+        try:
+            trainer = TransformerTrainer(tmp_path, tuning=True)
+            out = trainer.run(
+                dry_run=args.dry_run,
+                skip_mlflow=skip_mlf,
+                mlflow_run_name=f"tune_{key}",
+            )
+        finally:
+            Path(tmp_path).unlink(missing_ok=True)
+
         ev = out["eval"]
         tr = out["training"]
         summ = _eval_summary(ev)
@@ -266,69 +350,30 @@ def main() -> None:
             summ["sleeve_train_test_gap"],
         )
 
-        # Track run ID for model registration
-        if (
-            not args.skip_mlflow
-            and not args.no_mlflow
-            and not args.dry_run
-        ):
+        if not skip_mlf and not args.dry_run:
             run_registry[key] = {
-                "run_id": out.get("mlflow_run_id", ""),
                 "test_mean_macro_f1": summ["test_mean_macro_f1"],
                 "preset": key,
             }
 
-    # -----------------------------------------------------------------------
-    # Register the best run to the MLflow model registry
-    # -----------------------------------------------------------------------
     if (
         args.register
-        and not args.skip_mlflow
-        and not args.no_mlflow
+        and mlflow_enabled(cfg)
+        and not skip_mlf
         and not args.dry_run
         and mlflow_log_artifacts_enabled(cfg)
         and run_registry
     ):
-        best = max(run_registry.values(), key=lambda x: x["test_mean_macro_f1"])
-        best_run_id = best["run_id"]
-        if best_run_id:
-            configure_mlflow_from_config(cfg)
-            if not vinyl_grader_pyfunc_has_python_model(best_run_id):
-                logger.warning(
-                    "Skipping model registry: run %s has no "
-                    "vinyl_grader/python_model.pkl (pyfunc logging may have failed).",
-                    best_run_id,
-                )
-            else:
-                model_uri = f"runs:/{best_run_id}/vinyl_grader"
-                try:
-                    mv = mlflow.register_model(
-                        model_uri=model_uri,
-                        name=args.registry_model_name,
-                        tags={
-                            "preset": best["preset"],
-                            "test_mean_macro_f1": str(
-                                round(best["test_mean_macro_f1"], 4)
-                            ),
-                        },
-                    )
-                    logger.info(
-                        "Registered model '%s' version %s from run %s (preset=%s, "
-                        "test_mean_macro_f1=%.4f)",
-                        args.registry_model_name,
-                        mv.version,
-                        best_run_id,
-                        best["preset"],
-                        best["test_mean_macro_f1"],
-                    )
-                except Exception as exc:  # noqa: BLE001
-                    logger.warning("Model registration failed: %s", exc)
-        else:
-            logger.warning(
-                "Could not register: run_id not captured for preset '%s'. "
-                "Re-run with MLflow enabled to register manually.",
-                best["preset"],
-            )
+        best = max(
+            run_registry.values(),
+            key=lambda x: x["test_mean_macro_f1"],
+        )
+        _register_best_on_remote(
+            args.config,
+            str(best["preset"]),
+            artifacts_dir,
+            args.registry_model_name,
+        )
 
 
 if __name__ == "__main__":

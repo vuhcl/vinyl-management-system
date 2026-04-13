@@ -110,10 +110,10 @@ class TestPredictBatchMethod:
 
 
 class TestRuleEngineIntegration:
-    def test_sealed_overridden_to_mint(self, pipeline):
+    def test_sealed_does_not_hard_override_mint(self, pipeline):
+        """Mint is model-owned; pipeline rule pass does not force Mint from sealed."""
         result = pipeline.predict("factory sealed, never opened")
-        assert result["predicted_sleeve_condition"] == "Mint"
-        assert result["metadata"]["rule_override_applied"] is True
+        assert result["metadata"]["rule_override_applied"] is False
 
     def test_contradiction_detected(self, pipeline):
         result = pipeline.predict(

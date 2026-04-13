@@ -36,7 +36,7 @@ import yaml
 from grader.src.mlflow_tracking import (
     configure_mlflow_from_config,
     mlflow_enabled,
-    mlflow_start_run_ctx,
+    mlflow_pipeline_step_run_ctx,
 )
 from sklearn.model_selection import StratifiedShuffleSplit
 
@@ -344,13 +344,16 @@ class Preprocessor:
         terms: set[str] = set()
         grades = self.guidelines.get("grades", {})
         for grade_def in grades.values():
-            for signal_list_key in [
-                "hard_signals",
-                "supporting_signals",
-                "forbidden_signals",
-            ]:
-                for signal in grade_def.get(signal_list_key, []):
-                    terms.add(signal.lower())
+            if not isinstance(grade_def, dict):
+                continue
+            for key, value in grade_def.items():
+                if "signal" not in key.lower():
+                    continue
+                if not isinstance(value, list):
+                    continue
+                for signal in value:
+                    if isinstance(signal, str):
+                        terms.add(signal.lower())
         return terms
 
     # -----------------------------------------------------------------------
@@ -387,6 +390,20 @@ class Preprocessor:
             term in text_lower for term in self.media_condition_terms
         )
         if has_media_subject and has_media_condition:
+            return True
+
+        # 5) Explicit play-testing language (may not appear in guideline-derived cues).
+        play_markers = (
+            "plays perfectly",
+            "plays great",
+            "plays fine",
+            "plays well",
+            "plays cleanly",
+            "plays through",
+            "tested",
+            "spin tested",
+        )
+        if any(m in text_lower for m in play_markers):
             return True
 
         return False
@@ -522,6 +539,38 @@ class Preprocessor:
         # and strip leading/trailing whitespace
         return re.sub(r"\s+", " ", text).strip()
 
+    @staticmethod
+    def _strip_leading_numeric_boilerplate(text: str) -> str:
+        """
+        Drop a lone leading catalog/index digit before obvious condition
+        boilerplate (e.g. ``6 sealed, new hype sticker`` → ``sealed, …``).
+        Does not strip counts that are part of a format description
+        (``2 lp``, ``7\"``, ``disk 2 of 3``, ``6 inch``, ``3 inches``).
+        """
+        s = text.strip()
+        m = re.match(
+            r"^(\d{1,2})\s+",
+            s,
+            flags=re.IGNORECASE,
+        )
+        if not m:
+            return text
+        rest = s[m.end() :].lstrip()
+        rest_lower = rest.lower()
+        if re.match(r'^(?:\d{1,2}\s*["\u201d]|\d+\s*/\d+)', rest_lower):
+            return text
+        if re.match(
+            r"^(?:\d+\s+lp\b|\d+\s+inch\b|\d+\s+inches\b|disk\s+\d+\s+of\b)",
+            rest_lower,
+        ):
+            return text
+        if re.match(
+            r"^(?:sealed|new\s+hype|new\b|nm\b|mint\b|vg\+|vg\b|ex\b|poor\b|good\b)",
+            rest_lower,
+        ):
+            return rest
+        return text
+
     def _expand_abbreviations(self, text: str) -> str:
         """
         Expand abbreviations using ordered regex patterns.
@@ -562,6 +611,7 @@ class Preprocessor:
         """
         cleaned = self._lowercase(text)
         cleaned = self._normalize_whitespace(cleaned)
+        cleaned = self._strip_leading_numeric_boilerplate(cleaned)
         cleaned = self._expand_abbreviations(cleaned)
         return cleaned
 
@@ -927,7 +977,7 @@ class Preprocessor:
             "n_test_thin": 0,
         }
 
-        with mlflow_start_run_ctx(self.config, "preprocess"):
+        with mlflow_pipeline_step_run_ctx(self.config, "preprocess") as mlf:
             records = self.load_unified()
 
             # Process each record
@@ -1006,7 +1056,7 @@ class Preprocessor:
             self.save_preprocessed(processed)
             self.save_splits(splits)
             self._write_test_thin_jsonl(thin_records)
-            if mlflow_enabled(self.config):
+            if mlf:
                 self._log_mlflow(splits)
 
         return out_splits

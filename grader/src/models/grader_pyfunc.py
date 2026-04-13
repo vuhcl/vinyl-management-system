@@ -3,8 +3,10 @@ grader/src/models/grader_pyfunc.py
 
 MLflow PythonModel wrapper for the two-head DistilBERT vinyl grader.
 
-Self-contained: embeds the minimal TwoHeadClassifier inference code so the
-logged model works without the full project on the serving host.
+Logged with MLflow models-from-code (``python_model`` = path to
+``vinyl_grader_pyfunc_entry.py``) to avoid CloudPickle / ``artifact_path``
+deprecation warnings. The implementation embeds a minimal inference-only
+``TwoHeadClassifier`` so the bundle stays self-contained at serve time.
 
 Artifacts expected in context.artifacts:
     transformer_weights  — transformer_weights.pt
@@ -38,7 +40,9 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import pickle
+from pathlib import Path
 from typing import Any, Optional
 
 import mlflow
@@ -201,7 +205,8 @@ class VinylGraderModel(mlflow.pyfunc.PythonModel):
 
         with torch.no_grad():
             for i in range(0, len(texts), self.batch_size):
-                batch = texts[i : i + self.batch_size]
+                end = i + self.batch_size
+                batch = texts[i:end]
                 enc = self.tokenizer(
                     batch,
                     max_length=self.max_length,
@@ -223,26 +228,19 @@ class VinylGraderModel(mlflow.pyfunc.PythonModel):
 
         sleeve_grades = self.enc_sleeve.inverse_transform(all_sleeve_preds)
         media_grades = self.enc_media.inverse_transform(all_media_preds)
+        sleeve_conf = [round(float(c), 4) for c in all_sleeve_conf]
+        media_conf = [round(float(c), 4) for c in all_media_conf]
         return pd.DataFrame(
             {
                 "item_id": item_ids,
                 "predicted_sleeve_condition": sleeve_grades,
                 "predicted_media_condition": media_grades,
-                "sleeve_confidence": [
-                    round(float(c), 4) for c in all_sleeve_conf
-                ],
-                "media_confidence": [
-                    round(float(c), 4) for c in all_media_conf
-                ],
+                "sleeve_confidence": sleeve_conf,
+                "media_confidence": media_conf,
             }
         )
 
 
-# ---------------------------------------------------------------------------
-# Helper: log pyfunc model inside an active MLflow run
-# ---------------------------------------------------------------------------
-
-# Packages required at serving time.
 _SERVING_REQUIREMENTS = [
     "torch>=2.2.0",
     "transformers>=4.38.0",
@@ -257,6 +255,9 @@ def log_pyfunc_model(trainer: Any) -> str:
     Log the current trainer state as an MLflow pyfunc model.
 
     Must be called inside an active ``mlflow.start_run()`` context.
+    Uses ``name=`` and a path-based ``python_model`` (models-from-code)
+    so MLflow does not emit CloudPickle / ``artifact_path`` deprecation
+    warnings.
 
     Args:
         trainer: a ``TransformerTrainer`` instance whose model has been trained
@@ -281,9 +282,14 @@ def log_pyfunc_model(trainer: Any) -> str:
         {"text": ["Mint sleeve, still in shrink. Vinyl unplayed."]}
     )
 
+    _models_dir = Path(__file__).resolve().parent
+    _entry = _models_dir / "vinyl_grader_pyfunc_entry.py"
+    _impl = _models_dir / "grader_pyfunc.py"
+
     mlflow.pyfunc.log_model(
-        artifact_path="vinyl_grader",
-        python_model=VinylGraderModel(),
+        name="vinyl_grader",
+        python_model=os.fspath(_entry),
+        code_paths=[os.fspath(_impl)],
         artifacts=artifacts,
         input_example=input_example,
         pip_requirements=_SERVING_REQUIREMENTS,

@@ -267,7 +267,7 @@ class TestParseListing:
         assert result is not None
         assert result["source"] == "discogs"
         assert result["sleeve_label"] == "Very Good Plus"
-        assert result["media_label"]  == "Near Mint"
+        assert result["media_label"] == "Near Mint"
 
     def test_output_schema_complete(self, ingester, sample_discogs_listing):
         ingester._stats = {"drops": {}}
@@ -276,9 +276,29 @@ class TestParseListing:
             "item_id", "source", "text", "sleeve_label", "media_label",
             "label_confidence", "media_verifiable", "obi_condition",
             "raw_sleeve", "raw_media", "artist", "title",
+            "release_format", "release_description",
         ]
         for field in required_fields:
             assert field in result
+
+    def test_parse_listing_includes_release_format_from_api(self, ingester):
+        ingester._stats = {"drops": {}}
+        listing = {
+            "id": 99,
+            "condition": "Near Mint (NM or M-)",
+            "sleeve_condition": "Very Good Plus (VG+)",
+            "comments": "plays perfectly, no issues",
+            "release": {
+                "artist": "A",
+                "title": "T",
+                "format": "Vinyl, LP, Album",
+                "description": "180g reissue",
+            },
+        }
+        r = ingester.parse_listing(listing)
+        assert r is not None
+        assert r["release_format"] == "Vinyl, LP, Album"
+        assert r["release_description"] == "180g reissue"
 
     def test_label_confidence_is_one(self, ingester, sample_discogs_listing):
         ingester._stats = {"drops": {}}
@@ -294,6 +314,10 @@ class TestParseListing:
 class TestInitialization:
     def test_missing_token_raises(self, test_config, guidelines_path, monkeypatch):
         monkeypatch.delenv("DISCOGS_TOKEN", raising=False)
+        monkeypatch.setattr(
+            "grader.src.data.ingest_discogs.load_project_dotenv",
+            lambda: None,
+        )
         with pytest.raises(EnvironmentError):
             DiscogsIngester(
                 config_path=test_config,

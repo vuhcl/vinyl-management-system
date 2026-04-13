@@ -89,3 +89,6 @@ grader/reports/*.txt
 coverage.xml
 htmlcov/
 .pytest_cache/
+
+# Local Vertex / custom job metadata (no secrets; avoid noisy status)
+.vertex_replicate_state/

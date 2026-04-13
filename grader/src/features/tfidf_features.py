@@ -40,7 +40,7 @@ from grader.src.mlflow_tracking import (
     configure_mlflow_from_config,
     mlflow_enabled,
     mlflow_log_artifacts_enabled,
-    mlflow_start_run_ctx,
+    mlflow_pipeline_step_run_ctx,
 )
 
 # ---------------------------------------------------------------------------
@@ -274,10 +274,14 @@ class TFIDFFeatureBuilder:
         Falls back to text field if text_clean is absent —
         handles edge cases where preprocess.py was not run.
         """
+        from grader.src.data.preprocess import Preprocessor
+
         texts = []
         for record in records:
             text = record.get("text_clean") or record.get("text", "")
-            texts.append(text)
+            texts.append(
+                Preprocessor._strip_leading_numeric_boilerplate(text)
+            )
         return texts
 
     def extract_labels(
@@ -736,7 +740,9 @@ class TFIDFFeatureBuilder:
             Dict with fitted vectorizers, encoders, and feature
             matrices for inspection or direct use by baseline.py.
         """
-        with mlflow_start_run_ctx(self.config, "tfidf_features"):
+        with mlflow_pipeline_step_run_ctx(
+            self.config, "tfidf_features"
+        ) as mlf:
 
             # Load all splits
             split_data: dict[str, list[dict]] = {}
@@ -862,7 +868,7 @@ class TFIDFFeatureBuilder:
             top_terms_path = self.save_top_terms_report(
                 top_terms_sleeve, top_terms_media
             )
-            if mlflow_enabled(self.config):
+            if mlf:
                 self._log_mlflow(split_sizes, vocab_sizes, top_terms_path)
 
             results["vectorizers"] = self.vectorizers

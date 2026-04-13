@@ -186,6 +186,10 @@ class TestInitialization:
     ):
         monkeypatch.delenv("EBAY_CLIENT_ID",     raising=False)
         monkeypatch.delenv("EBAY_CLIENT_SECRET", raising=False)
+        monkeypatch.setattr(
+            "grader.src.data.ingest_ebay.load_project_dotenv",
+            lambda: None,
+        )
         with pytest.raises(EnvironmentError):
             EbayIngester(
                 config_path=test_config,

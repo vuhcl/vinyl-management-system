@@ -51,7 +51,7 @@ from transformers import (
 
 from grader.src.evaluation.metrics import compute_metrics, log_metrics_to_mlflow
 from grader.src.mlflow_tracking import (
-    configure_mlflow_from_config,
+    configure_mlflow_for_transformer_init,
     is_remote_mlflow_tracking_uri,
     mlflow_enabled,
     mlflow_log_artifacts_enabled,
@@ -350,6 +350,8 @@ class TransformerTrainer:
         transformer_overrides: Optional[dict[str, Any]] = None,
         artifact_subdir: Optional[str] = None,
         config: Optional[dict] = None,
+        *,
+        tuning: bool = False,
     ) -> None:
         if config is not None:
             self.config = copy.deepcopy(config)
@@ -360,6 +362,7 @@ class TransformerTrainer:
                 self.config["models"]["transformer"],
                 transformer_overrides,
             )
+        self._mlflow_tuning: bool = tuning
 
         t_cfg = self.config["models"]["transformer"]
         self.base_model: str = t_cfg["base_model"]
@@ -410,8 +413,9 @@ class TransformerTrainer:
         torch.manual_seed(self.random_state)
         np.random.seed(self.random_state)
 
-        if mlflow_enabled(self.config):
-            configure_mlflow_from_config(self.config)
+        configure_mlflow_for_transformer_init(
+            self.config, tuning=self._mlflow_tuning
+        )
 
         self.model: Optional[TwoHeadClassifier] = None
         self.tokenizer: Optional[DistilBertTokenizerFast] = None
@@ -1066,7 +1070,7 @@ class TransformerTrainer:
 
             log_pyfunc_model(self)
         except Exception as exc:  # noqa: BLE001
-            logger.warning("pyfunc model logging skipped: %s", exc)
+            logger.warning("pyfunc logging failed: %s", exc)
 
     # -----------------------------------------------------------------------
     # Orchestration
@@ -1294,12 +1298,21 @@ class TransformerTrainer:
                     "encoders": self.encoders,
                     "eval": eval_results,
                     "training": training_summary,
+                    "mlflow_run_id": (
+                        mlflow.active_run().info.run_id
+                        if mlflow.active_run()
+                        else ""
+                    ),
                 }
 
             self.save_model()
             run_id = ""
             if not self._skip_mlflow:
-                run_id = mlflow.active_run().info.run_id if mlflow.active_run() else ""
+                run_id = (
+                    mlflow.active_run().info.run_id
+                    if mlflow.active_run()
+                    else ""
+                )
                 self._log_mlflow(eval_results, training_summary)
 
         return {

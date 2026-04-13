@@ -30,7 +30,7 @@ from grader.src.mlflow_tracking import (
     configure_mlflow_from_config,
     mlflow_enabled,
     mlflow_log_artifacts_enabled,
-    mlflow_start_run_ctx,
+    mlflow_pipeline_step_run_ctx,
 )
 
 # ---------------------------------------------------------------------------
@@ -543,7 +543,9 @@ class LabelHarmonizer:
             "cross_source_duplicates": 0,
         }
 
-        with mlflow_start_run_ctx(self.config, "harmonize_labels"):
+        with mlflow_pipeline_step_run_ctx(
+            self.config, "harmonize_labels"
+        ) as mlf:
             all_records: list[dict] = []
 
             for source, path in self.source_paths.items():
@@ -614,7 +616,7 @@ class LabelHarmonizer:
 
             self.save_unified(all_records)
             self.save_report(report_text)
-            if mlflow_enabled(self.config):
+            if mlf:
                 self._log_mlflow(distribution)
 
         return all_records

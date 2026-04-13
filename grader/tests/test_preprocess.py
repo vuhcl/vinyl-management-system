@@ -6,6 +6,8 @@ protected term preservation, unverified media detection, and
 adaptive stratified splitting.
 """
 
+import re
+
 import pytest
 
 from grader.src.data.preprocess import Preprocessor
@@ -54,6 +56,52 @@ class TestAbbreviationExpansion:
     def test_whitespace_normalized(self, preprocessor):
         result = preprocessor.clean_text("plays   perfectly")
         assert "  " not in result
+
+
+class TestStrayNumericTokens:
+    def test_strips_boilerplate_lone_digit_before_condition_words(
+        self, preprocessor
+    ):
+        result = preprocessor.clean_text("6 sealed, new hype sticker")
+        assert not re.search(r"\b6\b", result)
+        assert "sealed" in result
+
+    def test_preserves_two_lp_count(self, preprocessor):
+        result = preprocessor.clean_text("2 lp set, plays well")
+        assert "2 lp" in result
+
+    def test_preserves_disk_m_of_n(self, preprocessor):
+        result = preprocessor.clean_text("disk 2 of 3, light marks")
+        assert "2 of" in result
+
+    def test_preserves_fraction(self, preprocessor):
+        result = preprocessor.clean_text("plays at 3/4 speed")
+        assert "3/4" in result
+
+    def test_preserves_inch_marker(self, preprocessor):
+        result = preprocessor.clean_text('7" pressing in nm sleeve')
+        assert '7"' in result or "7" in result  # quote normalized by source
+
+    def test_preserves_inch_split_phrase(self, preprocessor):
+        result = preprocessor.clean_text('2" split at the spine, vg sleeve')
+        assert re.search(r"\b2\b", result)
+        assert "split" in result
+
+    def test_preserves_digit_space_quote_inch(self, preprocessor):
+        result = preprocessor.clean_text('2 " split seam, nm media')
+        assert re.search(r"\b2\b", result)
+        assert "split" in result
+
+    def test_preserves_inch_spelled_out(self, preprocessor):
+        result = preprocessor.clean_text("6 inch seam split, light ring wear")
+        assert re.search(r"\b6\b", result)
+        assert "inch" in result
+        assert "seam split" in result
+
+    def test_preserves_inches_plural(self, preprocessor):
+        result = preprocessor.clean_text("corner ding ~3 inches from edge")
+        assert re.search(r"\b3\b", result)
+        assert "inches" in result
 
 
 class TestProtectedTerms:

@@ -20,6 +20,33 @@ def builder(test_config):
     return TFIDFFeatureBuilder(config_path=test_config)
 
 
+class TestExtractTextStrayDigits:
+    def test_strips_boilerplate_digit_in_text_clean(self, builder):
+        records = [
+            {
+                "text_clean": "6 sealed nm hype sticker",
+                "sleeve_label": "Mint",
+                "media_label": "Mint",
+            }
+        ]
+        texts = builder.extract_texts(records)
+        assert "6" not in texts[0].split()
+        assert "sealed" in texts[0]
+
+    def test_strips_when_falling_back_to_raw_text(self, builder):
+        records = [
+            {
+                "text_clean": "",
+                "text": "6 sealed new",
+                "sleeve_label": "Mint",
+                "media_label": "Mint",
+            }
+        ]
+        texts = builder.extract_texts(records)
+        assert "6" not in texts[0].split()
+        assert "sealed" in texts[0]
+
+
 class TestVectorizerFitting:
     def test_vectorizer_fits_on_train(
         self, builder, split_jsonl_paths

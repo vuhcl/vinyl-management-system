@@ -38,7 +38,7 @@ import yaml
 from grader.src.mlflow_tracking import (
     configure_mlflow_from_config,
     mlflow_enabled,
-    mlflow_start_run_ctx,
+    mlflow_pipeline_step_run_ctx,
 )
 from grader.src.project_env import load_project_dotenv
 
@@ -92,7 +92,7 @@ class EbayIngester:
         data.ebay.min_text_length       — minimum text length (eBay-specific)
         paths.raw                       — raw output directory
         paths.processed                 — processed output directory
-        mlflow.tracking_uri
+        mlflow (URI from MLFLOW_TRACKING_URI / tracking_uri_fallback)
         mlflow.experiment_name
 
     Config keys read from grading_guidelines.yaml:
@@ -702,7 +702,7 @@ class EbayIngester:
             "drops":         {},
         }
 
-        with mlflow_start_run_ctx(self.config, "ingest_ebay"):
+        with mlflow_pipeline_step_run_ctx(self.config, "ingest_ebay") as mlf:
             all_items = self.fetch_all()
             processed_records: list[dict] = []
 
@@ -743,7 +743,7 @@ class EbayIngester:
                 return processed_records
 
             self.save_processed(processed_records)
-            if mlflow_enabled(self.config):
+            if mlf:
                 self._log_mlflow()
 
         return processed_records

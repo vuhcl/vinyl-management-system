@@ -1,0 +1,18 @@
+{
+  "lifecycle": {
+    "rule": [
+      {
+        "action": { "type": "AbortIncompleteMultipartUpload" },
+        "condition": { "age": 7 }
+      },
+      {
+        "action": { "type": "Delete" },
+        "condition": {
+          "daysSinceNoncurrentTime": 30,
+          "isLive": false,
+          "numNewerVersions": 3
+        }
+      }
+    ]
+  }
+}
