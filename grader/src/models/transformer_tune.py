@@ -62,8 +62,8 @@ def _merge_preset_config(
             continue
         t[k] = v
     # Keep paths.artifacts at the pipeline root (label_encoder_*.pkl, features,
-    # baseline pickles live there). Per-preset outputs go under tuning/<preset>/
-    # via TransformerTrainer(..., artifact_subdir=...).
+    # baseline pickles live there). Per-preset outputs use artifact_subdir
+    # tuning/<preset>/ on TransformerTrainer.
     return cfg
 
 
@@ -139,11 +139,13 @@ def _register_best_on_remote(
         logger.warning("Skipping registry: no weights at %s", w)
         return
     configure_mlflow_from_config(cfg)
+    # Encoder pickles always live under pipeline paths.artifacts root, not
+    # under tuning/<preset>/ (see log_pyfunc_model in grader_pyfunc.py).
     fake = SimpleNamespace(
         weights_path=art / "transformer_weights.pt",
         config_path_out=art / "transformer_config.json",
         tokenizer_dir=art / "tokenizer",
-        artifacts_dir=art,
+        artifacts_dir=artifacts_dir,
     )
     with mlflow.start_run(run_name=f"tune_best_{preset_key}"):
         log_pyfunc_model(fake)
