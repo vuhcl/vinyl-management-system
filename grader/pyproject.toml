@@ -14,7 +14,9 @@ dependencies = [
     "pyarrow>=14.0.0",
     "scipy>=1.11.0",
     "python-dotenv>=1.0.0",
-    "scikit-learn>=1.3.0",
+    # Baseline pickles (LR, isotonic, LabelEncoder) are not safe across sklearn
+    # minor versions — keep floor aligned with typical training env (see Colab).
+    "scikit-learn>=1.8.0",
     "transformers>=4.38.0",
     "torch>=2.2.0",
     "matplotlib>=3.7.0",

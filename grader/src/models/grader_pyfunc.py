@@ -246,7 +246,7 @@ _SERVING_REQUIREMENTS = [
     "transformers>=4.38.0",
     "numpy>=1.26.0",
     "pandas>=2.0.0",
-    "scikit-learn>=1.3.0",
+    "scikit-learn>=1.8.0",
 ]
 
 
