@@ -53,7 +53,6 @@ def _load_tuning_presets(path: Path) -> dict[str, dict[str, Any]]:
 
 def _merge_preset_config(
     base_cfg: dict[str, Any],
-    preset_key: str,
     overrides: dict[str, Any],
 ) -> dict[str, Any]:
     cfg = copy.deepcopy(base_cfg)
@@ -62,9 +61,9 @@ def _merge_preset_config(
         if k == "description":
             continue
         t[k] = v
-    art = Path(cfg["paths"]["artifacts"])
-    cfg["paths"]["artifacts"] = str(art / "tuning" / preset_key)
-    Path(cfg["paths"]["artifacts"]).mkdir(parents=True, exist_ok=True)
+    # Keep paths.artifacts at the pipeline root (label_encoder_*.pkl, features,
+    # baseline pickles live there). Per-preset outputs go under tuning/<preset>/
+    # via TransformerTrainer(..., artifact_subdir=...).
     return cfg
 
 
@@ -315,10 +314,14 @@ def main() -> None:
         logger.info("=== Tuning preset %s ===", key)
         logger.info("Overrides: %s", json.dumps(overrides, default=str))
 
-        merged = _merge_preset_config(cfg, key, overrides)
+        merged = _merge_preset_config(cfg, overrides)
         tmp_path = _write_temp_config(merged)
         try:
-            trainer = TransformerTrainer(tmp_path, tuning=True)
+            trainer = TransformerTrainer(
+                tmp_path,
+                tuning=True,
+                artifact_subdir=f"tuning/{key}",
+            )
             out = trainer.run(
                 dry_run=args.dry_run,
                 skip_mlflow=skip_mlf,
