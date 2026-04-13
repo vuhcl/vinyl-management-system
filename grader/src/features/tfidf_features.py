@@ -274,10 +274,14 @@ class TFIDFFeatureBuilder:
         Falls back to text field if text_clean is absent —
         handles edge cases where preprocess.py was not run.
         """
+        from grader.src.data.preprocess import Preprocessor
+
         texts = []
         for record in records:
             text = record.get("text_clean") or record.get("text", "")
-            texts.append(text)
+            texts.append(
+                Preprocessor._strip_leading_numeric_boilerplate(text)
+            )
         return texts
 
     def extract_labels(

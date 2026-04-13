@@ -42,6 +42,7 @@ class TestLoadTrainedFromArtifacts:
         saved_vectorizer_paths,
         saved_feature_paths,
         saved_calibrated_model_paths,
+        split_jsonl_paths,
     ):
         from grader.src.models.baseline import BaselineModel
 
@@ -116,8 +117,9 @@ class TestCalibration:
         }
         calibrated = baseline.calibrate(baseline.models, cal_features)
         for target in ("sleeve", "media"):
-            inner = calibrated[target].calibrated_classifiers_[0].estimator
-            lr = inner.estimator if hasattr(inner, "estimator") else inner
+            cal = calibrated[target]
+            lr = getattr(cal, "base_clf", None)
+            assert lr is not None, "expected isotonic wrapper with base_clf"
             np.testing.assert_allclose(
                 np.asarray(lr.coef_),
                 coef_before[target],

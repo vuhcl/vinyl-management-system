@@ -9,6 +9,12 @@ Data ingestion for the recommender subproject.
 
 When Discogs token or AOTY path is not set, falls back to CSV files in
 data_dir.
+
+Optional **precomputed** Discogs release → AOTY album id JSON (see
+``scripts/build_discogs_aoty_release_map.py``): set
+``discogs["release_to_aoty_map_path"]`` and either use
+``discogs["skip_live_discogs_aoty_mapping"]=true`` to avoid live HTTP
+matching, or rely on automatic fallback when live matching raises.
 """
 from pathlib import Path
 from typing import cast
@@ -254,14 +260,20 @@ def ingest_all(
     *,
     discogs: dict | None = None,
     aoty_scraped: dict | None = None,
-) -> dict[str, pd.DataFrame]:
+) -> dict[str, pd.DataFrame | dict]:
     """
     Load all raw inputs. Uses shared Discogs API and AOTY scraped data when configured.
 
-    - discogs: optional dict with use_api (bool), usernames (list[str]), token (str, or use env DISCOGS_USER_TOKEN).
+    - discogs: optional dict with use_api (bool), usernames (list[str]), token (str, or use env DISCOGS_USER_TOKEN),
+      release_to_aoty_map_path (str | Path to JSON), skip_live_discogs_aoty_mapping (bool).
     - aoty_scraped: optional dict with dir (Path), ratings_file (str), albums_file (str).
       When `aoty_scraped.dir` is not set (null), we fall back to loading AOTY data
       from local MongoDB (see `aoty.mongo_loader`) and then fall back to CSV.
+
+    Returns a dict with DataFrames ``collection``, ``wantlist``, ``ratings``, ``albums``
+    plus ``ingest_metadata`` (dict). When Discogs→AOTY ID mapping runs,
+    ``ingest_metadata["discogs_aoty_mapping"]`` includes catalog-build and per-table
+    row/release drop counts.
     """
     data_dir = Path(data_dir)
     discogs = discogs or {}
@@ -332,7 +344,77 @@ def ingest_all(
     # If Discogs data came from the API, `collection`/`wantlist` album_id
     # values are Discogs release IDs. Map them to canonical AOTY album_id so
     # the recommender interactions align across sources.
-    if use_discogs and not albums.empty and discogs_token_resolved:
+    ingest_metadata: dict = {"discogs_aoty_mapping": None}
+
+    def _resolve_release_to_aoty_path(raw_path: str | Path | None) -> Path | None:
+        if not raw_path:
+            return None
+        p = Path(raw_path).expanduser()
+        candidates = (
+            [p.resolve()]
+            if p.is_absolute()
+            else [
+                (Path.cwd() / p).resolve(),
+                (data_dir / p).resolve(),
+                (data_dir.parent / p).resolve(),
+            ]
+        )
+        for c in candidates:
+            if c.is_file():
+                return c
+        return None
+
+    release_map_path = _resolve_release_to_aoty_path(
+        discogs.get("release_to_aoty_map_path")
+    )
+    release_map: dict[str, str] = {}
+    if release_map_path is not None:
+        try:
+            from recommender.src.data.discogs_aoty_id_matching import (
+                load_release_to_aoty_json,
+            )
+
+            release_map = load_release_to_aoty_json(release_map_path)
+        except Exception:
+            release_map = {}
+
+    def _apply_release_artifact() -> dict:
+        from recommender.src.data.discogs_aoty_id_matching import (
+            apply_release_to_aoty_map,
+        )
+
+        nonlocal collection, wantlist
+        c_stats: dict[str, int] = {}
+        w_stats: dict[str, int] = {}
+        collection = apply_release_to_aoty_map(
+            collection, release_map, stats_out=c_stats
+        )
+        wantlist = apply_release_to_aoty_map(
+            wantlist, release_map, stats_out=w_stats
+        )
+        return {
+            "attempted": True,
+            "mode": "release_to_aoty_artifact",
+            "path": str(release_map_path),
+            "catalog_build": {},
+            "collection_release_map": dict(c_stats),
+            "wantlist_release_map": dict(w_stats),
+        }
+
+    skip_live = bool(discogs.get("skip_live_discogs_aoty_mapping"))
+
+    if use_discogs and skip_live:
+        if release_map:
+            ingest_metadata["discogs_aoty_mapping"] = _apply_release_artifact()
+        else:
+            ingest_metadata["discogs_aoty_mapping"] = {
+                "attempted": True,
+                "error": (
+                    "skip_live_discogs_aoty_mapping is true but "
+                    "release_to_aoty_map_path is missing, unreadable, or empty"
+                ),
+            }
+    elif use_discogs and not albums.empty and discogs_token_resolved:
         if "album_title" in albums.columns and (
             albums["album_title"].astype(str).str.strip().ne("").any()
         ):
@@ -354,39 +436,67 @@ def ingest_all(
                     match_cfg,
                     cache_dir,
                 )
+                mapping_report: dict = {
+                    "attempted": True,
+                    "mode": "live_discogs_http",
+                    "catalog_build": {},
+                    "collection_release_map": None,
+                    "wantlist_release_map": None,
+                    "release_mapping_skipped_reason": None,
+                }
+                catalog_stats: dict[str, int] = {}
                 try:
                     discogs_master_to_aoty = (
                         build_discogs_master_to_aoty_album_id_map(
                             albums,
                             http=http,
                             cfg=match_cfg,
+                            stats_out=catalog_stats,
                         )
                     )
+                    mapping_report["catalog_build"] = dict(catalog_stats)
                     if not discogs_master_to_aoty:
-                        pass
+                        mapping_report["release_mapping_skipped_reason"] = (
+                            "empty_discogs_master_to_aoty_map"
+                        )
                     else:
+                        c_stats: dict[str, int] = {}
+                        w_stats: dict[str, int] = {}
                         collection = map_discogs_release_ids_to_aoty_album_ids(
                             collection,
                             discogs_master_to_aoty=discogs_master_to_aoty,
                             http=http,
                             cfg=match_cfg,
+                            stats_out=c_stats,
                         )
                         wantlist = map_discogs_release_ids_to_aoty_album_ids(
                             wantlist,
                             discogs_master_to_aoty=discogs_master_to_aoty,
                             http=http,
                             cfg=match_cfg,
+                            stats_out=w_stats,
                         )
+                        mapping_report["collection_release_map"] = dict(c_stats)
+                        mapping_report["wantlist_release_map"] = dict(w_stats)
                 finally:
                     http.save_disk()
-            except Exception:
-                # Mapping is best-effort; downstream preprocess will filter
-                # based on available album metadata.
-                pass
+                ingest_metadata["discogs_aoty_mapping"] = mapping_report
+            except Exception as exc:
+                if release_map:
+                    rep = _apply_release_artifact()
+                    rep["live_error"] = str(exc)
+                    rep["mode"] = "release_to_aoty_artifact_after_live_error"
+                    ingest_metadata["discogs_aoty_mapping"] = rep
+                else:
+                    ingest_metadata["discogs_aoty_mapping"] = {
+                        "attempted": True,
+                        "error": str(exc),
+                    }
 
     return {
         "collection": collection,
         "wantlist": wantlist,
         "ratings": ratings,
         "albums": albums,
+        "ingest_metadata": ingest_metadata,
     }

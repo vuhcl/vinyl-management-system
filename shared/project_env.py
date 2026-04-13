@@ -32,8 +32,6 @@ def load_project_dotenv() -> None:
     repo_env = repo_root / ".env"
     if repo_env.is_file():
         load_dotenv(repo_env)
-        # Shell may export MLFLOW_TRACKING_URI= (empty); dotenv won't override
-        # by default — still apply a non-empty value from the file.
         vals = dotenv_values(repo_env) or {}
         file_uri = (vals.get("MLFLOW_TRACKING_URI") or "").strip()
         env_uri = (os.environ.get("MLFLOW_TRACKING_URI") or "").strip()

@@ -1,6 +1,8 @@
 """
 Hyperparameter sweeps for the DistilBERT grader (``transformer_tune``).
 
+Presets live in ``grader/configs/transformer_tune.yaml``.
+
 Option A: each preset trains with **local** MLflow (see ``mlflow.tuning_*`` in
 ``grader.yaml``) so the remote server is not flooded. After the sweep, the best
 preset is registered on the **remote** tracking server by logging a new pyfunc
@@ -106,7 +108,7 @@ def _append_results_csv(
 
 
 def promote_preset(artifacts_dir: Path, preset_key: str) -> None:
-    """Copy ``grader/artifacts/tuning/<preset>/`` into the inference root."""
+    """Copy ``artifacts/tuning/<preset>/`` into the inference root."""
     src = artifacts_dir / "tuning" / preset_key
     if not src.is_dir():
         raise FileNotFoundError(
@@ -302,6 +304,7 @@ def main() -> None:
     ]
 
     run_registry: dict[str, dict[str, Any]] = {}
+    skip_mlf = args.skip_mlflow or args.no_mlflow
 
     for key in chosen:
         spec = all_presets[key]
@@ -316,7 +319,6 @@ def main() -> None:
         tmp_path = _write_temp_config(merged)
         try:
             trainer = TransformerTrainer(tmp_path, tuning=True)
-            skip_mlf = args.skip_mlflow or args.no_mlflow
             out = trainer.run(
                 dry_run=args.dry_run,
                 skip_mlflow=skip_mlf,
@@ -357,7 +359,7 @@ def main() -> None:
     if (
         args.register
         and mlflow_enabled(cfg)
-        and not (args.skip_mlflow or args.no_mlflow)
+        and not skip_mlf
         and not args.dry_run
         and mlflow_log_artifacts_enabled(cfg)
         and run_registry

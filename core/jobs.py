@@ -1,7 +1,9 @@
 """
-Ingest jobs: fetch from Discogs (and optionally AOTY) and write to data directories.
+Ingest jobs: fetch from Discogs (and optionally AOTY) and write to data
+directories.
 
-Used by the web app after user logs in: trigger ingest for that user's collection/wantlist
+Used by the web app after user logs in: trigger ingest for that user's
+collection/wantlist
 so the recommender and other ML components can use the data.
 """
 from pathlib import Path
@@ -24,7 +26,11 @@ def run_discogs_ingest(
 
     Returns paths to written files: collection_csv, wantlist_csv.
     """
-    from discogs_api import DiscogsClient
+    from shared.project_env import load_project_dotenv
+
+    load_project_dotenv()
+
+    from shared.discogs_api import DiscogsClient
 
     root = get_project_root()
     data_dir = data_dir or (root / "data" / "raw")
@@ -54,12 +60,18 @@ def run_full_ingest(
     write_csv: bool = True,
 ) -> dict[str, object]:
     """
-    Run the full recommender ingest (Discogs + AOTY) for the given user or config.
+    Run the full recommender ingest (Discogs + AOTY) for the given user or
+    config.
 
-    If username/token are provided, they override config for Discogs. When write_csv
-    is True, writes collection.csv, wantlist.csv (and ratings/albums if from AOTY)
-    to data_dir so the recommender pipeline can use them.
+    If username/token are provided, they override config for Discogs. When
+    write_csv is True, writes collection.csv, wantlist.csv (and
+    ratings/albums if from AOTY) to data_dir so the recommender pipeline can
+    use them.
     """
+    from shared.project_env import load_project_dotenv
+
+    load_project_dotenv()
+
     from recommender.src.data.ingest import ingest_all
 
     root = get_project_root()
@@ -69,9 +81,15 @@ def run_full_ingest(
     raw_dir.mkdir(parents=True, exist_ok=True)
 
     discogs_cfg = cfg.get("discogs") or {}
-    use_api = bool(username and token) or (discogs_cfg.get("use_api") and discogs_cfg.get("usernames"))
+    use_api = bool(username and token) or (
+        discogs_cfg.get("use_api") and discogs_cfg.get("usernames")
+    )
     if username and token:
-        discogs_cfg = {"use_api": True, "usernames": [username], "token": token}
+        discogs_cfg = {
+            "use_api": True,
+            "usernames": [username],
+            "token": token,
+        }
 
     aoty_cfg = cfg.get("aoty_scraped") or {}
     aoty_dir = aoty_cfg.get("dir")
@@ -82,7 +100,8 @@ def run_full_ingest(
         raw_dir,
         discogs={
             "use_api": use_api,
-            "usernames": discogs_cfg.get("usernames") or (username and [username]),
+            "usernames": discogs_cfg.get("usernames")
+            or (username and [username]),
             "token": token or discogs_cfg.get("token"),
         } if use_api else None,
         aoty_scraped={

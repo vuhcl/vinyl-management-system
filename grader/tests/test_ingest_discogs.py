@@ -314,6 +314,10 @@ class TestParseListing:
 class TestInitialization:
     def test_missing_token_raises(self, test_config, guidelines_path, monkeypatch):
         monkeypatch.delenv("DISCOGS_TOKEN", raising=False)
+        monkeypatch.setattr(
+            "grader.src.data.ingest_discogs.load_project_dotenv",
+            lambda: None,
+        )
         with pytest.raises(EnvironmentError):
             DiscogsIngester(
                 config_path=test_config,

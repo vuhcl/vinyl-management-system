@@ -10,7 +10,7 @@ from __future__ import annotations
 import os
 from typing import Any
 
-# In-memory store for development; replace with Redis/DB session store in production.
+# In-memory store for development; replace with Redis/DB session in production.
 _user_tokens: dict[str, str] = {}
 
 
@@ -24,11 +24,20 @@ def get_user_token(username: str) -> str | None:
     return _user_tokens.get(username)
 
 
-def get_token_for_request(username: str | None, request_env: dict[str, Any] | None = None) -> str | None:
+def get_token_for_request(
+    username: str | None,
+    request_env: dict[str, Any] | None = None,
+) -> str | None:
     """
-    Resolve Discogs token: stored per-user first, then DISCOGS_USER_TOKEN env.
+    Resolve Discogs token: stored per-user first, then env personal token.
+
+    Env: ``DISCOGS_USER_TOKEN``, then ``DISCOGS_TOKEN``.
     request_env can hold session (e.g. from FastAPI request.state).
     """
     if username and get_user_token(username):
         return get_user_token(username)
-    return os.environ.get("DISCOGS_USER_TOKEN")
+    for key in ("DISCOGS_USER_TOKEN", "DISCOGS_TOKEN"):
+        t = os.environ.get(key)
+        if t and str(t).strip():
+            return str(t).strip()
+    return None

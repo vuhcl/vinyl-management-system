@@ -318,6 +318,7 @@ class Pipeline:
                 discogs_ingester = DiscogsIngester(
                     config_path=self.config_path,
                     guidelines_path=self.guidelines_path,
+                    config=self.config,
                 )
                 discogs_ingester.run()
 
@@ -331,6 +332,7 @@ class Pipeline:
                     ebay_ingester = EbayIngester(
                         config_path=self.config_path,
                         guidelines_path=self.guidelines_path,
+                        config=self.config,
                     )
                     ebay_ingester.run()
 
@@ -363,6 +365,7 @@ class Pipeline:
                 harmonizer = LabelHarmonizer(
                     config_path=self.config_path,
                     guidelines_path=self.guidelines_path,
+                    config=self.config,
                 )
                 results["harmonize"] = harmonizer.run()
             else:
@@ -377,6 +380,7 @@ class Pipeline:
                 preprocessor = Preprocessor(
                     config_path=self.config_path,
                     guidelines_path=self.guidelines_path,
+                    config=self.config,
                 )
                 results["preprocess"] = preprocessor.run()
             else:
@@ -390,6 +394,7 @@ class Pipeline:
 
                 tfidf = TFIDFFeatureBuilder(
                     config_path=self.config_path,
+                    config=self.config,
                 )
                 results["features"] = tfidf.run()
             else:
@@ -410,7 +415,10 @@ class Pipeline:
                 )
                 results["baseline"] = baseline_results
             else:
-                baseline = BaselineModel(config_path=self.config_path)
+                baseline = BaselineModel(
+                    config_path=self.config_path,
+                    config=self.config,
+                )
                 baseline_results = baseline.run()
                 results["baseline"] = baseline_results
 
@@ -430,6 +438,7 @@ class Pipeline:
 
                 trainer = TransformerTrainer(
                     config_path=self.config_path,
+                    config=self.config,
                 )
                 transformer_results = trainer.run()
                 results["transformer"] = transformer_results
@@ -1195,6 +1204,29 @@ def main() -> None:
             "Skip TF-IDF baseline training (step 5); load baseline_*.pkl from "
             "paths.artifacts and evaluate on existing feature matrices"
         ),
+    )
+    train_parser.add_argument(
+        "--no-mlflow",
+        action="store_true",
+        help="Disable MLflow entirely (same as mlflow.enabled: false in config).",
+    )
+    train_parser.add_argument(
+        "--mlflow-no-artifacts",
+        action="store_true",
+        help=(
+            "Log params/metrics only — no artifact uploads or registry "
+            "(mlflow.log_artifacts: false). Ignored with --no-mlflow."
+        ),
+    )
+    train_parser.add_argument(
+        "--no-register",
+        action="store_true",
+        help="Skip registering the transformer pyfunc to the MLflow model registry",
+    )
+    train_parser.add_argument(
+        "--registry-model-name",
+        default=None,
+        help="Override mlflow.registry_model_name for this run",
     )
     train_parser.add_argument(
         "--no-mlflow",

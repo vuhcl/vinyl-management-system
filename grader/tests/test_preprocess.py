@@ -115,9 +115,9 @@ class TestProtectedTerms:
         assert "surface noise" in preprocessor.protected_terms
 
     def test_protected_terms_survive_cleaning(self, preprocessor):
-        text   = "sealed, unplayed, no marks"
+        text = "sealed, unplayed, no marks"
         cleaned = preprocessor.clean_text(text)
-        lost   = preprocessor._verify_protected_terms(text, cleaned)
+        lost = preprocessor._verify_protected_terms(text, cleaned)
         assert len(lost) == 0
 
 
@@ -136,11 +136,49 @@ class TestUnverifiedMediaDetection:
         )
         assert result is True
 
+    def test_media_unmentioned_is_unverified(self, preprocessor):
+        # Sleeve-only language: describes cover defects, no playback cues.
+        result = preprocessor.detect_unverified_media(
+            "seam split on cover; small corner crease"
+        )
+        assert result is False
+
+    def test_sealed_is_exempt_and_verified(self, preprocessor):
+        # In this project, sealed implies Mint media by convention.
+        result = preprocessor.detect_unverified_media(
+            "factory sealed, no play info provided"
+        )
+        assert result is True
+
     def test_detection_on_raw_text(self, preprocessor):
         """Detection must work on raw text, before any normalization."""
         result = preprocessor.detect_unverified_media(
             "UNPLAYED, still in shrink"
         )
+        assert result is False
+
+    def test_mixed_comment_vinyl_surface_marks_is_verifiable(self, preprocessor):
+        result = preprocessor.detect_unverified_media(
+            "Vinyl has some light surface marks, a few pressing dimples, "
+            "small drill hole in center label."
+        )
+        assert result is True
+
+    def test_mixed_comment_minor_play_wear_is_verifiable(self, preprocessor):
+        result = preprocessor.detect_unverified_media(
+            "Gently used copy in nice condition. Some very minor play wear. "
+            "Labels have some very minor bubbling likely present at press"
+        )
+        assert result is True
+
+    def test_vague_comment_nice_overall_is_unverified(self, preprocessor):
+        result = preprocessor.detect_unverified_media("Nice overall")
+        assert result is False
+
+    def test_vague_comment_great_shape_all_around_is_unverified(
+        self, preprocessor
+    ):
+        result = preprocessor.detect_unverified_media("Great shape all around")
         assert result is False
 
 
@@ -221,7 +259,7 @@ class TestProcessRecord:
         record = sample_unified_records[0]
         result = preprocessor.process_record(record)
         assert result["sleeve_label"] == record["sleeve_label"]
-        assert result["media_label"]  == record["media_label"]
+        assert result["media_label"] == record["media_label"]
 
     def test_media_verifiable_updated(
         self, preprocessor, sample_unified_records
@@ -232,3 +270,43 @@ class TestProcessRecord:
         }
         result = preprocessor.process_record(record)
         assert result["media_verifiable"] is False
+
+
+class TestDescriptionQuality:
+    def test_rich_note_adequate_for_training(self, preprocessor):
+        text = (
+            "Corner bump and light ring wear on cover; "
+            "vinyl plays cleanly with faint surface noise."
+        )
+        cleaned = preprocessor.clean_text(text)
+        dq = preprocessor.compute_description_quality(text, cleaned)
+        assert dq["sleeve_note_adequate"] is True
+        assert dq["media_note_adequate"] is True
+        assert dq["adequate_for_training"] is True
+        assert dq["needs_richer_note"] is False
+
+    def test_sleeve_only_thin_note(self, preprocessor):
+        text = (
+            "Light seam split on the jacket. "
+            "Seller gave no playback or vinyl condition details."
+        )
+        cleaned = preprocessor.clean_text(text)
+        dq = preprocessor.compute_description_quality(text, cleaned)
+        assert dq["sleeve_note_adequate"] is True
+        assert dq["media_note_adequate"] is False
+        assert dq["adequate_for_training"] is False
+        assert "media" in dq["description_quality_gaps"]
+
+    def test_grade_shorthand_sleeve_ok_media_thin(self, preprocessor):
+        text = "NM / VG+"
+        cleaned = preprocessor.clean_text(text)
+        dq = preprocessor.compute_description_quality(text, cleaned)
+        assert dq["sleeve_note_adequate"] is True
+        assert dq["media_note_adequate"] is False
+
+    def test_process_record_has_quality_fields(
+        self, preprocessor, sample_unified_records
+    ):
+        r = preprocessor.process_record(sample_unified_records[0])
+        assert "sleeve_note_adequate" in r
+        assert "description_quality_prompts" in r

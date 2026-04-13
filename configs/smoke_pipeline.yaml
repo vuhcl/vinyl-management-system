@@ -1,0 +1,73 @@
+seed: 42
+
+# Discogs + optional precomputed release → AOTY map.
+# Preferred: scripts/build_discogs_master_to_aoty_artifact.py then
+#            scripts/build_discogs_release_to_aoty_artifact.py (Mongo incremental).
+# Legacy:   scripts/build_discogs_aoty_release_map.py
+discogs:
+  use_api: true
+  usernames: ["nowaki027"]
+#   token: ${DISCOGS_TOKEN}
+  release_to_aoty_map_path: artifacts/discogs_release_to_aoty.json
+  skip_live_discogs_aoty_mapping: true   # use JSON only; omit for live HTTP + fallback
+
+# Implicit strengths for unified interactions (optional; defaults in preprocess).
+# Low stars stay in the matrix as weak positives (tune rating_low_1 / rating_low_2).
+# Albums that never receive 3★+ anywhere in the ratings table have all rating
+# rows removed (collection/wantlist unchanged). Disable with:
+#   drop_exclusively_low_rating_albums: false
+# Threshold (stars): drop rating rows if max observed rating for that album < value
+#   exclusive_low_rating_below: 3.0
+# interaction_weights:
+#   collection: 1.0
+#   wantlist: 2.0
+#   rating_high: 2.5
+#   rating_mid: 1.5
+#   rating_low_2: 0.8
+#   rating_low_1: 0.4
+#   drop_exclusively_low_rating_albums: true
+#   exclusive_low_rating_below: 3.0
+
+# Keep ALS training fast for real-data smoke tests.
+als:
+  factors: 16
+  regularization: 0.01
+  iterations: 1
+  alpha: 20.0
+
+evaluation:
+  k: 10
+
+recommendation:
+  top_k: 20
+
+# Real datasets are large: building full (n_items x n_items) similarity is O(n^2).
+# This guard lets the pipeline skip content similarity when too large.
+content:
+  max_items_for_similarity: 1000
+  genre_top_k: 20
+
+# Optional two-stage retrieval: metadata candidate pool before ALS ranking.
+# Set enabled: true when albums.parquet has genre / artist / avg_rating.
+retrieval:
+  enabled: false
+  # Persist genre/artist indexes for recommend() two-stage serving.
+  save_for_serving: true
+  min_avg_rating: 0.0
+  min_train_count: 1
+  max_candidates: 2000
+  use_genre_expansion: true
+  use_same_artist_expansion: true
+  fallback_to_full_catalog: true
+  # User taste years: quantile band over train-album years (always includes
+  # min/max train year); optional extra slack (years).
+  use_year_quantile_filter: true
+  year_quantile_low: 0.1
+  year_quantile_high: 0.9
+  # year_window_years: 3
+  min_distinct_users: 1
+  min_rating_rows: 0
+  # min_priority_score: 0.01
+  # Warn (or fail) if held-out test items are too often outside the pool.
+  # min_candidate_relevant_hit_rate: 0.15
+  # fail_on_low_candidate_hit_rate: false

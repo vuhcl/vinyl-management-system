@@ -9,6 +9,8 @@ import yaml
 import numpy as np
 import pandas as pd
 
+from core.config import load_config as load_project_config
+
 from recommender.src.data.ingest import ingest_all
 from recommender.src.data.preprocess import preprocess, save_processed, load_processed
 from recommender.src.features.build_matrix import build_user_item_matrix, get_user_item_mappers
@@ -24,11 +26,6 @@ from recommender.src.models.hybrid import rank_hybrid
 from recommender.src.evaluation.evaluate import leave_one_out_split, run_evaluation
 
 
-def load_config(config_path: Path) -> dict:
-    with open(config_path) as f:
-        return yaml.safe_load(f)
-
-
 def run_pipeline(
     config_path: Path,
     data_dir: Path,
@@ -37,7 +34,7 @@ def run_pipeline(
     skip_ingest: bool = False,
     log_mlflow: bool = True,
 ):
-    config = load_config(config_path)
+    config = load_project_config(config_path)
     seed = config.get("seed", 42)
     np.random.seed(seed)
     weights = config.get("interaction_weights", {})
@@ -55,19 +52,30 @@ def run_pipeline(
     if not skip_ingest:
         discogs_cfg = config.get("discogs", {})
         aoty_cfg = config.get("aoty_scraped", {})
+        project_root = Path(config_path).resolve().parent.parent
         aoty_dir = aoty_cfg.get("dir")
         if aoty_dir is not None:
             aoty_dir = Path(aoty_dir)
             if not aoty_dir.is_absolute():
                 # Resolve relative to project root (parent of configs/)
-                project_root = Path(config_path).resolve().parent.parent
                 aoty_dir = project_root / aoty_dir
+        release_map_path = discogs_cfg.get("release_to_aoty_map_path")
+        if release_map_path:
+            rp = Path(release_map_path).expanduser()
+            if not rp.is_absolute():
+                release_map_path = str(project_root / rp)
+            else:
+                release_map_path = str(rp)
         raw = ingest_all(
             data_dir,
             discogs={
                 "use_api": discogs_cfg.get("use_api", False),
                 "usernames": discogs_cfg.get("usernames"),
                 "token": discogs_cfg.get("token"),
+                "release_to_aoty_map_path": release_map_path,
+                "skip_live_discogs_aoty_mapping": discogs_cfg.get(
+                    "skip_live_discogs_aoty_mapping", False
+                ),
             } if discogs_cfg else None,
             aoty_scraped={
                 "dir": aoty_dir,
@@ -344,6 +352,16 @@ def recommend(
 
 if __name__ == "__main__":
     import argparse
+    import sys
+    from pathlib import Path
+
+    _repo_root = Path(__file__).resolve().parents[1]
+    if str(_repo_root) not in sys.path:
+        sys.path.insert(0, str(_repo_root))
+    from shared.project_env import load_project_dotenv
+
+    load_project_dotenv()
+
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", default="configs/base.yaml")
     parser.add_argument("--data-dir", default="data/raw")

@@ -1,59 +1,32 @@
-# Hybrid Vinyl Recommendation System - Base Config (recommender subproject)
-# Reproducibility
-seed: 42
+# ============================================================
+# vinyl_collector_ai/configs/base.yaml
+# Shared configuration — inherited by all feature modules
+# ============================================================
 
-# Paths (relative to project root)
+project:
+  name: vinyl_collector_ai
+  version: "0.1.0"
+  random_seed: 42
+
 paths:
-  raw_data: "data/raw"
-  processed_data: "data/processed"
-  artifacts: "artifacts"
+  root: .                          # monorepo root
+  shared_data: data/
+  raw: data/raw/
+  processed: data/processed/
+  artifacts: artifacts/
 
-# Shared Discogs API – used by all subprojects; recommender fetches collection/wantlist here
 discogs:
-  use_api: false
-  # usernames: ["my_discogs_username"]
-  # token: "${DISCOGS_USER_TOKEN}"  # or set env DISCOGS_USER_TOKEN
-  # When use_api is false, collection/wantlist are read from CSV in paths.raw_data
+  base_url: https://api.discogs.com
+  token: ${DISCOGS_TOKEN}          # set via environment variable, never hardcoded
+  rate_limit_per_minute: 60
+  marketplace_endpoint: /marketplace/listings
 
-# AOTY scraped data – recommender reads ratings and album metadata from scraper output
-# Scrapers and scraped data live elsewhere; point dir to that output directory
-aoty_scraped:
-  dir: null   # e.g. "data/aoty_scraped" or path to your scraped data
-  ratings_file: "ratings.csv"
-  albums_file: "albums.csv"
-  # When dir is null, ratings/albums are read from CSV in paths.raw_data
+ebay:
+  base_url: https://api.ebay.com/buy/browse/v1
+  token: ${EBAY_TOKEN}             # set via environment variable
+  trusted_sellers: []              # populated in grader/configs/grader.yaml
 
-# Interaction weights (user story §6 Phase 1)
-interaction_weights:
-  collection: 1.0
-  wantlist: 2.0
-  rating_high: 2.5   # rating >= 4
-  rating_mid: 1.5    # rating == 3
-
-# ALS hyperparameters
-als:
-  factors: 64
-  regularization: 0.01
-  iterations: 15
-  alpha: 40.0  # confidence scaling for implicit
-
-# Content model
-content:
-  genre_top_k: 20
-  year_buckets: 10
-
-# Hybrid blending
-hybrid:
-  alpha: 0.7  # CF weight; (1-alpha) = content weight
-  alpha_search: [0.3, 0.5, 0.7, 0.9]
-
-# Evaluation
-evaluation:
-  k: 10
-  split_strategy: "leave_one_out"  # or "time_based"
-  test_fraction: 0.2  # for leave-one-out: 1 item per user held out
-
-# Recommendation output
-recommendation:
-  top_k: 10
-  exclude_owned: true
+mlflow:
+  # Remote tracking: set MLFLOW_TRACKING_URI in the environment.
+  # Grader uses grader.yaml → tracking_uri_fallback when the env var is unset.
+  artifact_location: ./artifacts

@@ -1,21 +1,138 @@
-# Price estimator – base config (stub)
+# VinylIQ / price_estimator — paths relative to price_estimator/ unless absolute
 seed: 42
 
 paths:
   raw_data: "data/raw"
   processed_data: "data/processed"
-  artifacts: "artifacts/price_estimator"
+  artifacts: "artifacts"
 
-# Discogs – price suggestions / marketplace (shared discogs_api)
+vinyliq:
+  paths:
+    marketplace_db: "data/cache/marketplace_stats.sqlite"
+    feature_store_db: "data/feature_store.sqlite"
+    model_dir: "artifacts/vinyliq"
+  # Which env var the API reads for the personal token (see repo .env.template).
+  discogs_token_env: "DISCOGS_TOKEN"
+  # null = auto from labeled count (cap ~ n/25, max 3000; keep all if ≤500 uniques)
+  catalog_encoders:
+    max_primary_artist_ids: null
+    max_primary_label_ids: null
+  xgboost:
+    n_estimators: 300
+    max_depth: 6
+    learning_rate: 0.05
+    subsample: 0.85
+    colsample_bytree: 0.85
+  # Dollar target for ``log1p(y)`` (see ``label_synthesis``).
+  # spread_signal / blend / median / geometric_mean: use ``release_lowest_price``
+  # from ``GET /releases`` when present, else marketplace stats (``median_price`` there
+  # often equals lowest — not a separate Discogs median).
+  # price_suggestion: pseudo-label from ``GET /marketplace/price_suggestions`` for
+  # ``price_suggestion_grade`` (Discogs seller tool; requires token + seller settings).
+  # The collector stores the full grade→price map in ``price_suggestions_json`` for
+  # all conditions (see ``price_suggestions_ladder_from_json`` in marketplace_db).
+  # price_suggestion_strict: skip rows when suggestions JSON is empty.
+  # release_lowest: y = release or stats lowest.
+  # spread_num_for_sale_reference: listing-depth term for spread_signal only.
+  training_label:
+    mode: spread_signal
+    blend_median_weight: 0.7
+    spread_lowest_floor_ratio: 0.35
+    spread_min_median_weight: 0.25
+    spread_num_for_sale_reference: 20
+    price_suggestion_grade: "Near Mint (NM or M-)"
+    price_suggestion_fallback_lowest: true
+  # residual_log_median (default): y = log1p(y_label) - log1p(anchor); anchor prefers
+  # release_lowest_price then stats lowest/median; X omits price/liquidity; inference
+  # adds log1p(live anchor). Pyfunc column name remains ``discogs_median_price``.
+  # dollar_log1p: predict log1p(price) with marketplace scalars in X (legacy).
+  # residual_z_clip_abs: optional positive float; clip z=log1p(y_label)-log1p(median) to [-c,c].
+  training_target:
+    kind: residual_log_median
+    residual_z_clip_abs: null
+  tuning:
+    enabled: true
+    # Champion trial: median_ape (default, robust per-release %) | wape (dollar-mass %) |
+    # mae_dollars (legacy absolute $)
+    selection_metric: median_ape
+    n_trials_per_family: 8
+    val_fraction: 0.15
+    test_fraction: 0.15
+    early_stopping_rounds: 50
+    # null = use top-level ``seed``
+    random_seed: null
+  model_families:
+    xgboost: true
+    lightgbm: true
+    catboost: true
+    sklearn_hist_gbrt: true
+    sklearn_rf: false
+    sklearn_et: false
+  search_spaces:
+    xgboost:
+      objective: ["reg:squarederror", "reg:absoluteerror", "reg:quantileerror"]
+      n_estimators: [400, 800, 1200]
+      max_depth: [4, 5, 6, 8]
+      learning_rate: [0.03, 0.05, 0.08]
+      subsample: [0.75, 0.85, 0.95]
+      colsample_bytree: [0.75, 0.85, 0.95]
+      reg_lambda: [0.5, 1.0, 2.0]
+      reg_alpha: [0.0, 0.1, 0.5]
+    lightgbm:
+      objective: ["regression", "regression_l1", "quantile"]
+      n_estimators: [400, 800, 1200]
+      num_leaves: [31, 63, 127]
+      learning_rate: [0.03, 0.05, 0.08]
+      subsample: [0.75, 0.85, 0.95]
+      colsample_bytree: [0.75, 0.85, 0.95]
+      min_child_samples: [10, 20, 40]
+    catboost:
+      iterations: [400, 800, 1200]
+      depth: [4, 6, 8]
+      learning_rate: [0.03, 0.05, 0.08]
+      l2_leaf_reg: [1, 3, 5]
+      bagging_temperature: [0, 0.5, 1]
+    sklearn_hist_gbrt:
+      max_iter: [200, 400, 600]
+      max_depth: [null, 6, 8]
+      learning_rate: [0.03, 0.05, 0.1]
+      l2_regularization: [0.0, 0.1, 1.0]
+      max_leaf_nodes: [31, 63]
+      min_samples_leaf: [10, 20]
+    sklearn_rf:
+      n_estimators: [200, 400]
+      max_depth: [null, 12, 20]
+      min_samples_leaf: [1, 4]
+    sklearn_et:
+      n_estimators: [200, 400]
+      max_depth: [null, 12, 20]
+      min_samples_leaf: [1, 4]
+
+api:
+  host: "0.0.0.0"
+  port: 8801
+
 discogs:
-  use_api: false
-  # token: "${DISCOGS_USER_TOKEN}"
+  use_api: true
 
-# Optional: condition from NLP classifier (sleeve/media grades)
-nlp_condition:
-  artifact_dir: "artifacts"  # where nlp_condition_classifier saves models
-
-# Model (stub)
-model:
-  type: "quantile_regression"  # or "point", "ensemble"
-  quantiles: [0.25, 0.5, 0.75]
+# Same pattern as grader/configs/grader.yaml: set MLFLOW_TRACKING_URI to your
+# remote server (artifact root on that server should be gs://… like grader).
+# Local fallback shares grader/experiments/mlflow.db when env is unset.
+mlflow:
+  # false = no tracking. log_artifacts: false = metrics/params only (saves GCS storage).
+  enabled: true
+  log_artifacts: true
+  experiment_name: "vinyl_price_estimator"
+  # Optional: path to GCP service account JSON for GCS artifact uploads (remote
+  # tracking server with gs:// artifact root). Relative to repo root unless absolute.
+  # Ignored if GOOGLE_APPLICATION_CREDENTIALS already points to a valid file.
+  google_application_credentials: null
+  tracking_uri_fallback: "sqlite:///grader/experiments/mlflow.db"
+  registry_model_name: "VinylIQPrice"
+  register_best_model: true
+  staging_alias: staging
+  promote_production: false
+  production_alias: production
+  tags:
+    project: vinyl_collector_ai
+    module: price_estimator

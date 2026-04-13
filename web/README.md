@@ -1,6 +1,6 @@
 # Web interface
 
-FastAPI app for the Vinyl Management System: **Discogs login**, **data ingest**, and access to the three ML components (recommender, NLP condition classifier, price estimator).
+FastAPI app for the Vinyl Management System: **Discogs login**, **data ingest**, and access to the three ML components (recommender, vinyl condition grader, price estimator).
 
 ## Features
 
@@ -10,19 +10,17 @@ FastAPI app for the Vinyl Management System: **Discogs login**, **data ingest**,
 
 ## Run
 
-From **project root** (so `core`, `discogs_api`, `recommender`, etc. are on PYTHONPATH):
+From **project root** (so `core`, `shared`, `recommender`, etc. are on PYTHONPATH):
 
 ```bash
-pip install -r requirements.txt
-pip install -r web/requirements.txt
-uvicorn web.app.main:app --reload --app-dir .
+uv sync --extra test
+uv run uvicorn web.app.main:app --reload
 ```
 
-Or from `web/`:
+Or with a venv activated after `uv sync`:
 
 ```bash
-cd web
-PYTHONPATH=.. uvicorn app.main:app --reload
+uvicorn web.app.main:app --reload
 ```
 
 Then open http://127.0.0.1:8000 . Use the **Login** page to paste your Discogs token, then **Ingest** to sync your collection/wantlist.

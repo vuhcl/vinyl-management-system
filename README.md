@@ -11,7 +11,7 @@ A monorepo for vinyl collection tooling: **Discogs integration**, **data ingest*
 | **Web app** | Log in with your Discogs token, sync collection & wantlist to the app, and call ML APIs (recommendations, condition, price). |
 | **Recommender** | Hybrid (ALS + content-based) recommendations using your Discogs collection/wantlist and optional AOTY ratings. |
 | **Vinyl condition grader** | Predicts sleeve and media condition from seller notes (e.g. Discogs listings). |
-| **Price estimator** | Estimates fair market value for releases (stub; pipeline and API in place). |
+| **Price estimator (VinylIQ)** | XGBoost + Discogs stats; FastAPI microservice, optional Chrome extension. |
 
 Shared infrastructure: **Discogs API** client and **AOTY** scraped-data loader used across components.
 
@@ -23,14 +23,11 @@ Shared infrastructure: **Discogs API** client and **AOTY** scraped-data loader u
 # Clone and enter project
 cd vinyl_management_system
 
-# Create venv and install
-python3.12 -m venv .venv
-source .venv/bin/activate   # Windows: .venv\Scripts\activate
-pip install -r requirements.txt
-pip install -r web/requirements.txt
+# Install (from repo root; requires [uv](https://docs.astral.sh/uv/))
+uv sync --extra test
 
 # Run the web app (from project root)
-uvicorn web.app.main:app --reload
+uv run uvicorn web.app.main:app --reload
 ```
 
 Open **http://127.0.0.1:8000** → [Log in with Discogs](http://127.0.0.1:8000/auth/login) (paste a [personal token](https://www.discogs.com/settings/developers)) → [Sync / Ingest](http://127.0.0.1:8000/ingest) to pull your collection and wantlist into `data/raw/`.
@@ -66,16 +63,19 @@ Full layout and how components coordinate: **[PROJECT_STRUCTURE.md](PROJECT_STRU
 
 ### Install
 
-```bash
-pip install -r requirements.txt
-pip install -r web/requirements.txt
-```
-
-Optional: install in editable mode so imports resolve from the repo root:
+This repo is a **uv workspace** (`[tool.uv.workspace]` in `pyproject.toml`). From the repo root:
 
 ```bash
-pip install -e .
+uv sync --extra test
 ```
+
+That installs `vinyl-shared`, `vinyl-core`, `vinyl-grader[serve]`, `vinyl-recommender`, `vinyl-price-estimator`, and `vinyl-web` together.
+
+**Without uv:** from the repo root, install each workspace package in dependency order (shared first), e.g. `pip install -e ./shared -e ./core -e ./grader -e ./recommender -e ./price_estimator -e ./web -e .`, or use `pip install -e .` after ensuring the root `pyproject.toml` resolves workspace members (pip 23+ with PEP 660).
+
+**Minimal environment** (e.g. grader API only): `uv sync --package vinyl-grader --extra serve` (see [`grader/Dockerfile`](grader/Dockerfile)).
+
+**Gradient boosting (price estimator):** `uv sync --package vinyl-price-estimator --extra lgb` (optional `lightgbm`).
 
 ### Config
 
@@ -118,6 +118,14 @@ python -m recommender.pipeline --config configs/base.yaml --data-dir data/raw --
 
 See **`recommender/README.md`** for details.
 
+### Grader API
+
+Standalone **FastAPI** service for the vinyl condition grader: loads the **MLflow-registered** DistilBERT pyfunc, runs the same **preprocessor + rule engine** as pipeline inference, and serves **`POST /predict`** (JSON in/out). Docker build uses image tag **`vinyl-grader-api:latest`** (see `grader/Dockerfile`).
+
+**Run locally, Docker build/run, GCS credentials, environment variables, `/predict` request/response format, and example curls**: **[grader/serving/README.md](grader/serving/README.md)**.
+
+The monolith web app’s **`POST /api/condition`** uses the **baseline** (TF‑IDF) pipeline instead—see *Vinyl condition grader* below.
+
 ### Vinyl condition grader (personal use)
 
 This component (and the `/api/condition` endpoint) is intended for **personal use**. It loads the **baseline** model on the server and applies the rule engine, but it is not hardened for public traffic yet.
@@ -136,6 +144,8 @@ python -m grader.src.pipeline predict --text "factory sealed, never opened" --mo
 ```
 
 For mobile/React Native use, call the existing FastAPI endpoint: `POST /api/condition` with JSON `{ "seller_notes": "..." }`.
+
+**Quick synthetic eval (resume / portfolio):** run `python scripts/grader_eval_resume.py` → writes `artifacts/grader_eval_resume.json` (macro-F1, accuracy, ECE on a benchmark aligned with the grader test suite; see file `disclaimer`).
 
 API contract (baseline + rule engine applied):
 
@@ -178,19 +188,14 @@ Before turning this into a public-facing product, I recommend addressing:
 - **Dataset and label governance** (document label mappings/contradictions; add regression tests for harmonization).
 - **CI/CD and reproducible training** (locked dependencies, deterministic splits, artifact checks).
 
-### Price estimator
+### Price estimator (VinylIQ)
 
-1. Add `price_estimator/data/raw/sales.csv` and `metadata.csv` (see `price_estimator/README.md`).
-2. Train:
+1. Seed demo data and train (see **`price_estimator/README.md`**) or collect real `marketplace/stats` + feature store.
+2. Run API: `PYTHONPATH=. uvicorn price_estimator.src.api.main:app --port 8801`
+3. Web: set `PRICE_SERVICE_URL` to proxy `GET /api/price/{release_id}` to the microservice, or use in-process `estimate()` without it.
+4. Chrome: load unpacked **`vinyliq-extension/`**.
 
-```bash
-PYTHONPATH=. python -m price_estimator.src.pipeline --phase baseline
-# or --phase gradient_boosting for LightGBM + prediction intervals
-```
-
-3. Use `estimate(release_id, ..., features_row=...)` in code or via web `/api/price` when a model is trained.
-
-See **`price_estimator/README.md`** for data format and options.
+See **`price_estimator/README.md`** and **`vinyliq-extension/README.md`**.
 
 ---
 

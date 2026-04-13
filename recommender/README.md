@@ -5,7 +5,7 @@ Hybrid vinyl recommendation system: **Discogs** (shared API) + **AOTY scraped da
 This subproject is part of **vinyl_management_system**. It uses:
 
 - **Shared Discogs API** (`shared.discogs_api`) for collection and wantlist when `configs/base.yaml` has `discogs.use_api` and usernames/token.
-- **AOTY scraped data** (`shared.aoty` loader) when `aoty_scraped.dir` points to your scraped data directory.
+- **AOTY scraped data** (`shared.aoty`) when `aoty_scraped.dir` points to your scraped data directory.
 - **CSV fallback** in `data/raw/` when Discogs or AOTY is not configured.
 
 ---
@@ -39,7 +39,12 @@ Config and paths live at project root: `configs/base.yaml`, `data/raw`, `data/pr
 
 Set in `configs/base.yaml`:
 
-- **Discogs**: `discogs.use_api: true`, `discogs.usernames: ["your_username"]`, and `DISCOGS_USER_TOKEN` in env (or `discogs.token`).
+- **Discogs**: `discogs.use_api: true`, `discogs.usernames: ["your_username"]`, and `DISCOGS_USER_TOKEN` in env (or `DISCOGS_TOKEN`), or put either key in the **repo-root `.env`** — `python -m recommender.pipeline` and `scripts/smoke_recommender_ingest.py` load `.env` automatically (via `shared.project_env`). You can also set `discogs.token` in YAML instead of env.
+- **Discogs → AOTY (recommended)**: incremental Mongo-backed pipeline (candidate masters from your collection ∪ wantlist only — **no** full AOTY catalog Discogs search):
+  1. `scripts/build_discogs_master_to_aoty_artifact.py` — release→master + master→AOTY (Mongo upserts + `artifacts/discogs_master_to_aoty.json`).
+  2. `scripts/build_discogs_release_to_aoty_artifact.py` — compose `artifacts/discogs_release_to_aoty.json` + Mongo `discogs_release_aoty`.
+  Then set `discogs.release_to_aoty_map_path` / `skip_live_discogs_aoty_mapping` as in the smoke config comments.
+- **Legacy monolithic script**: `scripts/build_discogs_aoty_release_map.py` (full old flow; avoid for large catalogs).
 - **AOTY**: `aoty_scraped.dir: "data/aoty_scraped"` (or path to your scraped output).
 
 ### Two-stage retrieval (optional)
@@ -49,8 +54,15 @@ Evaluation and smoke scripts can **restrict ALS scoring** to a candidate pool bu
 
 - **Genre expansion**: albums sharing any genre with the user’s train albums.
 - **Same-artist expansion**: other albums by those artists.
-- **Quality floors**: `min_avg_rating`, `min_train_count` (global train counts).
-- **Cap**: `max_candidates` (deterministic: highest train count first).
+- **Quality floors**: `min_avg_rating`, `min_train_count`, `min_distinct_users`,
+  `min_rating_rows` (rating-source rows only, needs `source` on interactions),
+  optional `min_priority_score` (from album `priority_score`).
+- **Year band**: quantiles of the user’s train-album `year` values, always expanded
+  to include min/max train year; optional `year_window_years` slack. Albums with
+  `year == 0` are not excluded by the band. **`release_date`** is stored on
+  albums (Mongo/CSV) for traceability; filtering uses integer **`year`**.
+- **Cap**: `max_candidates` (sort: train count, then priority, distinct users,
+  rating rows, year).
 
 Enable in YAML under `retrieval.enabled: true` (see `configs/smoke_pipeline.yaml`) or:
 
@@ -92,20 +104,9 @@ calls (search + per-release lookups). To stay within rate limits:
 From **project root** (vinyl_management_system):
 
 ```bash
-pip install -r requirements.txt
+uv sync --extra test   # or: pip install -e . from repo root (workspace)
 python -m recommender.pipeline --config configs/base.yaml --data-dir data/raw --processed-dir data/processed --artifacts-dir artifacts
 ```
-
-### Try ingest on real Discogs + Mongo (smoke test)
-
-Before training the full pipeline, run:
-
-```bash
-export DISCOGS_USER_TOKEN=your_token
-python scripts/smoke_recommender_ingest.py --username your_discogs_username
-```
-
-See `scripts/smoke_recommender_ingest.py --help` for Mongo URI/DB flags and CSV-only AOTY.
 
 Use `--skip-ingest` to reuse existing processed data.
 
