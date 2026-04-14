@@ -49,9 +49,11 @@ from ..models.fitted_regressor import (
     mae_dollars,
     median_ape_dollars,
     median_ape_dollar_quartiles,
+    median_ape_quartile_format_slice_table,
     median_ape_train_median_baseline,
     pred_log1p_dollar_for_metrics,
     refit_champion,
+    training_sample_weights_from_anchors,
     wape_dollars,
 )
 from ..models.vinyliq_pyfunc import (
@@ -92,6 +94,15 @@ def residual_z_clip_abs_from_vinyliq(v: dict | None) -> float | None:
     except (TypeError, ValueError):
         return None
     return x if x > 0 else None
+
+
+def _tuning_sample_weight_mode(v: dict[str, Any]) -> str | None:
+    t = v.get("tuning") or {}
+    sw = t.get("sample_weight")
+    if sw is None:
+        return None
+    s = str(sw).strip()
+    return s if s else None
 
 
 def _training_label_console_summary(tl: dict[str, object]) -> str:
@@ -271,6 +282,16 @@ def load_training_frame(
         else:
             sales_by_rid, fetch_by_rid = _load_sale_history_sidecars(Path(sale_history_db))
 
+    year_by_rid: dict[str, Any] = {}
+    if Path(feature_store_db).is_file():
+        conn_y = sqlite3.connect(str(feature_store_db))
+        conn_y.row_factory = sqlite3.Row
+        try:
+            for r in conn_y.execute("SELECT release_id, year FROM releases_features"):
+                year_by_rid[str(r["release_id"])] = r["year"]
+        finally:
+            conn_y.close()
+
     conn_m = sqlite3.connect(str(marketplace_db))
     conn_m.row_factory = sqlite3.Row
     cur = conn_m.execute(
@@ -307,12 +328,21 @@ def load_training_frame(
     sf_cfg = tl.get("sale_floor_blend") if isinstance(tl.get("sale_floor_blend"), dict) else {}
 
     for rid, rd in by_rid.items():
+        yr_raw = year_by_rid.get(rid)
+        release_year: float | None
+        try:
+            release_year = float(yr_raw) if yr_raw is not None else None
+        except (TypeError, ValueError):
+            release_year = None
+        if release_year is not None and not math.isfinite(release_year):
+            release_year = None
         y, m_anchor, flags = sale_floor_blend_bundle(
             dict(rd),
             sales_by_rid.get(rid, []),
             fetch_by_rid.get(rid),
             sf_cfg=sf_cfg,
             nm_grade_key=ps_grade,
+            release_year=release_year,
         )
         if flags:
             row_cold_flags[rid] = flags
@@ -642,6 +672,9 @@ def _run_tuning(
     spaces = v.get("search_spaces") or {}
     families = _enabled_families(v)
     sel_field, sel_mlflow = _resolve_tuning_selection_metric(tuning)
+    sw_mode = _tuning_sample_weight_mode(v)
+    sw_tt = training_sample_weights_from_anchors(med_tt, sw_mode)
+    sw_full = training_sample_weights_from_anchors(med_tr_full, sw_mode)
 
     best: dict[str, object] = {
         "selection_score": float("inf"),
@@ -683,6 +716,8 @@ def _run_tuning(
             mlflow.log_param("n_tune_train", int((tune_train_mask & train_mask).sum()))
             mlflow.log_param("n_tune_val", int((val_mask & train_mask).sum()))
             mlflow.log_param("tuning_selection_metric", sel_mlflow)
+            if sw_mode:
+                mlflow.log_param("tuning_sample_weight", sw_mode)
             if not mflow_art:
                 mlflow.log_param("mlflow_log_artifacts", "false")
             mlflow.log_param("training_target_kind", str(target_kind))
@@ -707,6 +742,8 @@ def _run_tuning(
                 "MLflow metrics-only (mlflow.log_artifacts: false): "
                 "skipping model bundle / pyfunc / registry uploads."
             )
+        if sw_mode:
+            print(f"Tuning sample_weight mode: {sw_mode}")
 
         trial_run = 0
         for family in families:
@@ -739,6 +776,7 @@ def _run_tuning(
                             early_stopping_rounds=es_int,
                             random_state=seed,
                             target_kind=target_kind,
+                            sample_weight=sw_tt,
                         )
                         pred_v = reg.predict_log1p(X_v)
                         # Reconstruct log1p(dollar) before $ metrics (residual: pred_z+log1p(median)).
@@ -822,6 +860,7 @@ def _run_tuning(
                 best_iteration=champion_bi if isinstance(champion_bi, int) else None,
                 random_state=seed,
                 target_kind=target_kind,
+                sample_weight=sw_full,
             )
             pred_v = champ.predict_log1p(X_v)
             pred_test = champ.predict_log1p(X_test)
@@ -836,6 +875,12 @@ def _run_tuning(
             pred_v_lp_q = pred_log1p_dollar_for_metrics(pred_v, med_v, target_kind)
             val_q = median_ape_dollar_quartiles(y_v_lp_q, pred_v_lp_q)
             test_q = median_ape_dollar_quartiles(y_test_lp, pred_test_lp)
+            slice_val = median_ape_quartile_format_slice_table(
+                y_v_lp_q, pred_v_lp_q, X_v, cols, min_count=15
+            )
+            slice_test = median_ape_quartile_format_slice_table(
+                y_test_lp, pred_test_lp, X_test, cols, min_count=15
+            )
             if mflow_on:
                 for i, qv in enumerate(val_q):
                     if not math.isnan(qv):
@@ -850,6 +895,28 @@ def _run_tuning(
                 mlflow.log_metric(
                     "test_median_ape_train_median_log_baseline", test_mdape_bl
                 )
+                for r in slice_val:
+                    md = float(r["median_ape"])
+                    if not math.isnan(md):
+                        mlflow.log_metric(
+                            f"champion_val_q{int(r['quartile']) + 1}_fmt_{r['slice']}_mdape",
+                            md,
+                        )
+                        mlflow.log_metric(
+                            f"champion_val_q{int(r['quartile']) + 1}_fmt_{r['slice']}_n",
+                            float(r["n_rows"]),
+                        )
+                for r in slice_test:
+                    md = float(r["median_ape"])
+                    if not math.isnan(md):
+                        mlflow.log_metric(
+                            f"champion_test_q{int(r['quartile']) + 1}_fmt_{r['slice']}_mdape",
+                            md,
+                        )
+                        mlflow.log_metric(
+                            f"champion_test_q{int(r['quartile']) + 1}_fmt_{r['slice']}_n",
+                            float(r["n_rows"]),
+                        )
             qv_str = " | ".join(
                 f"Q{i + 1} {100.0 * q:.1f}%"
                 for i, q in enumerate(val_q)
@@ -867,6 +934,21 @@ def _run_tuning(
             )
             print(f"  Val median APE by true $ quartile (Q1=cheapest): {qv_str}")
             print(f"  Test median APE by true $ quartile: {qt_str}")
+            for label, srows in (
+                ("Val MdAPE by quartile × format", slice_val),
+                ("Test MdAPE by quartile × format", slice_test),
+            ):
+                for qi in range(4):
+                    bits: list[str] = []
+                    for r in srows:
+                        if int(r["quartile"]) != qi:
+                            continue
+                        md = float(r["median_ape"])
+                        if math.isnan(md):
+                            continue
+                        bits.append(f"{r['slice']} {100.0 * md:.1f}% (n={r['n_rows']})")
+                    if bits:
+                        print(f"  {label} Q{qi + 1}: " + " | ".join(bits))
             if mflow_on:
                 mlflow.log_metric("test_mae_dollars_approx", test_mae)
                 mlflow.log_metric("test_wape_dollars", test_wape)

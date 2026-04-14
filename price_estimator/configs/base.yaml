@@ -33,8 +33,17 @@ vinyliq:
     price_suggestion_grade: "Near Mint (NM or M-)"
     price_suggestion_fallback_lowest: true
     sale_floor_blend:
+      # nm_substrings_only (default) | ordinal_cascade (relax VG+ then VG when NM pool is thin).
+      sale_condition_policy: nm_substrings_only
       n_min_trend: 8
-      recency_half_life_days: 365.0
+      # Longer half-life keeps older NM sales in the recency kernel (helps sparse cheap titles).
+      recency_half_life_days: 420.0
+      # Substrings for NM-tier sale rows (media+sleeve blob); extend for Discogs text variants.
+      nm_substrings:
+        - "near mint"
+        - "(nm"
+        - "mint (m"
+        - "nm or m-"
       w_base: 0.55
       w_min: 0.2
       w_max: 0.9
@@ -44,6 +53,16 @@ vinyliq:
       gap_k_down: 0.15
       gap_k_up: 0.12
       gap_delta_cap: 0.5
+      # Optional nested keys merged into the flat sale_floor_blend dict (same names as below).
+      # ordinal_cascade:
+      #   strict_min_ordinal: 7.0
+      #   relax_steps: [6.0, 5.0]
+      #   min_rows_strict: 8
+      #   min_rows_relax_1: 5
+      #   min_rows_relax_2: 6
+      #   apply_grade_uplift_to_nm: false
+      #   condition_adjustment: { alpha: -0.06, beta: -0.04, ref_grade: 8.0 }
+      #   grade_delta_scale: { price_ref_usd: 50.0, price_gamma: 0.0, age_k: 0.0 }
   # residual_log_median (default): y = log1p(y_label) - log1p(anchor); anchor prefers
   # release_lowest_price then stats lowest/median; X omits price/liquidity; inference
   # adds log1p(live anchor). Pyfunc column name remains ``discogs_median_price``.
@@ -63,6 +82,8 @@ vinyliq:
     early_stopping_rounds: 50
     # null = use top-level ``seed``
     random_seed: null
+    # Optional per-row fit weights: null | inv_sqrt_anchor (upweight low-dollar anchors).
+    sample_weight: null
   model_families:
     xgboost: true
     lightgbm: true
