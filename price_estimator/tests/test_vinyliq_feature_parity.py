@@ -10,8 +10,8 @@ from price_estimator.src.training.train_vinyliq import (
 )
 
 
-def test_residual_row_dict_ignores_live_marketplace_stats() -> None:
-    """Residual X ignores live marketplace stats (price/liquidity columns zeroed)."""
+def test_residual_row_dict_ignores_listing_dollar_scalars() -> None:
+    """Residual X zeros listing-dollar scalars; depth/community match when stats match."""
     cat: dict = {
         "genre": "rock",
         "country": "us",
@@ -28,8 +28,25 @@ def test_residual_row_dict_ignores_live_marketplace_stats() -> None:
         "formats_json": '["Vinyl", "LP"]',
         "format_desc": "",
     }
-    zeros = {"median_price": 0.0, "lowest_price": 0.0, "num_for_sale": 0}
-    live = {"median_price": 99.0, "lowest_price": 40.0, "num_for_sale": 200}
+    # Same non-dollar marketplace snapshot; only dollar fields differ (zeroed in residual).
+    zeros = {
+        "median_price": 0.0,
+        "lowest_price": 0.0,
+        "num_for_sale": 7,
+        "community_want": 10,
+        "community_have": 100,
+        "release_num_for_sale": 7,
+        "blocked_from_sale": 0,
+    }
+    live = {
+        "median_price": 99.0,
+        "lowest_price": 40.0,
+        "num_for_sale": 7,
+        "community_want": 10,
+        "community_have": 100,
+        "release_num_for_sale": 7,
+        "blocked_from_sale": 0,
+    }
     row_z = row_dict_for_inference(
         "r1",
         "Near Mint (NM or M-)",
