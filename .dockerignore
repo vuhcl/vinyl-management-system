@@ -31,10 +31,3 @@ price_estimator/artifacts
 recommender/**/node_modules
 web/**/node_modules
 **/.discogs_cache
-
-# Repo-root misc (not part of images)
-PUSH_TO_GITHUB.md
-debug_abbrev.py
-debug_preprocessor.py
-debug_test_config.py
-DDS Group Project/

@@ -194,11 +194,7 @@ class InferenceService:
             "lowest_price": row.get("lowest_price"),
             "median_price": row.get("median_price"),
             "release_lowest_price": row.get("release_lowest_price"),
-            "num_for_sale": row.get("num_for_sale"),
-            "release_num_for_sale": row.get("release_num_for_sale"),
-            "community_want": row.get("community_want"),
-            "community_have": row.get("community_have"),
-            "blocked_from_sale": row.get("blocked_from_sale"),
+            "num_for_sale": int(row.get("num_for_sale") or 0),
             "source": "live",
         }
 

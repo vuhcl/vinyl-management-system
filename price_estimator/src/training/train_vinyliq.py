@@ -77,11 +77,7 @@ def training_target_kind_from_vinyliq(v: dict | None) -> str:
 
 
 def residual_z_clip_abs_from_vinyliq(v: dict | None) -> float | None:
-    """Optional winsor on ``z = log1p(y_label) - log1p(m)`` to ``[-c, c]`` (null = off).
-
-    ``c`` is a fixed half-width in **log1p-dollar residual space** (not tied to removed
-    ``median_price`` columns).
-    """
+    """Optional winsor on residual ``z = log1p(y) - log1p(median)`` to ``[-c, c]`` (null = off)."""
     raw = (v or {}).get("training_target") or {}
     if not isinstance(raw, dict):
         return None
@@ -129,22 +125,6 @@ def _config_path_for_mlflow(root: Path) -> Path:
     return root / "configs" / "base.yaml"
 
 
-def _pick_newer_marketplace_row_dict(
-    a: dict[str, object],
-    b: dict[str, object],
-) -> dict[str, object]:
-    """Prefer latest ``fetched_at`` (ISO string order); tie-break by non-null field count."""
-    fa = str(a.get("fetched_at") or "")
-    fb = str(b.get("fetched_at") or "")
-    if fa != fb:
-        return a if fa > fb else b
-
-    def score(d: dict[str, object]) -> int:
-        return sum(1 for v in d.values() if v is not None)
-
-    return a if score(a) >= score(b) else b
-
-
 def _auto_top_k_id_encoder(n_labeled: int, n_unique: int) -> int:
     if n_unique <= 0:
         return 0
@@ -186,9 +166,9 @@ def load_training_frame(
     conn_m.row_factory = sqlite3.Row
     cur = conn_m.execute(
         """
-        SELECT release_id, fetched_at, median_price, lowest_price, num_for_sale,
+        SELECT release_id, median_price, lowest_price, num_for_sale,
                price_suggestions_json, release_lowest_price, release_num_for_sale,
-               community_want, community_have, blocked_from_sale
+               community_want, community_have
         FROM marketplace_stats
         WHERE (
             COALESCE(release_lowest_price, lowest_price, median_price) IS NOT NULL
@@ -200,20 +180,12 @@ def load_training_frame(
         )
         """
     )
-    by_rid: dict[str, dict[str, object]] = {}
-    for r in cur.fetchall():
-        rid = str(r["release_id"])
-        rd = {k: r[k] for k in r.keys()}
-        prev = by_rid.get(rid)
-        if prev is None:
-            by_rid[rid] = rd
-        else:
-            by_rid[rid] = _pick_newer_marketplace_row_dict(prev, rd)
-
     labels: dict[str, float] = {}
     medians: dict[str, float] = {}
     marketplace_extra: dict[str, dict[str, Any]] = {}
-    for rid, rd in by_rid.items():
+    for r in cur.fetchall():
+        rid = str(r["release_id"])
+        rd = {k: r[k] for k in r.keys()}
         y, m_anchor = dollar_target_and_residual_anchor_from_marketplace_row(rd, tl)
         if y is not None and y > 0:
             m_use = (
@@ -231,7 +203,6 @@ def load_training_frame(
                 "median_price": rd.get("median_price"),
                 "release_lowest_price": rd.get("release_lowest_price"),
                 "num_for_sale": rd.get("num_for_sale"),
-                "blocked_from_sale": rd.get("blocked_from_sale"),
             }
     conn_m.close()
 
@@ -331,11 +302,7 @@ def load_training_frame(
             "median_price": mx.get("median_price"),
             "lowest_price": mx.get("lowest_price"),
             "release_lowest_price": mx.get("release_lowest_price"),
-            "num_for_sale": mx.get("num_for_sale"),
-            "community_want": mx.get("community_want"),
-            "community_have": mx.get("community_have"),
-            "release_num_for_sale": mx.get("release_num_for_sale"),
-            "blocked_from_sale": mx.get("blocked_from_sale"),
+            "num_for_sale": int(mx.get("num_for_sale") or 0),
         }
         row = row_dict_for_inference(
             rid,
@@ -401,7 +368,7 @@ def report_residual_target_sanity(
     )
     log1pm = np.log1p(np.maximum(m, 0.0))
     print(
-        f"log1p(m_anchor): std={float(np.std(log1pm)):.5f}  "
+        f"log1p(median_price): std={float(np.std(log1pm)):.5f}  "
         f"min..max={float(np.min(log1pm)):.3f}..{float(np.max(log1pm)):.3f}"
     )
     pred_z0 = np.zeros_like(y)
