@@ -173,46 +173,100 @@ def build_model_feature_matrix(
     return np.asarray(out, dtype=np.float64)
 
 
-def row_dict_for_inference(
-    release_id: str,
-    media_condition: str | None,
-    sleeve_condition: str | None,
-    stats: dict[str, Any],
-    catalog: dict[str, Any] | None,
-    *,
-    genre_index: float = 0.0,
-    country_index: float = 0.0,
-    primary_artist_index: float = 0.0,
-    primary_label_index: float = 0.0,
-    include_marketplace_scalars_in_features: bool = True,
-) -> dict[str, float]:
-    """Build one numeric feature dict for XGBoost (categoricals encoded externally).
+def _int_nonneg_or_zero(v: Any) -> int:
+    if v is None:
+        return 0
+    try:
+        n = int(float(v))
+    except (TypeError, ValueError):
+        return 0
+    return n if n > 0 else 0
 
-    When ``include_marketplace_scalars_in_features`` is False (residual target), zero out
-    ``log_num_for_sale``, ``num_for_sale``, and baseline price fields so X has no same-snapshot
-    Discogs price or liquidity. Anchor ``median_price`` is applied after predict.
-    """
-    media_ord = condition_string_to_ordinal(media_condition)
-    sleeve_ord = condition_string_to_ordinal(sleeve_condition)
-    # Prefer GET /releases lowest, then marketplace aggregates (median often mirrors lowest).
-    lowest = (
-        stats.get("release_lowest_price")
-        or stats.get("lowest_price")
-        or stats.get("median_price")
-        or 0.0
-    )
-    if lowest is None:
-        lowest = 0.0
-    num_sale = int(stats.get("num_for_sale") or 0)
-    if not include_marketplace_scalars_in_features:
-        lowest = 0.0
-        num_sale = 0
-    cat = catalog or {}
-    wants = int(cat.get("want_count") or 0)
-    haves = int(cat.get("have_count") or 0)
-    ratio = float(cat.get("want_have_ratio") or 0.0)
-    if ratio == 0.0 and haves > 0:
-        ratio = wants / haves
+
+def _community_counts_from_stats_or_catalog(
+    stats: dict[str, Any],
+    cat: dict[str, Any],
+) -> tuple[int, int]:
+    """Prefer marketplace ``community_*`` when those keys exist (incl. SQLite NULL→0); else FS."""
+    if "community_want" in stats or "community_have" in stats:
+        cw = _int_nonneg_or_zero(stats.get("community_want"))
+        ch = _int_nonneg_or_zero(stats.get("community_have"))
+        return cw, ch
+    return int(cat.get("want_count") or 0), int(cat.get("have_count") or 0)
+
+
+def _marketplace_depth_feature_block(
+    stats: dict[str, Any],
+    cat: dict[str, Any],
+) -> dict[str, float]:
+    """Non-dollar marketplace signals (plan §4d): community, listing depth, blocked."""
+    cw, ch = _community_counts_from_stats_or_catalog(stats, cat)
+    log1p_w = math.log1p(float(cw))
+    log1p_h = math.log1p(float(ch))
+    if cw + ch > 0:
+        want_share = float(cw) / float(cw + ch)
+        has_community = 1.0
+    else:
+        want_share = -1.0
+        has_community = 0.0
+
+    num_sale = _int_nonneg_or_zero(stats.get("num_for_sale"))
+    log_num_for_sale = math.log1p(float(num_sale))
+
+    raw_rnfs = stats.get("release_num_for_sale")
+    if raw_rnfs is None:
+        log_release_num_for_sale = 0.0
+        has_release_num_for_sale = 0.0
+    else:
+        rn = _int_nonneg_or_zero(raw_rnfs)
+        log_release_num_for_sale = math.log1p(float(rn))
+        has_release_num_for_sale = 1.0
+
+    if stats.get("num_for_sale") is not None and stats.get("release_num_for_sale") is not None:
+        log_nfs_delta = math.log1p(float(num_sale)) - math.log1p(
+            float(_int_nonneg_or_zero(stats.get("release_num_for_sale"))),
+        )
+        has_nfs_delta = 1.0
+    else:
+        log_nfs_delta = 0.0
+        has_nfs_delta = 0.0
+
+    bl = stats.get("blocked_from_sale")
+    if bl is not None:
+        try:
+            blocked = 1.0 if int(bl) else 0.0
+            has_blocked = 1.0
+        except (TypeError, ValueError):
+            blocked = 0.0
+            has_blocked = 0.0
+    else:
+        blocked = 0.0
+        has_blocked = 0.0
+
+    return {
+        "log1p_community_want": log1p_w,
+        "log1p_community_have": log1p_h,
+        "want_share": want_share,
+        "has_community": has_community,
+        "log_num_for_sale": log_num_for_sale,
+        "num_for_sale": float(num_sale),
+        "log_release_num_for_sale": log_release_num_for_sale,
+        "has_release_num_for_sale": has_release_num_for_sale,
+        "log_nfs_delta": log_nfs_delta,
+        "has_nfs_delta": has_nfs_delta,
+        "blocked_from_sale": blocked,
+        "has_blocked_from_sale": has_blocked,
+    }
+
+
+def _catalog_tail(
+    cat: dict[str, Any],
+    *,
+    genre_index: float,
+    country_index: float,
+    primary_artist_index: float,
+    primary_label_index: float,
+) -> dict[str, float]:
     year = int(cat.get("year") or 0)
     decade = int(cat.get("decade") or (year // 10 * 10 if year else 0))
     fmts = parse_json_list(cat.get("formats_json"))
@@ -221,16 +275,6 @@ def row_dict_for_inference(
     medium = format_medium_flags(fmts, format_desc_s)
     counts = catalog_counts(cat)
     return {
-        "release_id": release_id,
-        "media_grade": media_ord,
-        "sleeve_grade": sleeve_ord,
-        "condition_discount": media_ord / 8.0 if media_ord > 0 else 0.0,
-        "want_have_ratio": ratio,
-        "log_have_count": math.log1p(haves),
-        "log_num_for_sale": math.log1p(num_sale),
-        "log1p_baseline_median": math.log1p(float(lowest)) if lowest else 0.0,
-        "baseline_median": float(lowest),
-        "num_for_sale": float(num_sale),
         "decade": float(decade),
         "year": float(year),
         "is_original_pressing": float(cat.get("is_original_pressing") or 0),
@@ -254,14 +298,90 @@ def row_dict_for_inference(
     }
 
 
+def row_dict_for_inference(
+    release_id: str,
+    media_condition: str | None,
+    sleeve_condition: str | None,
+    stats: dict[str, Any],
+    catalog: dict[str, Any] | None,
+    *,
+    genre_index: float = 0.0,
+    country_index: float = 0.0,
+    primary_artist_index: float = 0.0,
+    primary_label_index: float = 0.0,
+    include_marketplace_scalars_in_features: bool = True,
+) -> dict[str, float]:
+    """Build one numeric feature dict for XGBoost (categoricals encoded externally).
+
+    When ``include_marketplace_scalars_in_features`` is False (``residual_log_median``),
+    same-snapshot **listing-dollar** scalars (``log1p_baseline_median``, ``baseline_median``)
+    are zeroed so the tree does not see the cheapest listing / aggregate median as price
+    features. **Non-dollar** marketplace depth (``log_num_for_sale``, community counts,
+    ``blocked_from_sale``, etc.) still comes from ``stats`` per plan §4d. The residual anchor
+    is applied after predict (pyfunc: ``discogs_median_price``).
+    """
+    media_ord = condition_string_to_ordinal(media_condition)
+    sleeve_ord = condition_string_to_ordinal(sleeve_condition)
+    lowest = (
+        stats.get("release_lowest_price")
+        or stats.get("lowest_price")
+        or stats.get("median_price")
+        or 0.0
+    )
+    if lowest is None:
+        lowest = 0.0
+    if not include_marketplace_scalars_in_features:
+        lowest = 0.0
+
+    cat = catalog or {}
+    depth = _marketplace_depth_feature_block(stats, cat)
+    tail = _catalog_tail(
+        cat,
+        genre_index=genre_index,
+        country_index=country_index,
+        primary_artist_index=primary_artist_index,
+        primary_label_index=primary_label_index,
+    )
+    out: dict[str, float] = {
+        "release_id": release_id,
+        "media_grade": media_ord,
+        "sleeve_grade": sleeve_ord,
+        "condition_discount": media_ord / 8.0 if media_ord > 0 else 0.0,
+        **depth,
+        "log1p_baseline_median": math.log1p(float(lowest)) if lowest else 0.0,
+        "baseline_median": float(lowest),
+        **tail,
+    }
+    if not include_marketplace_scalars_in_features:
+        out["log1p_baseline_median"] = 0.0
+        out["baseline_median"] = 0.0
+    return out
+
+
+def _marketplace_depth_column_names() -> list[str]:
+    return [
+        "log1p_community_want",
+        "log1p_community_have",
+        "want_share",
+        "has_community",
+        "log_num_for_sale",
+        "num_for_sale",
+        "log_release_num_for_sale",
+        "has_release_num_for_sale",
+        "log_nfs_delta",
+        "has_nfs_delta",
+        "blocked_from_sale",
+        "has_blocked_from_sale",
+    ]
+
+
 def residual_training_feature_columns() -> list[str]:
-    """Feature columns for ``residual_log_median`` target (no price or liquidity in X)."""
+    """Feature columns for ``residual_log_median`` target (no listing-dollar columns in X)."""
     return [
         "media_grade",
         "sleeve_grade",
         "condition_discount",
-        "want_have_ratio",
-        "log_have_count",
+        *_marketplace_depth_column_names(),
         "decade",
         "year",
         "is_original_pressing",
@@ -291,11 +411,8 @@ def default_feature_columns() -> list[str]:
         "media_grade",
         "sleeve_grade",
         "condition_discount",
-        "want_have_ratio",
-        "log_have_count",
-        "log_num_for_sale",
+        *_marketplace_depth_column_names(),
         "log1p_baseline_median",
-        "num_for_sale",
         "decade",
         "year",
         "is_original_pressing",
