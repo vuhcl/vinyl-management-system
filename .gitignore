@@ -70,17 +70,17 @@ artifacts/*
 logs/
 
 .env.*.local
- 
+
 # MLflow runs
 mlruns/
 grader/experiments/
- 
+
 # Model artifacts (large files)
 grader/artifacts/*.pkl
 grader/artifacts/*.pt
 grader/artifacts/*.onnx
 grader/artifacts/*.mlpackage
- 
+
 # Coverage reports
 grader/reports/coverage/
 grader/reports/*.csv
@@ -92,3 +92,13 @@ htmlcov/
 
 # Local Vertex / custom job metadata (no secrets; avoid noisy status)
 .vertex_replicate_state/
+
+# Local tooling (scrapers / helpers under repo root; not shipped)
+tools/*
+
+# Cursor / local notes (optional)
+.notes/*
+.cursor/
+.cursorrules
+.cursorignore
+.specstory/*
