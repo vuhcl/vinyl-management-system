@@ -8,7 +8,7 @@ paths:
 
 vinyliq:
   paths:
-    marketplace_db: "data/cache/marketplace_stats.sqlite"
+    marketplace_db: "price_estimator/data/cache/marketplace_stats.sqlite"
     feature_store_db: "data/feature_store.sqlite"
     sale_history_db: "data/cache/sale_history.sqlite"
     model_dir: "artifacts/vinyliq"
@@ -24,26 +24,14 @@ vinyliq:
     learning_rate: 0.05
     subsample: 0.85
     colsample_bytree: 0.85
-  # Dollar target for ``log1p(y)`` (see ``label_synthesis``).
-  # spread_signal / blend / median / geometric_mean: use ``release_lowest_price``
-  # from ``GET /releases`` when present, else marketplace stats (``median_price`` there
-  # often equals lowest — not a separate Discogs median).
-  # price_suggestion: pseudo-label from ``GET /marketplace/price_suggestions`` for
-  # ``price_suggestion_grade`` (Discogs seller tool; requires token + seller settings).
-  # The collector stores the full grade→price map in ``price_suggestions_json`` for
-  # all conditions (see ``price_suggestions_ladder_from_json`` in marketplace_db).
-  # price_suggestion_strict: skip rows when suggestions JSON is empty.
-  # release_lowest: y = release or stats lowest.
-  # spread_num_for_sale_reference: listing-depth term for spread_signal only.
+  # Training label: ``sale_floor_blend`` / ``sale_floor`` only (``load_training_frame``).
+  # Sold nowcast + listing floor blend: ``sale_floor_targets.sale_floor_blend_bundle``;
+  # needs ``paths.sale_history_db`` (sale_history.sqlite). ``price_suggestion_grade``
+  # selects the NM ladder rung used inside that bundle (see plan §7.1d).
   training_label:
-    mode: spread_signal
-    blend_median_weight: 0.7
-    spread_lowest_floor_ratio: 0.35
-    spread_min_median_weight: 0.25
-    spread_num_for_sale_reference: 20
+    mode: sale_floor_blend
     price_suggestion_grade: "Near Mint (NM or M-)"
     price_suggestion_fallback_lowest: true
-    # Plan §7.1d: use mode: sale_floor_blend + sale_history.sqlite for sold nowcast s.
     sale_floor_blend:
       n_min_trend: 8
       recency_half_life_days: 365.0

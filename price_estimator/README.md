@@ -14,14 +14,15 @@ Dedicated **price microservice** and training pipeline: Discogs `marketplace/sta
 | `src/storage/` | SQLite: marketplace cache/labels + `releases_features` |
 | `src/training/train_vinyliq.py` | Train booster (requires joined labels + features) |
 | `scripts/collect_marketplace_stats.py` | Rate-limited collector: `full` = `/releases` + price suggestions (2 req/release), or `stats_only` = `/marketplace/stats` only |
-| `scripts/backfill_feature_store_community.py` | API backfill of `want_count` / `have_count` for dump rows |
+| `scripts/backfill_feature_store_community.py` | Deprecated (plan §1b): community counts now live in `marketplace_stats` |
 | `scripts/ingest_discogs_dump.py` | Monthly `releases.xml(.gz)` → feature store + optional ID list |
-| `scripts/export_release_ids.py` | `feature_store.sqlite` → IDs (`--sort-by release_id`, `have`, or `want`) |
+| `scripts/export_release_ids.py` | `feature_store.sqlite` → IDs (`release_id` / `catalog_proxy` or MP community sorts with `--marketplace-db`) |
 | `scripts/build_stats_collection_queue.py` | Merge catalog-proxy (or community) + stratified IDs → queue for stats collector |
 | `scripts/ingest_from_discogs.py` | Live API → feature store + marketplace DB |
 | `src/ingest/discogs_dump.py` | Streaming XML parser for dump rows |
 | `scripts/build_feature_store.py` | CSV → feature store |
 | `scripts/seed_demo_data.py` | Synthetic DBs for local dev |
+| `scripts/audit_training_db_joins.py` | FS/MP/SH overlap counts from configured DB paths |
 | `configs/base.yaml` | Paths under `vinyliq.paths` |
 
 ## Quick local demo
@@ -61,7 +62,7 @@ Download **`discogs_*_releases.xml.gz`** from [Discogs Data](https://data.discog
 
 **Where to put it:** Prefer **`price_estimator/data/dumps/`** (created for this; contents are gitignored) so paths stay obvious, e.g. `price_estimator/data/dumps/discogs_20240201_releases.xml.gz`. You can also keep the file anywhere (external disk, `~/Downloads`) and pass an absolute path to **`--dump`** — the tooling does not require it to live inside the repo.
 
-If you already ingested the dump without **`--ids-out`**, export IDs from SQLite (no re-parse): **`scripts/export_release_ids.py`** with **`--out`**. Use **`--sort-by have`** or **`--sort-by want`** to order by community **`have_count`** or **`want_count`**. Optional **`--min-have`** / **`--min-want`**. Or use the **`sqlite3`** one-liner in that script’s docstring for plain ID order.
+If you already ingested the dump without **`--ids-out`**, export IDs from SQLite (no re-parse): **`scripts/export_release_ids.py`** with **`--out`**. Use **`--sort-by have`** / **`want`** / **`combined`** only with **`--marketplace-db`** (reads `community_have` / `community_want` from `marketplace_stats`). Optional **`--min-have`** / **`--min-want`** apply to those community columns. Or use the **`sqlite3`** one-liner in that script’s docstring for plain ID order.
 
 ```bash
 # Full ingest into SQLite (streaming; use --limit 5000 for a smoke test)
@@ -116,13 +117,7 @@ PYTHONPATH=. python price_estimator/scripts/collect_marketplace_stats.py \
   --resume
 ```
 
-**Backfill community counts** on dump-ingested `releases_features` rows:
-
-```bash
-PYTHONPATH=. uv run python price_estimator/scripts/backfill_feature_store_community.py \
-  --db price_estimator/data/feature_store.sqlite \
-  --limit 10000
-```
+**Community source of truth:** `marketplace_stats.community_have` / `community_want` from `collect_marketplace_stats.py` (`GET /releases`). `backfill_feature_store_community.py` is retained only as a deprecation stub.
 
 After adding **`requests-oauthlib`** to **`shared`**, run **`uv sync`** once at the repo root.
 
@@ -130,7 +125,7 @@ After adding **`requests-oauthlib`** to **`shared`**, run **`uv sync`** once at 
 
 **Parallelism & limits:** **`--workers`** (default 8), **`--req-per-minute`** global sliding window (default 55), **`--max-retries`**, **`--backoff-base`**, **`--backoff-max`**, **`--http-timeout`**. IDs are read in a **streaming** fashion. One Discogs token still obeys Discogs’ per-app rate limit; use separate runs with different tokens and split ID files to scale further.
 
-**Shard order:** Contiguous splits (e.g. **`split -l 50000`**) keep file order: **shard 1 = head of the file**. Lists from **`export_release_ids.py`** default **`--sort-by release_id`** are **lexicographic ID order**. For **catalog-based “head” first** (master + artist mass), use **`build_stats_collection_queue.py`** (default **`--rank-by proxy`**) without **`--shuffle-final`**, or **`export_release_ids.py --sort-by catalog_proxy`**. For **community want/have** ordering you need non-zero counts in SQLite; then **`--rank-by combined`** or **`export_release_ids.py --sort-by combined`**, then split.
+**Shard order:** Contiguous splits (e.g. **`split -l 50000`**) keep file order: **shard 1 = head of the file**. Lists from **`export_release_ids.py`** default **`--sort-by release_id`** are **lexicographic ID order**. For **catalog-based “head” first** (master + artist mass), use **`build_stats_collection_queue.py`** (default **`--rank-by proxy`**) without **`--shuffle-final`**, or **`export_release_ids.py --sort-by catalog_proxy`**. For **community want/have** ordering you need non-zero `community_*` in `marketplace_stats`; pass **`--marketplace-db`** to queue/export scripts, then split.
 
 ### Data collection strategy (how many labels, which releases)
 
@@ -138,11 +133,11 @@ You **do not** need marketplace stats for the full Discogs catalog—only for `r
 
 **What to prioritize**
 
-1. **Popularity (have / want)** — Head releases usually have more liquid markets; `median_price` is more stable when `num_for_sale` is not tiny. Export with **`export_release_ids.py --sort-by have`** and/or **`--sort-by want`** (see §A).
+1. **Popularity (have / want)** — Head releases usually have more liquid markets; `median_price` is more stable when `num_for_sale` is not tiny. Export with **`export_release_ids.py --sort-by have|want --marketplace-db ...`** (see §A).
 2. **Stratified coverage** — Popularity alone under-represents old decades, niche genres, and low-have tail. Sample randomly **per bucket** (e.g. decade × `genre`) so the feature space is covered.
 3. **Pure random** over the whole feature store wastes quota on cold listings; use it **inside** stratification, not as the only source.
 
-**Practical recipe:** Build a merged ID list—e.g. a **proxy** head (default **catalog score**: master fan-out + primary-artist catalog mass), plus optional **stratified** slice—and run **`collect_marketplace_stats.py`** with **`--resume`** / **`--max`**. If **`have_count` / `want_count`** are populated (API ingest), you can use **`--rank-by combined`** instead. Training uses a **release_id-level holdout**, so diversity of pressings matters more than raw row count alone.
+**Practical recipe:** Build a merged ID list—e.g. a **proxy** head (default **catalog score**: master fan-out + primary-artist catalog mass), plus optional **stratified** slice—and run **`collect_marketplace_stats.py`** with **`--resume`** / **`--max`**. If `marketplace_stats.community_*` are populated, you can use **`--rank-by combined --marketplace-db ...`**. Training uses a **release_id-level holdout**, so diversity of pressings matters more than raw row count alone.
 
 **Scripted merge:** **`build_stats_collection_queue.py`** reads `feature_store.sqlite`. Head size is **`--primary-limit`**, ordered by **`--rank-by`** (**`proxy`** default, or **`combined` / `have` / `want`** for community sorts). **`--extra-limit`** adds more IDs (same proxy order skipping duplicates, or complement community sort). Stratified sampling adds up to **`--stratify-per-bucket`** per **`decade_genre`** or **`decade`**; use **`--stratify-order proxy`** for catalog score per bucket, or **`community`** (alias **`popularity`**) for have+want. **Various-artist** rows (Discogs Various id **194**, or primary artist name containing ``various``) are **omitted** from the queue and from proxy fan-out counts. **`--max-per-primary-artist`** (default **5**, **0** = off) limits repeats of the same primary artist in the proxy head/extra blocks and in **proxy** stratified buckets. Optional **`--max-total`** caps the file; **`--shuffle-final`** permutes the merged list before writing.
 
@@ -185,7 +180,7 @@ Then train: `PYTHONPATH=. python -m price_estimator.src.training.train_vinyliq`.
 ## Targets, leakage, and train/serve alignment
 
 - **Default target (`vinyliq.training_target.kind: residual_log_median`)**  
-  The model predicts **`z = log1p(y_label) - log1p(anchor)`** where `y_label` comes from `training_label` (see [`label_synthesis`](src/training/label_synthesis.py): `spread_signal`, `release_lowest`, `price_suggestion`, etc.). The **anchor** prefers **`release_lowest_price`** from `GET /releases`, then marketplace stats `lowest_price` / `median_price` (the latter often duplicates lowest — not a separate API median). **Features** omit same-snapshot Discogs price and liquidity (`baseline_median`, `log1p_baseline_median`, `num_for_sale`, `log_num_for_sale`). Training merges **`community_want` / `community_have`** from `marketplace_stats` into rows when the feature store still has zeros (e.g. after dump ingest). At **inference** and in the **MLflow pyfunc** bundle, the service adds **`log1p(anchor_live)`** (same preference order), then condition adjustment and `expm1`. Batch/pyfunc still use the column name **`discogs_median_price`** for that anchor when `target_kind: residual_log_median`.
+  The model predicts **`z = log1p(y_label) - log1p(anchor)`** where `y_label` comes from `training_label` (including new `sale_floor_blend` with `sale_history.sqlite` when configured). The **anchor** prefers **`release_lowest_price`** from `GET /releases`, then marketplace stats `lowest_price` / `median_price` (the latter often duplicates lowest — not a separate API median). **Features** omit same-snapshot listing-dollar scalars (`baseline_median`, `log1p_baseline_median`) and include non-dollar marketplace depth + cold-start flags (`has_sale_history`, `s_imputed`, `has_listing_floor`). Community counts are read from `marketplace_stats.community_*` only (not feature store). At **inference** and in the **MLflow pyfunc** bundle, the service adds **`log1p(anchor_live)`** (same preference order), then condition adjustment and `expm1`. Batch/pyfunc still use the column name **`discogs_median_price`** for that anchor when `target_kind: residual_log_median`.
 
 - **`price_suggestion` targets** are **Discogs suggested prices**, not observed sales — treat as teacher / pseudo-labels. Use `price_suggestion_fallback_lowest: true` when suggestions are often empty.
 

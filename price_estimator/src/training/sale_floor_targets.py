@@ -150,7 +150,7 @@ def sold_nowcast_s(
 
     if n >= cfg.n_min_trend and float(np.std(xs)) > 1e-9:
         try:
-            res = theilslopes(ys, xs, max_iter=2000)
+            res = theilslopes(ys, xs)
             intercept = float(res.intercept)
             slope = float(res.slope)
             log_s = intercept + slope * float(t_x)

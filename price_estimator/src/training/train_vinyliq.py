@@ -60,10 +60,7 @@ from ..models.vinyliq_pyfunc import (
     pyfunc_artifacts_dict,
 )
 from ..models.xgb_vinyliq import XGBVinylIQModel
-from .label_synthesis import (
-    dollar_target_and_residual_anchor_from_marketplace_row,
-    training_label_config_from_vinyliq,
-)
+from .label_synthesis import training_label_config_from_vinyliq
 from .sale_floor_targets import sale_floor_blend_bundle
 from .search_space import sample_from_space
 
@@ -95,6 +92,46 @@ def residual_z_clip_abs_from_vinyliq(v: dict | None) -> float | None:
     except (TypeError, ValueError):
         return None
     return x if x > 0 else None
+
+
+def _training_label_console_summary(tl: dict[str, object]) -> str:
+    """Human-readable label config: only keys that apply to ``mode``."""
+    mode = str(tl.get("mode", "sale_floor_blend")).strip().lower()
+    parts: list[str] = [f"mode={mode}"]
+    if mode in ("sale_floor_blend", "sale_floor"):
+        sfb = tl.get("sale_floor_blend")
+        if isinstance(sfb, dict) and sfb:
+            parts.append(
+                "sale_floor_blend="
+                + json.dumps(sfb, separators=(",", ":"), sort_keys=True)
+            )
+        parts.append(f"price_suggestion_grade(anchor)={tl.get('price_suggestion_grade')!s}")
+    else:
+        parts.append(
+            "note=only sale_floor_blend / sale_floor are supported for VinylIQ training"
+        )
+    return ", ".join(parts)
+
+
+def _training_label_mlflow_params(tl: dict[str, object]) -> dict[str, str]:
+    """Flat params for MLflow (sale-floor training and optional nested knobs)."""
+    mode = str(tl.get("mode", "sale_floor_blend")).strip().lower()
+    out: dict[str, str] = {"training_label_mode": mode}
+    if mode in ("sale_floor_blend", "sale_floor"):
+        sfb = tl.get("sale_floor_blend")
+        if isinstance(sfb, dict):
+            for k, v in sorted(sfb.items()):
+                out[f"training_label_sf_{k}"] = str(v)
+        out["training_label_ps_grade_anchor"] = str(tl.get("price_suggestion_grade", ""))
+    return out
+
+
+def _mlflow_log_training_label_params(
+    mlflow: Any,
+    tl: dict[str, object],
+) -> None:
+    for k, v in _training_label_mlflow_params(tl).items():
+        mlflow.log_param(k, v)
 
 
 def _root() -> Path:
@@ -214,8 +251,13 @@ def load_training_frame(
     dict[str, dict[str, float]],
     list[float],
 ]:
-    tl = training_label or {"mode": "median", "blend_median_weight": 0.7}
-    mode_l = str(tl.get("mode", "median")).strip().lower()
+    tl = training_label or training_label_config_from_vinyliq({})
+    mode_l = str(tl.get("mode", "sale_floor_blend")).strip().lower()
+    if mode_l not in ("sale_floor_blend", "sale_floor"):
+        raise ValueError(
+            f"Unsupported training_label.mode {mode_l!r} for VinylIQ training "
+            "(expected sale_floor_blend or sale_floor)."
+        )
     sales_by_rid: dict[str, list[dict[str, Any]]] = {}
     fetch_by_rid: dict[str, dict[str, Any]] = {}
     if mode_l in ("sale_floor_blend", "sale_floor"):
@@ -265,18 +307,15 @@ def load_training_frame(
     sf_cfg = tl.get("sale_floor_blend") if isinstance(tl.get("sale_floor_blend"), dict) else {}
 
     for rid, rd in by_rid.items():
-        if mode_l in ("sale_floor_blend", "sale_floor"):
-            y, m_anchor, flags = sale_floor_blend_bundle(
-                dict(rd),
-                sales_by_rid.get(rid, []),
-                fetch_by_rid.get(rid),
-                sf_cfg=sf_cfg,
-                nm_grade_key=ps_grade,
-            )
-            if flags:
-                row_cold_flags[rid] = flags
-        else:
-            y, m_anchor = dollar_target_and_residual_anchor_from_marketplace_row(rd, tl)
+        y, m_anchor, flags = sale_floor_blend_bundle(
+            dict(rd),
+            sales_by_rid.get(rid, []),
+            fetch_by_rid.get(rid),
+            sf_cfg=sf_cfg,
+            nm_grade_key=ps_grade,
+        )
+        if flags:
+            row_cold_flags[rid] = flags
         if y is not None and y > 0:
             m_use = (
                 float(m_anchor)
@@ -638,23 +677,7 @@ def _run_tuning(
             if tags:
                 mlflow.set_tags({str(k): str(v) for k, v in tags.items()})
             mlflow.set_tag("orchestration", "parent")
-            mlflow.log_param("training_label_mode", str(training_label_cfg.get("mode", "median")))
-            mlflow.log_param(
-                "training_label_blend_median_weight",
-                str(training_label_cfg.get("blend_median_weight", 0.7)),
-            )
-            mlflow.log_param(
-                "training_label_spread_lowest_floor_ratio",
-                str(training_label_cfg.get("spread_lowest_floor_ratio")),
-            )
-            mlflow.log_param(
-                "training_label_spread_min_median_weight",
-                str(training_label_cfg.get("spread_min_median_weight")),
-            )
-            mlflow.log_param(
-                "training_label_spread_num_for_sale_reference",
-                str(training_label_cfg.get("spread_num_for_sale_reference")),
-            )
+            _mlflow_log_training_label_params(mlflow, training_label_cfg)
             mlflow.log_param("n_train_outer", int(train_mask.sum()))
             mlflow.log_param("n_test_outer", int(test_mask.sum()))
             mlflow.log_param("n_tune_train", int((tune_train_mask & train_mask).sum()))
@@ -959,14 +982,13 @@ def main(args: argparse.Namespace | None = None) -> int:
         if isinstance(raw_tt, dict)
         else {"kind": target_kind}
     )
-    print(
-        "Training label: "
-        f"mode={training_label_cfg.get('mode')!s}, "
-        f"blend_median_weight={training_label_cfg.get('blend_median_weight')!s}, "
-        f"spread_lowest_floor_ratio={training_label_cfg.get('spread_lowest_floor_ratio')!s}, "
-        f"spread_min_median_weight={training_label_cfg.get('spread_min_median_weight')!s}, "
-        f"spread_num_for_sale_reference={training_label_cfg.get('spread_num_for_sale_reference')!s}",
-    )
+    print(f"Training label: {_training_label_console_summary(training_label_cfg)}")
+    _mode_l = str(training_label_cfg.get("mode", "")).strip().lower()
+    if _mode_l in ("sale_floor_blend", "sale_floor"):
+        print(
+            f"Sale history DB (for sold nowcast): {sh} "
+            f"(exists={sh.is_file()}; rows need fetch_status ok + NM-filtered sales)"
+        )
     print(f"Training target kind: {target_kind}")
     z_clip = residual_z_clip_abs_from_vinyliq(v)
     if z_clip is not None:
@@ -1121,20 +1143,8 @@ def main(args: argparse.Namespace | None = None) -> int:
                     "n_train": str(int(train_mask.sum())),
                     "n_test": str(int(test_mask.sum())),
                     "training_target_kind": str(target_kind),
-                    "training_label_mode": str(training_label_cfg.get("mode", "median")),
-                    "training_label_blend_median_weight": str(
-                        training_label_cfg.get("blend_median_weight", 0.7)
-                    ),
-                    "training_label_spread_lowest_floor_ratio": str(
-                        training_label_cfg.get("spread_lowest_floor_ratio")
-                    ),
-                    "training_label_spread_min_median_weight": str(
-                        training_label_cfg.get("spread_min_median_weight")
-                    ),
-                    "training_label_spread_num_for_sale_reference": str(
-                        training_label_cfg.get("spread_num_for_sale_reference")
-                    ),
                 }
+                params.update(_training_label_mlflow_params(training_label_cfg))
                 xgb_cfg = v.get("xgboost") or {}
                 if isinstance(xgb_cfg, dict):
                     for k, val in xgb_cfg.items():
