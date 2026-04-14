@@ -87,6 +87,49 @@ def format_flags_from_text(desc: str | None) -> dict[str, int]:
     }
 
 
+def _description_is_repress_token(raw: str) -> bool:
+    """True if Discogs format description is the **Repress** pressing tag."""
+    s = str(raw).strip().lower()
+    return s == "repress"
+
+
+def is_original_pressing_from_formats_list(
+    formats: list[Any] | None,
+) -> int:
+    """
+    Plan §1a: ``1`` when no format carries the **Repress** description; ``0`` if any
+    does. **Empty / missing formats → ``1``** (not labeled as repress in format data).
+    """
+    if not formats:
+        return 1
+    for f in formats:
+        if not isinstance(f, dict):
+            continue
+        for d in f.get("descriptions") or []:
+            if _description_is_repress_token(str(d)):
+                return 0
+    return 1
+
+
+def is_original_pressing_from_formats_json(formats_json: str | None) -> int:
+    """§1a from stored ``formats_json`` (same semantics as ``is_original_pressing_from_formats_list``)."""
+    fmts = parse_json_list(formats_json) if formats_json else []
+    return is_original_pressing_from_formats_list(fmts)
+
+
+def is_original_pressing_from_format_desc(format_desc: str | None) -> int:
+    """
+    Fallback when only a flat ``format_desc`` string exists (e.g. CSV ingest).
+    Treat whole-token **repress** as repress-labeled (conservative substring on word bounds).
+    """
+    if not format_desc:
+        return 1
+    t = format_desc.lower()
+    if re.search(r"\brepress\b", t):
+        return 0
+    return 1
+
+
 def parse_json_list(raw: Any) -> list[Any]:
     if raw is None:
         return []
@@ -183,16 +226,24 @@ def _int_nonneg_or_zero(v: Any) -> int:
     return n if n > 0 else 0
 
 
+def _positive_listing_scalar(v: Any) -> bool:
+    if v is None:
+        return False
+    try:
+        return float(v) > 0
+    except (TypeError, ValueError):
+        return False
+
+
 def _community_counts_from_stats_or_catalog(
     stats: dict[str, Any],
     cat: dict[str, Any],
 ) -> tuple[int, int]:
-    """Prefer marketplace ``community_*`` when those keys exist (incl. SQLite NULL→0); else FS."""
-    if "community_want" in stats or "community_have" in stats:
-        cw = _int_nonneg_or_zero(stats.get("community_want"))
-        ch = _int_nonneg_or_zero(stats.get("community_have"))
-        return cw, ch
-    return int(cat.get("want_count") or 0), int(cat.get("have_count") or 0)
+    """Plan §1b: community counts from marketplace row only (``cat`` unused, kept for API)."""
+    _ = cat
+    cw = _int_nonneg_or_zero(stats.get("community_want"))
+    ch = _int_nonneg_or_zero(stats.get("community_have"))
+    return cw, ch
 
 
 def _marketplace_depth_feature_block(
@@ -310,6 +361,7 @@ def row_dict_for_inference(
     primary_artist_index: float = 0.0,
     primary_label_index: float = 0.0,
     include_marketplace_scalars_in_features: bool = True,
+    cold_start_flags: dict[str, float] | None = None,
 ) -> dict[str, float]:
     """Build one numeric feature dict for XGBoost (categoricals encoded externally).
 
@@ -335,6 +387,24 @@ def row_dict_for_inference(
 
     cat = catalog or {}
     depth = _marketplace_depth_feature_block(stats, cat)
+    lo_pos = bool(
+        _positive_listing_scalar(
+            stats.get("release_lowest_price")
+            or stats.get("lowest_price")
+            or stats.get("median_price"),
+        )
+    )
+    if cold_start_flags is not None:
+        has_sh = float(cold_start_flags.get("has_sale_history", 0.0) or 0.0)
+        s_imp = float(cold_start_flags.get("s_imputed", 0.0) or 0.0)
+        has_lf = float(cold_start_flags.get("has_listing_floor", 0.0) or 0.0)
+    else:
+        has_sh = 0.0
+        s_imp = 0.0
+        has_lf = 1.0 if lo_pos else 0.0
+    depth["has_sale_history"] = has_sh
+    depth["s_imputed"] = s_imp
+    depth["has_listing_floor"] = has_lf
     tail = _catalog_tail(
         cat,
         genre_index=genre_index,
@@ -358,6 +428,15 @@ def row_dict_for_inference(
     return out
 
 
+def _cold_start_feature_column_names() -> list[str]:
+    """Plan §4d / §7.1b: training-time missingness for sale history and listing floor."""
+    return [
+        "has_sale_history",
+        "s_imputed",
+        "has_listing_floor",
+    ]
+
+
 def _marketplace_depth_column_names() -> list[str]:
     return [
         "log1p_community_want",
@@ -372,6 +451,7 @@ def _marketplace_depth_column_names() -> list[str]:
         "has_nfs_delta",
         "blocked_from_sale",
         "has_blocked_from_sale",
+        *_cold_start_feature_column_names(),
     ]
 
 

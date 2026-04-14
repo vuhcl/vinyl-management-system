@@ -201,6 +201,13 @@ def dollar_target_and_residual_anchor_from_marketplace_row(
         yy = float(y)
         return yy, yy
 
+    if mode in ("sale_floor_blend", "sale_floor"):
+        raise ValueError(
+            "training_label.mode 'sale_floor_blend' is built in load_training_frame "
+            "with sale_history.sqlite (sold nowcast + listing floor); "
+            "do not call dollar_target_and_residual_anchor_from_marketplace_row alone."
+        )
+
     if mode in _spread_compatible_modes():
         y = synthesize_training_price(
             median_spread,
@@ -292,6 +299,9 @@ def training_label_config_from_vinyliq(
     ps_fb = raw.get("price_suggestion_fallback_lowest", True)
     if isinstance(ps_fb, str):
         ps_fb = ps_fb.strip().lower() in ("1", "true", "yes", "on")
+    sfb = raw.get("sale_floor_blend")
+    if sfb is not None and not isinstance(sfb, dict):
+        sfb = {}
     return {
         "mode": mode,
         "blend_median_weight": blend_w,
@@ -300,4 +310,5 @@ def training_label_config_from_vinyliq(
         "spread_num_for_sale_reference": _parse_spread_num_for_sale_reference(raw, mode),
         "price_suggestion_grade": ps_grade,
         "price_suggestion_fallback_lowest": bool(ps_fb),
+        "sale_floor_blend": dict(sfb) if isinstance(sfb, dict) else {},
     }

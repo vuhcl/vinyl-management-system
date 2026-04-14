@@ -24,9 +24,10 @@ import os
 import sqlite3
 import sys
 import traceback
-from collections import Counter
+from collections import Counter, defaultdict
 from contextlib import nullcontext
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import yaml
@@ -63,6 +64,7 @@ from .label_synthesis import (
     dollar_target_and_residual_anchor_from_marketplace_row,
     training_label_config_from_vinyliq,
 )
+from .sale_floor_targets import sale_floor_blend_bundle
 from .search_space import sample_from_space
 
 
@@ -154,6 +156,37 @@ def _auto_top_k_id_encoder(n_labeled: int, n_unique: int) -> int:
     return min(k, n_unique)
 
 
+def _load_sale_history_sidecars(
+    sh_path: Path,
+) -> tuple[dict[str, list[dict[str, Any]]], dict[str, dict[str, Any]]]:
+    """``release_sale`` rows and ``sale_history_fetch_status`` per ``release_id``."""
+    sales: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    fetch: dict[str, dict[str, Any]] = {}
+    if not sh_path.is_file():
+        return {}, {}
+    conn = sqlite3.connect(str(sh_path))
+    conn.row_factory = sqlite3.Row
+    try:
+        for r in conn.execute("SELECT * FROM release_sale"):
+            d = dict(r)
+            sales[str(d["release_id"])].append(d)
+        for r in conn.execute("SELECT * FROM sale_history_fetch_status"):
+            d = dict(r)
+            fetch[str(d["release_id"])] = d
+    finally:
+        conn.close()
+    return dict(sales), fetch
+
+
+def _default_cold_start_flags(mx: dict[str, Any]) -> dict[str, float]:
+    lo = mx.get("release_lowest_price") or mx.get("lowest_price") or mx.get("median_price")
+    try:
+        has_lf = 1.0 if lo is not None and float(lo) > 0 else 0.0
+    except (TypeError, ValueError):
+        has_lf = 0.0
+    return {"has_sale_history": 0.0, "s_imputed": 0.0, "has_listing_floor": has_lf}
+
+
 def _fit_frequency_capped_id_encoder(ids: list[str], max_k: int) -> dict[str, float]:
     if max_k <= 0:
         return {}
@@ -173,6 +206,7 @@ def load_training_frame(
     training_label: dict[str, object] | None = None,
     training_target_kind: str = TARGET_KIND_RESIDUAL_LOG_MEDIAN,
     residual_z_clip_abs: float | None = None,
+    sale_history_db: Path | None = None,
 ) -> tuple[
     list[dict],
     list[float],
@@ -181,6 +215,19 @@ def load_training_frame(
     list[float],
 ]:
     tl = training_label or {"mode": "median", "blend_median_weight": 0.7}
+    mode_l = str(tl.get("mode", "median")).strip().lower()
+    sales_by_rid: dict[str, list[dict[str, Any]]] = {}
+    fetch_by_rid: dict[str, dict[str, Any]] = {}
+    if mode_l in ("sale_floor_blend", "sale_floor"):
+        if sale_history_db is None or not Path(sale_history_db).is_file():
+            print(
+                "Warning: sale_floor_blend needs sale_history.sqlite "
+                "(vinyliq.paths.sale_history_db); sold nowcast s will be missing "
+                "unless listing floor / PS-only paths yield y.",
+                file=sys.stderr,
+            )
+        else:
+            sales_by_rid, fetch_by_rid = _load_sale_history_sidecars(Path(sale_history_db))
 
     conn_m = sqlite3.connect(str(marketplace_db))
     conn_m.row_factory = sqlite3.Row
@@ -213,8 +260,23 @@ def load_training_frame(
     labels: dict[str, float] = {}
     medians: dict[str, float] = {}
     marketplace_extra: dict[str, dict[str, Any]] = {}
+    row_cold_flags: dict[str, dict[str, float]] = {}
+    ps_grade = str(tl.get("price_suggestion_grade") or "Near Mint (NM or M-)").strip()
+    sf_cfg = tl.get("sale_floor_blend") if isinstance(tl.get("sale_floor_blend"), dict) else {}
+
     for rid, rd in by_rid.items():
-        y, m_anchor = dollar_target_and_residual_anchor_from_marketplace_row(rd, tl)
+        if mode_l in ("sale_floor_blend", "sale_floor"):
+            y, m_anchor, flags = sale_floor_blend_bundle(
+                dict(rd),
+                sales_by_rid.get(rid, []),
+                fetch_by_rid.get(rid),
+                sf_cfg=sf_cfg,
+                nm_grade_key=ps_grade,
+            )
+            if flags:
+                row_cold_flags[rid] = flags
+        else:
+            y, m_anchor = dollar_target_and_residual_anchor_from_marketplace_row(rd, tl)
         if y is not None and y > 0:
             m_use = (
                 float(m_anchor)
@@ -251,24 +313,6 @@ def load_training_frame(
             continue
         mx = marketplace_extra.get(rid, {})
         r_cat = dict(r)
-        w0 = int(r_cat.get("want_count") or 0)
-        h0 = int(r_cat.get("have_count") or 0)
-        cw = mx.get("community_want")
-        ch = mx.get("community_have")
-        if cw is not None and w0 == 0:
-            try:
-                r_cat["want_count"] = int(cw)
-            except (TypeError, ValueError):
-                pass
-        if ch is not None and h0 == 0:
-            try:
-                r_cat["have_count"] = int(ch)
-            except (TypeError, ValueError):
-                pass
-        h1 = int(r_cat.get("have_count") or 0)
-        w1 = int(r_cat.get("want_count") or 0)
-        if h1 > 0:
-            r_cat["want_have_ratio"] = float(w1) / float(h1)
         labeled.append(r_cat)
 
     artist_ids_per_row = [first_artist_id(r) for r in labeled]
@@ -337,6 +381,7 @@ def load_training_frame(
             "release_num_for_sale": mx.get("release_num_for_sale"),
             "blocked_from_sale": mx.get("blocked_from_sale"),
         }
+        cf = row_cold_flags.get(rid) or _default_cold_start_flags(mx)
         row = row_dict_for_inference(
             rid,
             "Near Mint (NM or M-)",
@@ -348,6 +393,7 @@ def load_training_frame(
             primary_artist_index=aidx,
             primary_label_index=lbidx,
             include_marketplace_scalars_in_features=inc_mkt,
+            cold_start_flags=cf,
         )
         Xrows.append(row)
         if training_target_kind == TARGET_KIND_RESIDUAL_LOG_MEDIAN:
@@ -881,11 +927,14 @@ def main(args: argparse.Namespace | None = None) -> int:
     root = _root()
     mp = Path(paths.get("marketplace_db", root / "data" / "cache" / "marketplace_stats.sqlite"))
     fs = Path(paths.get("feature_store_db", root / "data" / "feature_store.sqlite"))
+    sh = Path(paths.get("sale_history_db", root / "data" / "cache" / "sale_history.sqlite"))
     md = Path(paths.get("model_dir", root / "artifacts" / "vinyliq"))
     if not mp.is_absolute():
         mp = root / mp
     if not fs.is_absolute():
         fs = root / fs
+    if not sh.is_absolute():
+        sh = root / sh
     if not md.is_absolute():
         md = root / md
     md.mkdir(parents=True, exist_ok=True)
@@ -923,6 +972,7 @@ def main(args: argparse.Namespace | None = None) -> int:
     if z_clip is not None:
         print(f"Residual z clip (abs): {z_clip}")
 
+    sh_arg = sh if sh.is_file() else None
     Xrows, yvals, rids, catalog_encoders, median_anchors = load_training_frame(
         mp,
         fs,
@@ -931,6 +981,7 @@ def main(args: argparse.Namespace | None = None) -> int:
         training_label=training_label_cfg,
         training_target_kind=target_kind,
         residual_z_clip_abs=z_clip,
+        sale_history_db=sh_arg,
     )
     meta = catalog_encoders.get("_id_encoder_meta") or {}
     if meta:

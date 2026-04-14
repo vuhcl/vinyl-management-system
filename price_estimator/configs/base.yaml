@@ -10,6 +10,7 @@ vinyliq:
   paths:
     marketplace_db: "data/cache/marketplace_stats.sqlite"
     feature_store_db: "data/feature_store.sqlite"
+    sale_history_db: "data/cache/sale_history.sqlite"
     model_dir: "artifacts/vinyliq"
   # Which env var the API reads for the personal token (see repo .env.template).
   discogs_token_env: "DISCOGS_TOKEN"
@@ -42,6 +43,19 @@ vinyliq:
     spread_num_for_sale_reference: 20
     price_suggestion_grade: "Near Mint (NM or M-)"
     price_suggestion_fallback_lowest: true
+    # Plan §7.1d: use mode: sale_floor_blend + sale_history.sqlite for sold nowcast s.
+    sale_floor_blend:
+      n_min_trend: 8
+      recency_half_life_days: 365.0
+      w_base: 0.55
+      w_min: 0.2
+      w_max: 0.9
+      tier_b_delta: 0.05
+      tier_c_delta: 0.1
+      gap_epsilon_log: 0.02
+      gap_k_down: 0.15
+      gap_k_up: 0.12
+      gap_delta_cap: 0.5
   # residual_log_median (default): y = log1p(y_label) - log1p(anchor); anchor prefers
   # release_lowest_price then stats lowest/median; X omits price/liquidity; inference
   # adds log1p(live anchor). Pyfunc column name remains ``discogs_median_price``.

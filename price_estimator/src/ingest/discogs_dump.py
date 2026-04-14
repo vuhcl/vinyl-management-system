@@ -13,7 +13,10 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Any, Iterator
 
-from ..features.vinyliq_features import format_flags_from_text
+from ..features.vinyliq_features import (
+    format_flags_from_text,
+    is_original_pressing_from_formats_list,
+)
 
 
 def _localname(tag: str) -> str:
@@ -180,9 +183,6 @@ def release_element_to_row(
     if master_id_s == "":
         master_id_s = None
 
-    wants, haves = _community_counts(elem)
-    ratio = (wants / haves) if haves > 0 else 0.0
-
     genres_list = _all_strings_in_container(elem, "genres", "genre")
     styles_list = _all_strings_in_container(elem, "styles", "style")
     genre = genres_list[0] if genres_list else None
@@ -199,20 +199,18 @@ def release_element_to_row(
     country_s = country_raw.strip() if country_raw else None
 
     flags = format_flags_from_text(format_desc)
+    is_original = is_original_pressing_from_formats_list(formats_list)
 
     return {
         "release_id": rid,
         "master_id": master_id_s,
-        "want_count": wants,
-        "have_count": haves,
-        "want_have_ratio": ratio,
         "genre": genre,
         "style": style,
         "decade": decade,
         "year": year,
         "country": country_s,
         "label_tier": 0,
-        "is_original_pressing": 0,
+        "is_original_pressing": is_original,
         "is_colored_vinyl": flags["is_colored_vinyl"],
         "is_picture_disc": flags["is_picture_disc"],
         "is_promo": flags["is_promo"],
@@ -281,9 +279,13 @@ def probe_dump_community(
     parsed = 0
     nz = 0
     max_sum = 0
-    for row in iter_dump_feature_rows(path, skip_deleted=skip_deleted):
+    for elem in iter_release_elements(path):
+        row = release_element_to_row(elem, skip_deleted=skip_deleted)
+        if row is None:
+            continue
         parsed += 1
-        s = int(row.get("want_count") or 0) + int(row.get("have_count") or 0)
+        w, h = _community_counts(elem)
+        s = int(w) + int(h)
         if s > 0:
             nz += 1
         if s > max_sum:

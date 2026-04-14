@@ -133,7 +133,7 @@ def main() -> int:
             print(
                 "\nNo community stats in this sample — dump-ingested DB will have "
                 "all zeros; popularity queues sort by release_id only.\n"
-                "Use API ingest or another source to populate have_count/want_count.",
+                "Community counts live in marketplace_stats (collect_marketplace_stats).",
                 file=sys.stderr,
             )
         return 0

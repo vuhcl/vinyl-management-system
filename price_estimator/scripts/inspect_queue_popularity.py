@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
-Sample release_ids from a queue file and show have_count / want_count from feature_store.
+Sample release_ids from a queue file and show ``community_have`` /
+``community_want`` from ``marketplace_stats.sqlite`` (plan §1b).
 
 Indices are **numeric-ID line order** (blank lines and # comments skipped)—same ordering
 as ``collect_marketplace_stats`` streaming reader.
@@ -11,6 +12,7 @@ have+want if the file was built with combined/have/want sort).
 from __future__ import annotations
 
 import argparse
+import sqlite3
 import sys
 from pathlib import Path
 
@@ -53,10 +55,13 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--queue", type=Path, required=True, help="One ID per line")
     ap.add_argument(
-        "--db",
+        "--marketplace-db",
         type=Path,
         default=None,
-        help="feature_store.sqlite (default from vinyliq.paths)",
+        help=(
+            "marketplace_stats.sqlite "
+            "(default: sibling cache/ next to feature_store from vinyliq.paths)"
+        ),
     )
     ap.add_argument(
         "--sample",
@@ -81,8 +86,8 @@ def main() -> int:
         return 1
 
     root = _root()
-    db_path = args.db
-    if db_path is None:
+    mp_path = args.marketplace_db
+    if mp_path is None:
         import yaml
 
         cfgp = root / "configs" / "base.yaml"
@@ -90,32 +95,50 @@ def main() -> int:
             with open(cfgp) as f:
                 data = yaml.safe_load(f) or {}
             rel = (data.get("vinyliq") or {}).get("paths", {}).get(
-                "feature_store_db", "data/feature_store.sqlite"
+                "marketplace_db", "data/cache/marketplace_stats.sqlite"
             )
-            db_path = Path(rel)
-            if not db_path.is_absolute():
-                db_path = root / db_path
+            mp_path = Path(rel)
+            if not mp_path.is_absolute():
+                mp_path = root / mp_path
         else:
-            db_path = root / "data" / "feature_store.sqlite"
+            mp_path = root / "data" / "cache" / "marketplace_stats.sqlite"
     else:
-        db_path = args.db.expanduser().resolve()
-        if not db_path.is_absolute():
-            db_path = root / db_path
+        mp_path = args.marketplace_db.expanduser().resolve()
+        if not mp_path.is_absolute():
+            mp_path = root / mp_path
 
-    if not db_path.is_file():
-        print(f"Feature store not found: {db_path}", file=sys.stderr)
-        return 1
-
-    try:
-        from price_estimator.src.storage.feature_store import FeatureStoreDB
-    except ImportError:
-        print("PYTHONPATH must include repo root.", file=sys.stderr)
+    if not mp_path.is_file():
+        print(f"marketplace_stats not found: {mp_path}", file=sys.stderr)
         return 1
 
     n_lines = _count_numeric_ids(q)
     print(f"queue: {q}")
     print(f"numeric release_id rows (0-based index 0..{n_lines - 1}): {n_lines}")
-    print(f"feature_store: {db_path}\n")
+    print(f"marketplace_stats: {mp_path}\n")
+
+    mconn = sqlite3.connect(str(mp_path))
+    mconn.row_factory = sqlite3.Row
+
+    def community_for(rid: str) -> tuple[int | None, int | None]:
+        cur = mconn.execute(
+            "SELECT community_have, community_want FROM marketplace_stats "
+            "WHERE release_id = ?",
+            (rid,),
+        )
+        r = cur.fetchone()
+        if not r:
+            return None, None
+        h = r["community_have"]
+        w = r["community_want"]
+        try:
+            hi = int(h) if h is not None else None
+        except (TypeError, ValueError):
+            hi = None
+        try:
+            wi = int(w) if w is not None else None
+        except (TypeError, ValueError):
+            wi = None
+        return hi, wi
 
     n = max(1, args.sample)
     mids: list[int] = []
@@ -140,7 +163,6 @@ def main() -> int:
         want.add(max(0, n_lines - 1 - j))
 
     id_map = _fetch_at_indices(q, want)
-    store = FeatureStoreDB(db_path)
 
     def show(label: str, indices: list[int]) -> None:
         print(f"--- {label} ---")
@@ -151,17 +173,7 @@ def main() -> int:
             rid = id_map.get(idx)
             if rid is None:
                 continue
-            row = store.get(rid)
-            h = (
-                int(row["have_count"])
-                if row and row.get("have_count") is not None
-                else None
-            )
-            w = (
-                int(row["want_count"])
-                if row and row.get("want_count") is not None
-                else None
-            )
+            h, w = community_for(rid)
             hs = "?" if h is None else str(h)
             ws = "?" if w is None else str(w)
             comb = "?" if h is None or w is None else str(h + w)
@@ -181,6 +193,7 @@ def main() -> int:
     tail_idxs = [max(0, n_lines - 1 - j) for j in range(min(n, n_lines))]
     show("TAIL", sorted(set(tail_idxs)))
 
+    mconn.close()
     return 0
 
 

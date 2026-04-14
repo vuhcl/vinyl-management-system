@@ -4,7 +4,10 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from ..features.vinyliq_features import format_flags_from_text
+from ..features.vinyliq_features import (
+    format_flags_from_text,
+    is_original_pressing_from_formats_list,
+)
 
 
 def _fmt_descriptions(formats: list[dict[str, Any]] | None) -> str | None:
@@ -73,17 +76,14 @@ def release_to_feature_row(
     """
     Build a row for ``FeatureStoreDB`` from Discogs API release JSON.
 
-    If *master* is provided (GET /masters/{id}), sets ``is_original_pressing`` when
-    this release is the catalog's ``main_release``.
+    Community counts are **not** written to the feature store (plan §1b); use
+    ``marketplace_stats`` for ``community_want`` / ``community_have`` at train time.
+
+    ``is_original_pressing`` follows plan §1a (no **Repress** in format descriptions).
     """
     rid = str(release.get("id", "")).strip()
     master_id = release.get("master_id")
     master_id_s = str(master_id).strip() if master_id is not None else None
-
-    comm = release.get("community") or {}
-    wants = int(comm.get("want") or 0)
-    haves = int(comm.get("have") or 0)
-    ratio = (wants / haves) if haves > 0 else 0.0
 
     genres = [str(g).strip() for g in (release.get("genres") or []) if str(g).strip()]
     styles = [str(s).strip() for s in (release.get("styles") or []) if str(s).strip()]
@@ -109,21 +109,11 @@ def release_to_feature_row(
     labels = _api_labels(release)
     formats_json = _formats_json_from_api(formats_list)
 
-    is_original = 0
-    if master is not None and rid:
-        try:
-            main_rel = master.get("main_release")
-            if main_rel is not None and int(main_rel) == int(release.get("id")):
-                is_original = 1
-        except (TypeError, ValueError):
-            pass
+    is_original = is_original_pressing_from_formats_list(formats_list)
 
     return {
         "release_id": rid,
         "master_id": master_id_s,
-        "want_count": wants,
-        "have_count": haves,
-        "want_have_ratio": ratio,
         "genre": genre,
         "style": style,
         "decade": decade,

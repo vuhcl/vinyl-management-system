@@ -2,9 +2,9 @@
 """
 Write ``release_id`` lines from ``feature_store.sqlite`` (``releases_features``).
 
-Dump ingest often leaves ``have_count`` / ``want_count`` at zero; use
-``--sort-by catalog_proxy`` for catalog-based ordering, or community sorts only
-if those columns were filled (e.g. API ingest).
+Community sorts use ``marketplace_stats.community_have`` / ``community_want``
+(plan §1b), not the feature store. Pass ``--marketplace-db`` for have/want/combined.
+Use ``--sort-by catalog_proxy`` for catalog-only ordering.
 
   PYTHONPATH=. python price_estimator/scripts/export_release_ids.py \\
       --out price_estimator/data/raw/dump_release_ids.txt
@@ -50,6 +50,15 @@ def main() -> int:
         ),
     )
     parser.add_argument(
+        "--marketplace-db",
+        type=Path,
+        default=None,
+        help=(
+            "marketplace_stats.sqlite (required for --sort-by have|want|combined; "
+            "default: <parent of --db>/cache/marketplace_stats.sqlite)"
+        ),
+    )
+    parser.add_argument(
         "--out",
         type=Path,
         required=True,
@@ -80,13 +89,13 @@ def main() -> int:
         "--min-have",
         type=int,
         default=0,
-        help="Only include releases with have_count >= N (0 = no filter)",
+        help="Only include releases with community_have >= N (0 = no filter)",
     )
     parser.add_argument(
         "--min-want",
         type=int,
         default=0,
-        help="Only include releases with want_count >= N (0 = no filter)",
+        help="Only include releases with community_want >= N (0 = no filter)",
     )
     parser.add_argument(
         "--limit",
@@ -105,6 +114,17 @@ def main() -> int:
         print(f"Feature store not found: {db_path}", file=sys.stderr)
         return 1
 
+    mp_path = args.marketplace_db or (db_path.parent / "cache" / "marketplace_stats.sqlite")
+    if not mp_path.is_absolute():
+        mp_path = root / mp_path
+    if args.sort_by in ("have", "want", "combined") and not mp_path.is_file():
+        print(
+            f"marketplace_stats.sqlite not found ({mp_path}); "
+            "required for community sort.",
+            file=sys.stderr,
+        )
+        return 1
+
     try:
         from price_estimator.src.storage.feature_store import FeatureStoreDB
     except ImportError:
@@ -121,6 +141,11 @@ def main() -> int:
     sort_key = sort_map[args.sort_by]
     args.out.parent.mkdir(parents=True, exist_ok=True)
     store = FeatureStoreDB(db_path)
+    mp_kw = (
+        {"marketplace_db_path": str(mp_path.resolve())}
+        if args.sort_by in ("have", "want", "combined")
+        else {}
+    )
     n = 0
     with open(args.out, "w", encoding="utf-8") as f:
         for rid in store.iter_release_ids(
@@ -129,6 +154,7 @@ def main() -> int:
             min_want=args.min_want,
             proxy_weight_master=args.proxy_weight_master,
             proxy_weight_artist=args.proxy_weight_artist,
+            **mp_kw,
         ):
             if args.limit and n >= args.limit:
                 break

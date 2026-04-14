@@ -54,23 +54,22 @@ def main() -> int:
                 "median_price": {"value": median},
                 "num_for_sale": max(1, wants // 40),
             },
+            release_payload={
+                "community": {"want": wants, "have": haves},
+            },
         )
-        ratio = wants / haves if haves else 0
         genres_j = json.dumps([genre], separators=(",", ":"))
         fdb.upsert_row(
             {
                 "release_id": rid,
                 "master_id": mid,
-                "want_count": wants,
-                "have_count": haves,
-                "want_have_ratio": ratio,
                 "genre": genre,
                 "style": None,
                 "decade": (year // 10) * 10,
                 "year": year,
                 "country": country,
                 "label_tier": 0,
-                "is_original_pressing": 1 if year == my else 0,
+                "is_original_pressing": 0 if "repress" in fmt.lower() else 1,
                 "is_colored_vinyl": 0,
                 "is_picture_disc": 0,
                 "is_promo": 0,
