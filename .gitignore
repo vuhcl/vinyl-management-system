@@ -70,29 +70,17 @@ artifacts/*
 logs/
 
 .env.*.local
-<<<<<<< HEAD
- 
-# MLflow runs
-mlruns/
-grader/experiments/
- 
-=======
 
 # MLflow runs
 mlruns/
 grader/experiments/
 
->>>>>>> 739ea5b (Resolve merge: .gitignore, price_estimator README, restore dockerignore and sale-history files)
 # Model artifacts (large files)
 grader/artifacts/*.pkl
 grader/artifacts/*.pt
 grader/artifacts/*.onnx
 grader/artifacts/*.mlpackage
-<<<<<<< HEAD
- 
-=======
 
->>>>>>> 739ea5b (Resolve merge: .gitignore, price_estimator README, restore dockerignore and sale-history files)
 # Coverage reports
 grader/reports/coverage/
 grader/reports/*.csv
@@ -104,8 +92,6 @@ htmlcov/
 
 # Local Vertex / custom job metadata (no secrets; avoid noisy status)
 .vertex_replicate_state/
-<<<<<<< HEAD
-=======
 
 # Local tooling (scrapers / helpers under repo root; not shipped)
 tools/*
@@ -116,4 +102,3 @@ tools/*
 .cursorrules
 .cursorignore
 .specstory/*
->>>>>>> 739ea5b (Resolve merge: .gitignore, price_estimator README, restore dockerignore and sale-history files)
