@@ -10,12 +10,13 @@ import pandas as pd
 from mlflow.pyfunc import PythonModel
 
 from ..features.vinyliq_features import (
-    apply_condition_log_adjustment,
     condition_string_to_ordinal,
     default_feature_columns,
+    grade_delta_scale_params_from_cond,
     residual_training_feature_columns,
+    scaled_condition_log_adjustment,
 )
-from .condition_adjustment import default_params, load_params
+from .condition_adjustment import default_params, load_params_with_grade_delta_overlays
 from .fitted_regressor import TARGET_KIND_RESIDUAL_LOG_MEDIAN
 
 # Residual reconstruction anchor: prefer release lowest, same order as training.
@@ -46,7 +47,11 @@ class VinylIQPricePyFunc(PythonModel):
         self._estimator = joblib.load(reg_path)
         self._feature_columns: list[str] = list(joblib.load(feat_path))
         self._target_log1p = bool(joblib.load(target_path))
-        self._cond = load_params(cond_path) if cond_path.is_file() else default_params()
+        self._cond = (
+            load_params_with_grade_delta_overlays(Path(cond_path).parent)
+            if cond_path.is_file()
+            else default_params()
+        )
 
     def predict(
         self,
@@ -63,6 +68,7 @@ class VinylIQPricePyFunc(PythonModel):
 
         X = df[cols].to_numpy(dtype=np.float64, copy=False)
         logp = np.asarray(self._estimator.predict(X), dtype=np.float64).ravel()
+        n = len(df)
         if self._target_kind == TARGET_KIND_RESIDUAL_LOG_MEDIAN:
             if _PYFUNC_MEDIAN_COL not in df.columns:
                 raise ValueError(
@@ -74,8 +80,14 @@ class VinylIQPricePyFunc(PythonModel):
                 0.0,
             )
             logp = logp + np.log1p(med)
-
-        n = len(df)
+            anchor_arr = np.maximum(med, 1e-6)
+        elif _PYFUNC_MEDIAN_COL in df.columns:
+            anchor_arr = np.maximum(
+                df[_PYFUNC_MEDIAN_COL].to_numpy(dtype=np.float64, copy=False),
+                1e-6,
+            )
+        else:
+            anchor_arr = np.ones(n, dtype=np.float64)
         if "media_condition" in df.columns:
             media_ord = np.array(
                 [condition_string_to_ordinal(x) for x in df["media_condition"]],
@@ -94,16 +106,28 @@ class VinylIQPricePyFunc(PythonModel):
         alpha = float(self._cond.get("alpha", -0.06))
         beta = float(self._cond.get("beta", -0.04))
         ref_grade = float(self._cond.get("ref_grade", 8.0))
+        scale_params = grade_delta_scale_params_from_cond(self._cond)
+        has_year = "year" in df.columns
+        year_col = df["year"].to_numpy(dtype=np.float64, copy=False) if has_year else None
 
         prices = []
         for i in range(n):
-            logp_adj = apply_condition_log_adjustment(
+            anchor_i = float(anchor_arr[i])
+            if anchor_i <= 0.0:
+                anchor_i = 1.0
+            yr = float(year_col[i]) if year_col is not None else None
+            if yr is not None and not np.isfinite(yr):
+                yr = None
+            logp_adj = scaled_condition_log_adjustment(
                 float(logp[i]),
                 float(media_ord[i]),
                 float(sleeve_ord[i]),
-                alpha=alpha,
-                beta=beta,
+                base_alpha=alpha,
+                base_beta=beta,
                 ref_grade=ref_grade,
+                anchor_usd=anchor_i,
+                release_year=yr,
+                scale_params=scale_params,
             )
             prices.append(float(np.expm1(np.clip(logp_adj, 0, 25))))
 
@@ -141,4 +165,5 @@ def build_pyfunc_input_example(
     row["sleeve_condition"] = "Near Mint (NM or M-)"
     if target_kind == TARGET_KIND_RESIDUAL_LOG_MEDIAN:
         row[_PYFUNC_MEDIAN_COL] = 25.0
+    row["year"] = 2000.0
     return pd.DataFrame([row])
