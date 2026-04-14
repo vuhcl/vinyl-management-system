@@ -195,6 +195,7 @@ def fit_regressor(
     early_stopping_rounds: int | None = None,
     random_state: int = 42,
     target_kind: str = TARGET_KIND_DOLLAR_LOG1P,
+    sample_weight: np.ndarray | None = None,
 ) -> tuple[FittedVinylIQRegressor, dict[str, Any]]:
     """
     Fit one regressor. If early_stopping_rounds and val set are provided, uses them
@@ -227,12 +228,18 @@ def fit_regressor(
                 y_train,
                 eval_set=[(X_val, y_val)],
                 verbose=False,
+                **({"sample_weight": sample_weight} if sample_weight is not None else {}),
             )
             bi = getattr(model, "best_iteration", None)
             if bi is not None:
                 meta["best_iteration"] = int(bi)
         else:
-            model.fit(X_train, y_train, verbose=False)
+            model.fit(
+                X_train,
+                y_train,
+                verbose=False,
+                **({"sample_weight": sample_weight} if sample_weight is not None else {}),
+            )
         return FittedVinylIQRegressor(
             "xgboost",
             model,
@@ -258,20 +265,25 @@ def fit_regressor(
             and len(X_val) > 0
         )
         if use_es:
-            model.fit(
-                X_train,
-                y_train,
-                eval_set=[(X_val, y_val)],
-                callbacks=[
+            fit_kw: dict[str, Any] = {
+                "eval_set": [(X_val, y_val)],
+                "callbacks": [
                     lgb.early_stopping(early_stopping_rounds, verbose=False),
                     lgb.log_evaluation(period=0),
                 ],
-            )
+            }
+            if sample_weight is not None:
+                fit_kw["sample_weight"] = sample_weight
+            model.fit(X_train, y_train, **fit_kw)
             bi = getattr(model, "best_iteration_", None)
             if bi is not None:
                 meta["best_iteration"] = int(bi)
         else:
-            model.fit(X_train, y_train)
+            model.fit(
+                X_train,
+                y_train,
+                **({"sample_weight": sample_weight} if sample_weight is not None else {}),
+            )
         return FittedVinylIQRegressor(
             "lightgbm",
             model,
@@ -307,12 +319,18 @@ def fit_regressor(
                 eval_set=(X_val, y_val),
                 early_stopping_rounds=int(early_stopping_rounds),
                 verbose=False,
+                **({"sample_weight": sample_weight} if sample_weight is not None else {}),
             )
             bi = model.get_best_iteration()
             if bi is not None:
                 meta["best_iteration"] = int(bi)
         else:
-            model.fit(X_train, y_train, verbose=False)
+            model.fit(
+                X_train,
+                y_train,
+                verbose=False,
+                **({"sample_weight": sample_weight} if sample_weight is not None else {}),
+            )
         return FittedVinylIQRegressor(
             "catboost",
             model,
@@ -327,7 +345,11 @@ def fit_regressor(
         p = {"random_state": random_state, **params}
         p = _strip_unknown_sklearn_hgb(p)
         model = HistGradientBoostingRegressor(**p)
-        model.fit(X_train, y_train)
+        model.fit(
+            X_train,
+            y_train,
+            **({"sample_weight": sample_weight} if sample_weight is not None else {}),
+        )
         return FittedVinylIQRegressor(
             "sklearn_hist_gbrt",
             model,
@@ -342,7 +364,11 @@ def fit_regressor(
         p = {"random_state": random_state, "n_jobs": -1, **params}
         p = _strip_unknown_rf(p)
         model = RandomForestRegressor(**p)
-        model.fit(X_train, y_train)
+        model.fit(
+            X_train,
+            y_train,
+            **({"sample_weight": sample_weight} if sample_weight is not None else {}),
+        )
         return FittedVinylIQRegressor(
             "sklearn_rf",
             model,
@@ -357,7 +383,11 @@ def fit_regressor(
         p = {"random_state": random_state, "n_jobs": -1, **params}
         p = _strip_unknown_et(p)
         model = ExtraTreesRegressor(**p)
-        model.fit(X_train, y_train)
+        model.fit(
+            X_train,
+            y_train,
+            **({"sample_weight": sample_weight} if sample_weight is not None else {}),
+        )
         return FittedVinylIQRegressor(
             "sklearn_et",
             model,
@@ -379,6 +409,7 @@ def refit_champion(
     best_iteration: int | None,
     random_state: int = 42,
     target_kind: str = TARGET_KIND_DOLLAR_LOG1P,
+    sample_weight: np.ndarray | None = None,
 ) -> FittedVinylIQRegressor:
     """Refit on full training data; shrink tree count for boosters when ES was used."""
     family = family.strip().lower()
@@ -404,6 +435,7 @@ def refit_champion(
         early_stopping_rounds=None,
         random_state=random_state,
         target_kind=target_kind,
+        sample_weight=sample_weight,
     )
     return reg
 
@@ -502,4 +534,135 @@ def median_ape_dollar_quartiles(
             out.append(float("nan"))
         else:
             out.append(float(np.median(ape[mask])))
+    return out
+
+
+def training_sample_weights_from_anchors(
+    anchors: np.ndarray,
+    mode: str | None,
+) -> np.ndarray | None:
+    """
+    Optional per-row weights for ``fit_regressor`` (upweight low-dollar anchors).
+
+    Modes: ``None`` / empty / ``off`` → no weights; ``inv_sqrt_anchor`` →
+    ``w ∝ 1/sqrt(max(anchor, 1))`` normalized to mean 1.
+    """
+    if mode is None or not str(mode).strip():
+        return None
+    key = str(mode).strip().lower()
+    if key in ("none", "null", "off", "false", "0", "no"):
+        return None
+    m = np.maximum(np.asarray(anchors, dtype=np.float64), 1.0)
+    if key == "inv_sqrt_anchor":
+        w = 1.0 / np.sqrt(m)
+        s = float(np.sum(w))
+        if s <= 0:
+            return None
+        w *= float(len(w)) / s
+        return w.astype(np.float64)
+    raise ValueError(
+        f"Unknown tuning.sample_weight mode {mode!r} (use null or inv_sqrt_anchor)"
+    )
+
+
+def _feature_column_index(feature_columns: list[str], name: str) -> int | None:
+    try:
+        return feature_columns.index(name)
+    except ValueError:
+        return None
+
+
+def mutually_exclusive_format_bucket_masks(
+    X: np.ndarray,
+    feature_columns: list[str],
+) -> dict[str, np.ndarray]:
+    """
+    One bucket per row for slice metrics (priority: box_multi > 7 > 10 > 12 > lp > cd > other).
+
+    Missing format columns (older models) yield all-zero bits → ``other``.
+    """
+    nrow = int(X.shape[0])
+
+    def col(name: str) -> np.ndarray:
+        j = _feature_column_index(feature_columns, name)
+        if j is None:
+            return np.zeros(nrow, dtype=np.float64)
+        return np.asarray(X[:, j], dtype=np.float64)
+
+    c_box = col("is_box_set")
+    c_multi = col("is_multi_disc")
+    c7 = col("is_7inch")
+    c10 = col("is_10inch")
+    c12 = col("is_12inch")
+    clp = col("is_lp")
+    ccd = col("is_cd")
+
+    box_multi = (c_box >= 0.5) | (c_multi >= 0.5)
+    seven = (~box_multi) & (c7 >= 0.5)
+    ten = (~box_multi) & (~seven) & (c10 >= 0.5)
+    twelve = (~box_multi) & (~seven) & (~ten) & (c12 >= 0.5)
+    lp = (~box_multi) & (~seven) & (~ten) & (~twelve) & (clp >= 0.5)
+    cd = (~box_multi) & (~seven) & (~ten) & (~twelve) & (~lp) & (ccd >= 0.5)
+    other = ~(box_multi | seven | ten | twelve | lp | cd)
+    return {
+        "box_multi": box_multi,
+        "seven": seven,
+        "ten": ten,
+        "twelve": twelve,
+        "lp": lp,
+        "cd": cd,
+        "other": other,
+    }
+
+
+def median_ape_quartile_format_slice_table(
+    y_true_log1p: np.ndarray,
+    pred_log1p: np.ndarray,
+    X: np.ndarray,
+    feature_columns: list[str],
+    *,
+    price_floor: float = 1.0,
+    n_quartiles: int = 4,
+    min_count: int = 15,
+) -> list[dict[str, Any]]:
+    """
+    Median APE for each (true-dollar quartile × mutually exclusive format bucket).
+
+    Quartiles match ``median_ape_dollar_quartiles`` (Q1 = cheapest true ``y``).
+    """
+    yt, yp = _dollars_from_log1p(y_true_log1p, pred_log1p)
+    floor = max(float(price_floor), 1e-9)
+    den = np.maximum(yt, floor)
+    ape = np.abs(yp - yt) / den
+    n_bins = int(n_quartiles)
+    qs = np.linspace(0.0, 1.0, n_bins + 1)
+    edges = np.quantile(yt, qs)
+    q_masks: list[np.ndarray] = []
+    for i in range(n_bins):
+        lo, hi = float(edges[i]), float(edges[i + 1])
+        if i == n_bins - 1:
+            q_masks.append((yt >= lo) & (yt <= hi))
+        else:
+            q_masks.append((yt >= lo) & (yt < hi))
+
+    buckets = mutually_exclusive_format_bucket_masks(X, feature_columns)
+    order = ("box_multi", "seven", "ten", "twelve", "lp", "cd", "other")
+    out: list[dict[str, Any]] = []
+    for qi, qm in enumerate(q_masks):
+        for name in order:
+            bm = buckets[name]
+            mask = qm & bm
+            cnt = int(np.sum(mask))
+            if cnt < int(min_count):
+                md = float("nan")
+            else:
+                md = float(np.median(ape[mask]))
+            out.append(
+                {
+                    "quartile": qi,
+                    "slice": name,
+                    "median_ape": md,
+                    "n_rows": cnt,
+                }
+            )
     return out
