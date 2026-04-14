@@ -96,6 +96,13 @@ htmlcov/
 # Local tooling (scrapers / helpers under repo root; not shipped)
 tools/*
 
+# Misc local / course artifacts (do not commit)
+PUSH_TO_GITHUB.md
+debug_abbrev.py
+debug_preprocessor.py
+debug_test_config.py
+DDS Group Project/
+
 # Cursor / local notes (optional)
 .notes/*
 .cursor/
