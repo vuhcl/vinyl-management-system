@@ -33,6 +33,14 @@ def test_resolve_unknown_falls_back_to_median_ape() -> None:
     )
 
 
+def test_resolve_composite_maps_to_mdape_placeholder() -> None:
+    """``_resolve_tuning_selection_metric`` is legacy; composite uses ``parse_selection_objective``."""
+    assert _resolve_tuning_selection_metric({"selection_metric": "composite"}) == (
+        "mdape",
+        "val_median_ape_dollars",
+    )
+
+
 def test_mlflow_flags_defaults() -> None:
     on, art = _mlflow_flags({})
     assert on is True and art is True

@@ -26,6 +26,7 @@ import sys
 import traceback
 from collections import Counter, defaultdict
 from contextlib import nullcontext
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -44,13 +45,16 @@ from ..models.condition_adjustment import default_params, save_params
 from ..models.fitted_regressor import (
     TARGET_KIND_DOLLAR_LOG1P,
     TARGET_KIND_RESIDUAL_LOG_MEDIAN,
+    ensemble_blend_weight_log_anchor,
     fit_regressor,
     log1p_dollar_targets_for_metrics,
     mae_dollars,
     median_ape_dollars,
     median_ape_dollar_quartiles,
+    median_ape_quartile_format_slice_diagnostics,
     median_ape_quartile_format_slice_table,
     median_ape_train_median_baseline,
+    metrics_dollar_from_log1p_masked,
     pred_log1p_dollar_for_metrics,
     refit_champion,
     training_sample_weights_from_anchors,
@@ -63,8 +67,23 @@ from ..models.vinyliq_pyfunc import (
 )
 from ..models.xgb_vinyliq import XGBVinylIQModel
 from .label_synthesis import training_label_config_from_vinyliq
-from .sale_floor_targets import sale_floor_blend_bundle
+from .sale_floor_targets import (
+    sale_floor_blend_bundle,
+    sale_floor_blend_sf_cfg_for_policy,
+)
 from .search_space import sample_from_space
+from .vinyliq_tuning_selection import (
+    TrialRecord,
+    _resolve_single_selection_metric,
+    base_selection_score,
+    build_cv_fold_val_release_sets,
+    build_trial_record,
+    log_split_anchor_format_diagnostics,
+    parse_selection_objective,
+    parse_tuning_constraints,
+    pick_champion_trial,
+    row_masks_from_release_sets,
+)
 
 
 def training_target_kind_from_vinyliq(v: dict | None) -> str:
@@ -235,6 +254,197 @@ def _default_cold_start_flags(mx: dict[str, Any]) -> dict[str, float]:
     return {"has_sale_history": 0.0, "s_imputed": 0.0, "has_listing_floor": has_lf}
 
 
+@dataclass(frozen=True)
+class TrainingFrameLoad:
+    """Rows, targets, and dual-policy sale-history flags from ``load_training_frame``.
+
+    ``yvals_nm`` / ``yvals_ord`` may be NaN when that policy does not produce a dollar label;
+    ensemble training fits each head only on finite targets, then both heads predict on every row
+    (same as production pyfunc).
+    """
+
+    xrows: list[dict]
+    yvals: list[float]
+    rids: list[str]
+    catalog_encoders: dict[str, dict[str, float]]
+    median_anchors: list[float]
+    has_nm_comp_sale: list[float]
+    has_ord_comp_sale: list[float]
+    yvals_nm: list[float]
+    yvals_ord: list[float]
+
+
+def _stored_target_from_dollar_label(
+    y_dollar: float | None,
+    m_anchor: float | None,
+    *,
+    training_target_kind: str,
+    residual_z_clip_abs: float | None,
+) -> float:
+    if y_dollar is None or m_anchor is None:
+        return float("nan")
+    try:
+        yf = float(y_dollar)
+        mf = float(m_anchor)
+    except (TypeError, ValueError):
+        return float("nan")
+    if yf <= 0 or mf <= 0:
+        return float("nan")
+    if training_target_kind == TARGET_KIND_RESIDUAL_LOG_MEDIAN:
+        z = float(np.log1p(yf) - np.log1p(mf))
+        if residual_z_clip_abs is not None and residual_z_clip_abs > 0:
+            z = float(np.clip(z, -residual_z_clip_abs, residual_z_clip_abs))
+        return z
+    return float(np.log1p(yf))
+
+
+def _blend_sweep_pairs_from_ensemble_dict(
+    raw: dict[str, Any],
+    *,
+    default_t: float,
+    default_s: float,
+) -> list[tuple[float, float]] | None:
+    """
+    Optional Cartesian grid or explicit ``pairs`` for post-hoc val selection of ``(t, s)``.
+
+    Returns ``None`` when sweep is disabled; otherwise a non-empty list of ``(t, s)`` pairs.
+    """
+    sw = raw.get("blend_sweep")
+    if not isinstance(sw, dict) or not sw.get("enabled", False):
+        return None
+    if "pairs" in sw:
+        expl = sw.get("pairs")
+        if not isinstance(expl, list):
+            raise ValueError("ensemble.blend_sweep.pairs must be a list")
+        if not expl:
+            raise ValueError("ensemble.blend_sweep.pairs is empty")
+        out: list[tuple[float, float]] = []
+        for row in expl:
+            if isinstance(row, (list, tuple)) and len(row) >= 2:
+                out.append((float(row[0]), float(row[1])))
+        if not out:
+            raise ValueError("ensemble.blend_sweep.pairs has no valid [t, s] rows")
+        return out
+    ts = sw.get("t")
+    ss = sw.get("s")
+    if isinstance(ts, (list, tuple)) and isinstance(ss, (list, tuple)):
+        if not ts or not ss:
+            return [(default_t, default_s)]
+        return [(float(t), float(s)) for t in ts for s in ss]
+    return [(default_t, default_s)]
+
+
+def ensemble_blend_config_from_vinyliq(v: dict[str, Any] | None) -> dict[str, Any] | None:
+    raw = (v or {}).get("ensemble")
+    if not isinstance(raw, dict) or not raw.get("enabled", False):
+        return None
+    blend = raw.get("blend") or {}
+    kind = str(blend.get("kind", "log_anchor_sigmoid")).strip().lower()
+    if kind != "log_anchor_sigmoid":
+        raise ValueError(
+            f"Unsupported vinyliq.ensemble.blend.kind {kind!r} (only log_anchor_sigmoid)"
+        )
+    dt = float(blend.get("t", 4.0))
+    ds = float(blend.get("s", 0.35))
+    sweep_pairs = _blend_sweep_pairs_from_ensemble_dict(
+        raw, default_t=dt, default_s=ds
+    )
+    return {
+        "kind": kind,
+        "t": dt,
+        "s": ds,
+        "share_hparams": bool(raw.get("share_hparams", True)),
+        "blend_sweep_pairs": sweep_pairs,
+    }
+
+
+def _log_slice_metrics_block(
+    *,
+    split_label: str,
+    y_lp: np.ndarray,
+    pred_lp: np.ndarray,
+    mask_nm: np.ndarray,
+    mask_cold: np.ndarray,
+    mask_ord: np.ndarray,
+    mflow_on: bool,
+    mlflow: Any,
+    min_count: int = 15,
+) -> None:
+    """NM-comps, cold-start (no NM comps), and ordinal-comps slices in log1p-dollar space."""
+    for name, mask in (
+        ("nm_comps", mask_nm),
+        ("cold_start_no_nm_comps", mask_cold),
+        ("ordinal_comps", mask_ord),
+    ):
+        mae_s, wape_s, mdape_s = metrics_dollar_from_log1p_masked(
+            y_lp, pred_lp, mask, min_count=min_count
+        )
+        n_m = int(np.sum(mask & np.isfinite(y_lp) & np.isfinite(pred_lp)))
+        if math.isnan(mdape_s):
+            print(
+                f"  {split_label} {name}: n<{min_count} (n={n_m}) — MdAPE skipped",
+            )
+        else:
+            print(
+                f"  {split_label} {name}: MAE ${mae_s:.4f} | "
+                f"WAPE {100.0 * wape_s:.2f}% | median APE {100.0 * mdape_s:.2f}% "
+                f"(n={n_m})",
+            )
+        if mflow_on:
+            mlflow.log_metric(f"{split_label}_{name}_n_rows", float(n_m))
+            if not math.isnan(mae_s):
+                mlflow.log_metric(f"{split_label}_{name}_mae_dollars_approx", mae_s)
+            if not math.isnan(wape_s):
+                mlflow.log_metric(f"{split_label}_{name}_wape_dollars", wape_s)
+            if not math.isnan(mdape_s):
+                mlflow.log_metric(f"{split_label}_{name}_median_ape_dollars", mdape_s)
+
+
+def _save_ensemble_manifest_and_estimators(
+    model_dir: Path,
+    *,
+    backend: str,
+    target_kind: str,
+    target_was_log1p: bool,
+    feature_columns: list[str],
+    champ_nm: Any,
+    champ_ord: Any,
+    blend_t: float,
+    blend_s: float,
+) -> None:
+    """Write schema_version 3 manifest + per-head estimator joblibs for pyfunc."""
+    import joblib
+
+    model_dir.mkdir(parents=True, exist_ok=True)
+    nm_path = "regressor_ensemble_nm.joblib"
+    ord_path = "regressor_ensemble_ord.joblib"
+    joblib.dump(champ_nm.estimator, model_dir / nm_path)
+    joblib.dump(champ_ord.estimator, model_dir / ord_path)
+    # Legacy artifact name (ordinal head); unused by ensemble pyfunc but keeps layouts consistent.
+    joblib.dump(champ_ord.estimator, model_dir / "regressor.joblib")
+    joblib.dump(feature_columns, model_dir / "feature_columns.joblib")
+    joblib.dump(
+        target_kind == TARGET_KIND_DOLLAR_LOG1P and target_was_log1p,
+        model_dir / "target_log1p.joblib",
+    )
+    manifest = {
+        "schema_version": 3,
+        "backend": backend,
+        "target_kind": target_kind,
+        "ensemble": {
+            "enabled": True,
+            "blend": {
+                "kind": "log_anchor_sigmoid",
+                "t": float(blend_t),
+                "s": float(blend_s),
+            },
+            "regressor_nm": nm_path,
+            "regressor_ord": ord_path,
+        },
+    }
+    (model_dir / "model_manifest.json").write_text(json.dumps(manifest, indent=2))
+
+
 def _fit_frequency_capped_id_encoder(ids: list[str], max_k: int) -> dict[str, float]:
     if max_k <= 0:
         return {}
@@ -243,6 +453,28 @@ def _fit_frequency_capped_id_encoder(ids: list[str], max_k: int) -> dict[str, fl
         return {}
     top = [pid for pid, _ in c.most_common(max_k)]
     return {pid: float(i + 1) for i, pid in enumerate(top)}
+
+
+def _catalog_encoders_from_saved_bundle(
+    saved: dict[str, Any],
+) -> dict[str, dict[str, float]]:
+    """
+    Rebuild the in-memory ``catalog_encoders`` dict from ``catalog_encoders.json`` in a model dir.
+
+    Ensures the four feature maps exist and values are float; copies ``_id_encoder_meta`` when
+    present so diagnostics match training.
+    """
+    out: dict[str, Any] = {}
+    for key in ("genre", "country", "primary_artist_id", "primary_label_id"):
+        raw = saved.get(key)
+        if isinstance(raw, dict):
+            out[key] = {str(kk): float(vv) for kk, vv in raw.items()}
+        else:
+            out[key] = {}
+    meta = saved.get("_id_encoder_meta")
+    if isinstance(meta, dict):
+        out["_id_encoder_meta"] = {str(k): float(v) for k, v in meta.items()}
+    return out  # type: ignore[return-value]
 
 
 def load_training_frame(
@@ -255,13 +487,8 @@ def load_training_frame(
     training_target_kind: str = TARGET_KIND_RESIDUAL_LOG_MEDIAN,
     residual_z_clip_abs: float | None = None,
     sale_history_db: Path | None = None,
-) -> tuple[
-    list[dict],
-    list[float],
-    list[str],
-    dict[str, dict[str, float]],
-    list[float],
-]:
+    catalog_encoders_override: dict[str, Any] | None = None,
+) -> TrainingFrameLoad:
     tl = training_label or training_label_config_from_vinyliq({})
     mode_l = str(tl.get("mode", "sale_floor_blend")).strip().lower()
     if mode_l not in ("sale_floor_blend", "sale_floor"):
@@ -322,10 +549,21 @@ def load_training_frame(
 
     labels: dict[str, float] = {}
     medians: dict[str, float] = {}
+    labels_nm: dict[str, float] = {}
+    medians_nm: dict[str, float] = {}
+    labels_ord: dict[str, float] = {}
+    medians_ord: dict[str, float] = {}
+    has_nm_sale_by_rid: dict[str, float] = {}
+    has_ord_sale_by_rid: dict[str, float] = {}
     marketplace_extra: dict[str, dict[str, Any]] = {}
     row_cold_flags: dict[str, dict[str, float]] = {}
     ps_grade = str(tl.get("price_suggestion_grade") or "Near Mint (NM or M-)").strip()
     sf_cfg = tl.get("sale_floor_blend") if isinstance(tl.get("sale_floor_blend"), dict) else {}
+    sf_nm = sale_floor_blend_sf_cfg_for_policy(sf_cfg, "nm_substrings_only")
+    sf_ord = sale_floor_blend_sf_cfg_for_policy(sf_cfg, "ordinal_cascade")
+    primary_pol = str(sf_cfg.get("sale_condition_policy", "nm_substrings_only")).strip().lower()
+    if primary_pol not in ("nm_substrings_only", "ordinal_cascade"):
+        primary_pol = "nm_substrings_only"
 
     for rid, rd in by_rid.items():
         yr_raw = year_by_rid.get(rid)
@@ -336,23 +574,57 @@ def load_training_frame(
             release_year = None
         if release_year is not None and not math.isfinite(release_year):
             release_year = None
-        y, m_anchor, flags = sale_floor_blend_bundle(
-            dict(rd),
-            sales_by_rid.get(rid, []),
-            fetch_by_rid.get(rid),
-            sf_cfg=sf_cfg,
+        rd_d = dict(rd)
+        sales = sales_by_rid.get(rid, [])
+        fetch = fetch_by_rid.get(rid)
+        out_nm = sale_floor_blend_bundle(
+            rd_d,
+            sales,
+            fetch,
+            sf_cfg=sf_nm,
             nm_grade_key=ps_grade,
             release_year=release_year,
         )
-        if flags:
-            row_cold_flags[rid] = flags
-        if y is not None and y > 0:
-            m_use = (
-                float(m_anchor)
-                if m_anchor is not None and float(m_anchor) > 0
-                else float(y)
+        out_ord = sale_floor_blend_bundle(
+            rd_d,
+            sales,
+            fetch,
+            sf_cfg=sf_ord,
+            nm_grade_key=ps_grade,
+            release_year=release_year,
+        )
+        yn, mn, fn = out_nm
+        yo, mo, fo = out_ord
+        has_nm_sale_by_rid[rid] = float(fn.get("has_sale_history", 0.0))
+        has_ord_sale_by_rid[rid] = float(fo.get("has_sale_history", 0.0))
+
+        if yn is not None and yn > 0:
+            mnu = (
+                float(mn)
+                if mn is not None and float(mn) > 0
+                else float(yn)
             )
-            labels[rid] = float(y)
+            labels_nm[rid] = float(yn)
+            medians_nm[rid] = mnu
+        if yo is not None and yo > 0:
+            mou = (
+                float(mo)
+                if mo is not None and float(mo) > 0
+                else float(yo)
+            )
+            labels_ord[rid] = float(yo)
+            medians_ord[rid] = mou
+
+        y_p, m_p, flags_p = out_ord if primary_pol == "ordinal_cascade" else out_nm
+        if flags_p:
+            row_cold_flags[rid] = flags_p
+        if y_p is not None and y_p > 0:
+            m_use = (
+                float(m_p)
+                if m_p is not None and float(m_p) > 0
+                else float(y_p)
+            )
+            labels[rid] = float(y_p)
             medians[rid] = m_use
             marketplace_extra[rid] = {
                 "community_want": rd.get("community_want"),
@@ -389,38 +661,42 @@ def load_training_frame(
     n_art_u = len({x for x in artist_ids_per_row if x})
     n_lbl_u = len({x for x in label_ids_per_row if x})
     n_lab = len(labeled)
-    if max_primary_artist_ids is not None:
-        ka = max(0, int(max_primary_artist_ids))
-    else:
-        ka = _auto_top_k_id_encoder(n_lab, n_art_u)
-    if max_primary_label_ids is not None:
-        kl = max(0, int(max_primary_label_ids))
-    else:
-        kl = _auto_top_k_id_encoder(n_lab, n_lbl_u)
 
-    genres_set: set[str] = set()
-    countries_set: set[str] = set()
-    for r in labeled:
-        g = str(r.get("genre") or "").strip().lower()
-        if g:
-            genres_set.add(g)
-        c = str(r.get("country") or "").strip().lower()
-        if c:
-            countries_set.add(c)
+    if catalog_encoders_override is not None:
+        catalog_encoders = _catalog_encoders_from_saved_bundle(catalog_encoders_override)
+    else:
+        if max_primary_artist_ids is not None:
+            ka = max(0, int(max_primary_artist_ids))
+        else:
+            ka = _auto_top_k_id_encoder(n_lab, n_art_u)
+        if max_primary_label_ids is not None:
+            kl = max(0, int(max_primary_label_ids))
+        else:
+            kl = _auto_top_k_id_encoder(n_lab, n_lbl_u)
 
-    catalog_encoders: dict[str, dict[str, float]] = {
-        "genre": {g: float(i) for i, g in enumerate(sorted(genres_set))},
-        "country": {c: float(i) for i, c in enumerate(sorted(countries_set))},
-        "primary_artist_id": _fit_frequency_capped_id_encoder(artist_ids_per_row, ka),
-        "primary_label_id": _fit_frequency_capped_id_encoder(label_ids_per_row, kl),
-    }
-    catalog_encoders["_id_encoder_meta"] = {
-        "n_labeled_rows": float(n_lab),
-        "primary_artist_id_unique": float(n_art_u),
-        "primary_label_id_unique": float(n_lbl_u),
-        "primary_artist_id_cap": float(ka),
-        "primary_label_id_cap": float(kl),
-    }
+        genres_set: set[str] = set()
+        countries_set: set[str] = set()
+        for r in labeled:
+            g = str(r.get("genre") or "").strip().lower()
+            if g:
+                genres_set.add(g)
+            c = str(r.get("country") or "").strip().lower()
+            if c:
+                countries_set.add(c)
+
+        catalog_encoders = {
+            "genre": {g: float(i) for i, g in enumerate(sorted(genres_set))},
+            "country": {c: float(i) for i, c in enumerate(sorted(countries_set))},
+            "primary_artist_id": _fit_frequency_capped_id_encoder(artist_ids_per_row, ka),
+            "primary_label_id": _fit_frequency_capped_id_encoder(label_ids_per_row, kl),
+        }
+        catalog_encoders["_id_encoder_meta"] = {
+            "n_labeled_rows": float(n_lab),
+            "primary_artist_id_unique": float(n_art_u),
+            "primary_label_id_unique": float(n_lbl_u),
+            "primary_artist_id_cap": float(ka),
+            "primary_label_id_cap": float(kl),
+        }
     g2i = catalog_encoders["genre"]
     c2i = catalog_encoders["country"]
     a2i = catalog_encoders["primary_artist_id"]
@@ -431,6 +707,10 @@ def load_training_frame(
     yvals: list[float] = []
     rids: list[str] = []
     median_anchors: list[float] = []
+    has_nm_comp_sale: list[float] = []
+    has_ord_comp_sale: list[float] = []
+    yvals_nm: list[float] = []
+    yvals_ord: list[float] = []
     for r in labeled:
         rid = str(r.get("release_id", ""))
         y_dollar = labels[rid]
@@ -474,8 +754,34 @@ def load_training_frame(
             yvals.append(float(np.log1p(y_dollar)))
         median_anchors.append(float(mp))
         rids.append(rid)
+        has_nm_comp_sale.append(has_nm_sale_by_rid.get(rid, 0.0))
+        has_ord_comp_sale.append(has_ord_sale_by_rid.get(rid, 0.0))
+        y_nm = _stored_target_from_dollar_label(
+            labels_nm.get(rid),
+            medians_nm.get(rid),
+            training_target_kind=training_target_kind,
+            residual_z_clip_abs=residual_z_clip_abs,
+        )
+        y_ord = _stored_target_from_dollar_label(
+            labels_ord.get(rid),
+            medians_ord.get(rid),
+            training_target_kind=training_target_kind,
+            residual_z_clip_abs=residual_z_clip_abs,
+        )
+        yvals_nm.append(y_nm)
+        yvals_ord.append(y_ord)
 
-    return Xrows, yvals, rids, catalog_encoders, median_anchors
+    return TrainingFrameLoad(
+        xrows=Xrows,
+        yvals=yvals,
+        rids=rids,
+        catalog_encoders=catalog_encoders,
+        median_anchors=median_anchors,
+        has_nm_comp_sale=has_nm_comp_sale,
+        has_ord_comp_sale=has_ord_comp_sale,
+        yvals_nm=yvals_nm,
+        yvals_ord=yvals_ord,
+    )
 
 
 def report_residual_target_sanity(
@@ -582,23 +888,14 @@ def _resolve_tuning_selection_metric(
     tuning: dict | None,
 ) -> tuple[str, str]:
     """
-    How to pick the champion trial (all metrics minimized).
+    Legacy single-metric resolution (``composite`` falls back to MdAPE here).
 
-    Returns ``(score_field, mlflow_name)`` where ``score_field`` is one of
-    ``mae``, ``wape``, ``mdape`` mapping to validation metrics on the trial.
+    Prefer ``parse_selection_objective`` for full tuning behavior.
     """
     raw = str((tuning or {}).get("selection_metric", "median_ape")).strip().lower()
-    aliases: dict[str, tuple[str, str]] = {
-        "median_ape": ("mdape", "val_median_ape_dollars"),
-        "mdape": ("mdape", "val_median_ape_dollars"),
-        "val_median_ape_dollars": ("mdape", "val_median_ape_dollars"),
-        "wape": ("wape", "val_wape_dollars"),
-        "val_wape_dollars": ("wape", "val_wape_dollars"),
-        "mae_dollars": ("mae", "val_mae_dollars_approx"),
-        "mae": ("mae", "val_mae_dollars_approx"),
-        "val_mae_dollars_approx": ("mae", "val_mae_dollars_approx"),
-    }
-    return aliases.get(raw, ("mdape", "val_median_ape_dollars"))
+    if raw == "composite":
+        return ("mdape", "val_median_ape_dollars")
+    return _resolve_single_selection_metric(tuning)
 
 
 def _enabled_families(v: dict) -> list[str]:
@@ -618,6 +915,46 @@ def _enabled_families(v: dict) -> list[str]:
     return out
 
 
+def _slice_metric_debug_enabled() -> bool:
+    return os.environ.get("VINYLIQ_SLICE_METRIC_DEBUG", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+
+
+def _log_quartile_format_slice_diagnostics(
+    split_label: str,
+    y_lp: np.ndarray,
+    pred_lp: np.ndarray,
+    X_sub: np.ndarray,
+    cols: list[str],
+) -> None:
+    """Stderr table: median / mean / p90 / max APE when ``VINYLIQ_SLICE_METRIC_DEBUG`` is set."""
+    rows = median_ape_quartile_format_slice_diagnostics(
+        y_lp, pred_lp, X_sub, cols, min_count=15
+    )
+    print(
+        f"[VINYLIQ_SLICE_METRIC_DEBUG] {split_label}: quartile×format "
+        "(MdAPE / mean / p90 / max as % of true $)",
+        file=sys.stderr,
+    )
+    for r in rows:
+        md, mn, p9, mx = (
+            r["median_ape"],
+            r["mean_ape"],
+            r["p90_ape"],
+            r["max_ape"],
+        )
+        print(
+            f"  Q{r['quartile'] + 1} {r['slice']:9s} n={r['n_rows']:<5d} "
+            f"md={100.0 * md:7.4f}% mean={100.0 * mn:7.4f}% "
+            f"p90={100.0 * p9:7.4f}% max={100.0 * mx:7.4f}%",
+            file=sys.stderr,
+        )
+
+
 def _run_tuning(
     cfg: dict,
     root: Path,
@@ -631,6 +968,11 @@ def _run_tuning(
     training_label_cfg: dict[str, object],
     *,
     target_kind: str,
+    has_nm_comp_sale: np.ndarray,
+    has_ord_comp_sale: np.ndarray,
+    y_nm: np.ndarray,
+    y_ord: np.ndarray,
+    ensemble_cfg: dict[str, Any] | None,
 ) -> int:
     v = cfg.get("vinyliq") or {}
     tuning = v.get("tuning") or {}
@@ -669,22 +1011,53 @@ def _run_tuning(
     med_test = med[test_mask]
     med_tr_full = med[train_mask]
 
+    h_nm = np.asarray(has_nm_comp_sale, dtype=np.float64).ravel()
+    h_ord = np.asarray(has_ord_comp_sale, dtype=np.float64).ravel()
+    y_nm_all = np.asarray(y_nm, dtype=np.float64).ravel()
+    y_ord_all = np.asarray(y_ord, dtype=np.float64).ravel()
+    if not (len(h_nm) == len(rids) == len(h_ord) == len(y_nm_all) == len(y_ord_all)):
+        raise ValueError("Per-row policy arrays must align with rids")
+
+    cons = parse_tuning_constraints(tuning)
+    sel_obj = parse_selection_objective(tuning)
+    sel_mlflow = sel_obj.mlflow_name
+    cv_folds_cfg = int(tuning.get("cv_folds", 5))
+    cv_agg = str(tuning.get("cv_agg", "mean")).strip().lower()
+    if cv_agg not in ("mean", "max"):
+        cv_agg = "mean"
+    cv_strat_raw = tuning.get("cv_stratify")
+    cv_stratify = (
+        "anchor_quartile"
+        if str(cv_strat_raw).strip().lower() == "anchor_quartile"
+        else None
+    )
+    use_cv = cv_folds_cfg > 1 and len(train_r) >= 2
+    if use_cv:
+        eff_kv = min(cv_folds_cfg, len(train_r))
+        fold_val_sets = build_cv_fold_val_release_sets(
+            train_r,
+            rids,
+            med,
+            eff_kv,
+            int(seed) + 2,
+            stratify=cv_stratify,  # type: ignore[arg-type]
+        )
+        cv_folds_effective = len(fold_val_sets)
+    else:
+        fold_val_sets = []
+        cv_folds_effective = 1
+
+    log_split_anchor_format_diagnostics(
+        train_mask, test_mask, med, X_all, cols
+    )
+
     spaces = v.get("search_spaces") or {}
     families = _enabled_families(v)
-    sel_field, sel_mlflow = _resolve_tuning_selection_metric(tuning)
     sw_mode = _tuning_sample_weight_mode(v)
     sw_tt = training_sample_weights_from_anchors(med_tt, sw_mode)
     sw_full = training_sample_weights_from_anchors(med_tr_full, sw_mode)
 
-    best: dict[str, object] = {
-        "selection_score": float("inf"),
-        "val_mae": float("nan"),
-        "val_wape": float("nan"),
-        "val_mdape": float("nan"),
-        "family": "",
-        "params": {},
-        "best_iteration": None,
-    }
+    trial_records: list[TrialRecord] = []
 
     mlflow_cfg = cfg.get("mlflow") or {}
     mflow_on, mflow_art = _mlflow_flags(cfg)
@@ -716,6 +1089,23 @@ def _run_tuning(
             mlflow.log_param("n_tune_train", int((tune_train_mask & train_mask).sum()))
             mlflow.log_param("n_tune_val", int((val_mask & train_mask).sum()))
             mlflow.log_param("tuning_selection_metric", sel_mlflow)
+            mlflow.log_param("tuning_selection_metric_raw", str(tuning.get("selection_metric", "")))
+            mlflow.log_param("cv_folds_configured", str(cv_folds_cfg))
+            mlflow.log_param("cv_folds_effective", str(cv_folds_effective))
+            mlflow.log_param("cv_use_release_cv", str(use_cv))
+            mlflow.log_param("cv_agg", cv_agg)
+            mlflow.log_param("cv_stratify", str(cv_stratify or "random_shuffle"))
+            if ensemble_cfg:
+                mlflow.log_param("ensemble_enabled", "true")
+                mlflow.log_param("ensemble_blend_t", str(ensemble_cfg["t"]))
+                mlflow.log_param("ensemble_blend_s", str(ensemble_cfg["s"]))
+            else:
+                mlflow.log_param("ensemble_enabled", "false")
+            mlflow.log_param("constraints_enabled", str(cons.enabled))
+            if cons.enabled:
+                mlflow.log_param("constraints_mdape_max", str(cons.mdape_max))
+                mlflow.log_param("constraints_wape_max", str(cons.wape_max))
+                mlflow.log_param("constraints_violation_fallback", cons.violation_fallback)
             if sw_mode:
                 mlflow.log_param("tuning_sample_weight", sw_mode)
             if not mflow_art:
@@ -765,47 +1155,124 @@ def _run_tuning(
                         for pk, pv in params.items():
                             mlflow.log_param(f"hparam_{pk}", str(pv))
                     try:
-                        reg, meta = fit_regressor(
-                            family,
-                            params,
-                            X_tt,
-                            y_tt,
-                            cols,
-                            X_val=X_v,
-                            y_val=y_v,
-                            early_stopping_rounds=es_int,
-                            random_state=seed,
-                            target_kind=target_kind,
-                            sample_weight=sw_tt,
+                        mdapes: list[float] = []
+                        maes: list[float] = []
+                        wapes: list[float] = []
+                        best_iters: list[int | None] = []
+                        if use_cv:
+                            for val_rel in fold_val_sets:
+                                tt_m, va_m = row_masks_from_release_sets(
+                                    rids, train_r, val_rel
+                                )
+                                X_tt_f = X_all[tt_m]
+                                y_tt_f = y_all[tt_m]
+                                X_v_f = X_all[va_m]
+                                y_v_f = y_all[va_m]
+                                if X_tt_f.shape[0] < 5 or X_v_f.shape[0] < 1:
+                                    continue
+                                m_tt_f = med[tt_m]
+                                m_v_f = med[va_m]
+                                sw_f = training_sample_weights_from_anchors(
+                                    m_tt_f, sw_mode
+                                )
+                                reg, meta = fit_regressor(
+                                    family,
+                                    params,
+                                    X_tt_f,
+                                    y_tt_f,
+                                    cols,
+                                    X_val=X_v_f,
+                                    y_val=y_v_f,
+                                    early_stopping_rounds=es_int,
+                                    random_state=seed,
+                                    target_kind=target_kind,
+                                    sample_weight=sw_f,
+                                )
+                                pred_vf = reg.predict_log1p(X_v_f)
+                                y_v_lp_m = log1p_dollar_targets_for_metrics(
+                                    y_v_f, m_v_f, target_kind
+                                )
+                                pred_v_lp = pred_log1p_dollar_for_metrics(
+                                    pred_vf, m_v_f, target_kind
+                                )
+                                mdapes.append(
+                                    median_ape_dollars(y_v_lp_m, pred_v_lp)
+                                )
+                                maes.append(mae_dollars(y_v_lp_m, pred_v_lp))
+                                wapes.append(wape_dollars(y_v_lp_m, pred_v_lp))
+                                best_iters.append(meta.get("best_iteration"))
+                            if not mdapes:
+                                raise RuntimeError("no valid CV folds for trial")
+                        else:
+                            reg, meta = fit_regressor(
+                                family,
+                                params,
+                                X_tt,
+                                y_tt,
+                                cols,
+                                X_val=X_v,
+                                y_val=y_v,
+                                early_stopping_rounds=es_int,
+                                random_state=seed,
+                                target_kind=target_kind,
+                                sample_weight=sw_tt,
+                            )
+                            pred_v = reg.predict_log1p(X_v)
+                            y_v_lp_m = log1p_dollar_targets_for_metrics(
+                                y_v, med_v, target_kind
+                            )
+                            pred_v_lp = pred_log1p_dollar_for_metrics(
+                                pred_v, med_v, target_kind
+                            )
+                            mdapes.append(
+                                median_ape_dollars(y_v_lp_m, pred_v_lp)
+                            )
+                            maes.append(mae_dollars(y_v_lp_m, pred_v_lp))
+                            wapes.append(wape_dollars(y_v_lp_m, pred_v_lp))
+                            best_iters.append(meta.get("best_iteration"))
+
+                        rec = build_trial_record(
+                            family=family,
+                            params=dict(params),
+                            mdapes=mdapes,
+                            maes=maes,
+                            wapes=wapes,
+                            best_iters=best_iters,
+                            cv_agg=cv_agg,  # type: ignore[arg-type]
+                            cons=cons,
+                            sel_obj=sel_obj,
+                            cv_folds_used=len(mdapes),
                         )
-                        pred_v = reg.predict_log1p(X_v)
-                        # Reconstruct log1p(dollar) before $ metrics (residual: pred_z+log1p(median)).
-                        y_v_lp_m = log1p_dollar_targets_for_metrics(y_v, med_v, target_kind)
-                        pred_v_lp = pred_log1p_dollar_for_metrics(pred_v, med_v, target_kind)
-                        val_mae = mae_dollars(y_v_lp_m, pred_v_lp)
-                        val_wape = wape_dollars(y_v_lp_m, pred_v_lp)
-                        val_mdape = median_ape_dollars(y_v_lp_m, pred_v_lp)
+                        if rec is None:
+                            raise RuntimeError("CV metrics non-finite")
                         if mflow_on:
-                            mlflow.log_metric("val_mae_dollars_approx", val_mae)
-                            mlflow.log_metric("val_wape_dollars", val_wape)
-                            mlflow.log_metric("val_median_ape_dollars", val_mdape)
-                        bi = meta.get("best_iteration")
-                        if mflow_on and bi is not None:
-                            mlflow.log_metric("best_iteration", float(bi))
-                        scores = {"mae": val_mae, "wape": val_wape, "mdape": val_mdape}
-                        trial_score = float(scores[sel_field])
-                        if math.isnan(trial_score):
-                            trial_score = float("inf")
-                        if trial_score < float(best["selection_score"]):
-                            best = {
-                                "selection_score": trial_score,
-                                "val_mae": val_mae,
-                                "val_wape": val_wape,
-                                "val_mdape": val_mdape,
-                                "family": family,
-                                "params": dict(params),
-                                "best_iteration": meta.get("best_iteration"),
-                            }
+                            mlflow.log_metric(
+                                "val_mae_dollars_approx", rec.val_mae
+                            )
+                            mlflow.log_metric("val_wape_dollars", rec.val_wape)
+                            mlflow.log_metric(
+                                "val_median_ape_dollars", rec.val_mdape
+                            )
+                            mlflow.log_metric(
+                                "val_base_objective", rec.base_score
+                            )
+                            mlflow.log_metric(
+                                "trial_feasible", 1.0 if rec.feasible else 0.0
+                            )
+                            mlflow.log_metric(
+                                "trial_violation_slack", rec.slack
+                            )
+                            mlflow.log_metric(
+                                "trial_penalty_objective", rec.pen_score
+                            )
+                            mlflow.log_metric(
+                                "tuning_cv_folds_per_trial", float(rec.cv_folds_used)
+                            )
+                            if rec.best_iteration is not None:
+                                mlflow.log_metric(
+                                    "best_iteration", float(rec.best_iteration)
+                                )
+                        trial_records.append(rec)
                     except Exception as e:
                         if mflow_on:
                             mlflow.set_tag("trial_status", "failed")
@@ -813,16 +1280,42 @@ def _run_tuning(
                         print(f"Trial {run_name} failed: {e}", file=sys.stderr)
                         traceback.print_exc()
 
-        if not best["family"]:
+        if not trial_records:
             print("No successful tuning trials; aborting.", file=sys.stderr)
             return 1
 
+        best_rec, pick_reason = pick_champion_trial(trial_records, cons)
+        if best_rec is None:
+            print(
+                "Constraint violation_fallback=abort and no feasible trials "
+                "(or no trials). Aborting.",
+                file=sys.stderr,
+            )
+            return 1
+
+        best: dict[str, object] = {
+            "selection_score": best_rec.base_score,
+            "val_mae": best_rec.val_mae,
+            "val_wape": best_rec.val_wape,
+            "val_mdape": best_rec.val_mdape,
+            "family": best_rec.family,
+            "params": best_rec.params,
+            "best_iteration": best_rec.best_iteration,
+            "_pick_reason": pick_reason,
+        }
+
+        cv_note = (
+            f"cv_folds={best_rec.cv_folds_used} agg={cv_agg}"
+            if use_cv
+            else "cv_folds=1 (inner split)"
+        )
         print(
             "Tuning champion: "
             f"{sel_mlflow}={float(best['selection_score']):.6f} "
             f"| val MAE $ {float(best['val_mae']):.4f} "
             f"| val WAPE {100.0 * float(best['val_wape']):.2f}% "
-            f"| val median APE {100.0 * float(best['val_mdape']):.2f}%"
+            f"| val median APE {100.0 * float(best['val_mdape']):.2f}% "
+            f"| pick={pick_reason} | {cv_note}"
         )
 
         champion_family = str(best["family"])
@@ -839,6 +1332,9 @@ def _run_tuning(
             if mflow_on:
                 mlflow.log_param("model_family", champion_family)
                 mlflow.log_param("selection_metric", sel_mlflow)
+                mlflow.set_tag(
+                    "champion_pick_reason", str(best.get("_pick_reason", ""))
+                )
                 mlflow.log_metric("best_selection_score", float(best["selection_score"]))
                 for name, key in (
                     ("best_val_mae_dollars_approx", "val_mae"),
@@ -851,28 +1347,195 @@ def _run_tuning(
                 for pk, pv in champion_params.items():
                     mlflow.log_param(f"champion_hparam_{pk}", str(pv))
 
-            champ = refit_champion(
-                champion_family,
-                champion_params,
-                X_tr_full,
-                y_tr_full,
-                cols,
-                best_iteration=champion_bi if isinstance(champion_bi, int) else None,
-                random_state=seed,
-                target_kind=target_kind,
-                sample_weight=sw_full,
-            )
-            pred_v = champ.predict_log1p(X_v)
-            pred_test = champ.predict_log1p(X_test)
+            if ensemble_cfg:
+                blend_t = float(ensemble_cfg["t"])
+                blend_s = float(ensemble_cfg["s"])
+                y_nm_tr = y_nm_all[train_mask]
+                y_ord_tr = y_ord_all[train_mask]
+                m_nm_tr = np.isfinite(y_nm_tr)
+                m_ord_tr = np.isfinite(y_ord_tr)
+                n_nm_fit = int(np.sum(m_nm_tr))
+                n_ord_fit = int(np.sum(m_ord_tr))
+                if n_nm_fit < 20 or n_ord_fit < 20:
+                    print(
+                        "Ensemble: need >=20 outer-train rows per head with a valid "
+                        f"policy label (NM={n_nm_fit}, Ord={n_ord_fit}).",
+                        file=sys.stderr,
+                    )
+                    return 1
+                sw_nm = (
+                    sw_full[m_nm_tr]
+                    if sw_full is not None
+                    else None
+                )
+                sw_ord = (
+                    sw_full[m_ord_tr]
+                    if sw_full is not None
+                    else None
+                )
+                champ_nm = refit_champion(
+                    champion_family,
+                    champion_params,
+                    X_tr_full[m_nm_tr],
+                    y_nm_tr[m_nm_tr],
+                    cols,
+                    best_iteration=champion_bi if isinstance(champion_bi, int) else None,
+                    random_state=seed,
+                    target_kind=target_kind,
+                    sample_weight=sw_nm,
+                )
+                champ_ord = refit_champion(
+                    champion_family,
+                    champion_params,
+                    X_tr_full[m_ord_tr],
+                    y_ord_tr[m_ord_tr],
+                    cols,
+                    best_iteration=champion_bi if isinstance(champion_bi, int) else None,
+                    random_state=seed,
+                    target_kind=target_kind,
+                    sample_weight=sw_ord,
+                )
+                pred_v_nm = champ_nm.predict_log1p(X_v)
+                pred_v_ord = champ_ord.predict_log1p(X_v)
+                pred_test_nm = champ_nm.predict_log1p(X_test)
+                pred_test_ord = champ_ord.predict_log1p(X_test)
+                pred_v_lp_nm = pred_log1p_dollar_for_metrics(
+                    pred_v_nm, med_v, target_kind
+                )
+                pred_v_lp_ord = pred_log1p_dollar_for_metrics(
+                    pred_v_ord, med_v, target_kind
+                )
+                y_v_lp_primary = log1p_dollar_targets_for_metrics(
+                    y_v, med_v, target_kind
+                )
+                sweep_pairs = ensemble_cfg.get("blend_sweep_pairs")
+                if sweep_pairs is not None:
+                    best_sc = float("inf")
+                    best_pair: tuple[float, float] = (blend_t, blend_s)
+                    for t_try, s_try in sweep_pairs:
+                        w_try = ensemble_blend_weight_log_anchor(
+                            med_v,
+                            center_log1p=float(t_try),
+                            scale=float(s_try),
+                        )
+                        pred_try = (
+                            w_try * pred_v_lp_nm
+                            + (1.0 - w_try) * pred_v_lp_ord
+                        )
+                        mdape_v = median_ape_dollars(y_v_lp_primary, pred_try)
+                        ma = mae_dollars(y_v_lp_primary, pred_try)
+                        wa = wape_dollars(y_v_lp_primary, pred_try)
+                        sc = base_selection_score(sel_obj, mdape_v, ma, wa)
+                        if not math.isfinite(sc):
+                            continue
+                        if sc < best_sc:
+                            best_sc = sc
+                            best_pair = (float(t_try), float(s_try))
+                    if math.isfinite(best_sc):
+                        blend_t, blend_s = best_pair
+                    print(
+                        "  Ensemble blend sweep (val, "
+                        f"objective={sel_obj.mlflow_name}): best t={blend_t:g} "
+                        f"s={blend_s:g} — {len(sweep_pairs)} (t,s) grid, "
+                        f"n_val={len(y_v)}"
+                    )
+                    if mflow_on:
+                        mlflow.log_param("ensemble_blend_selected_t", str(blend_t))
+                        mlflow.log_param("ensemble_blend_selected_s", str(blend_s))
+                        if math.isfinite(best_sc):
+                            mlflow.log_metric(
+                                "ensemble_blend_sweep_val_selection_score",
+                                float(best_sc),
+                            )
+                w_v = ensemble_blend_weight_log_anchor(
+                    med_v, center_log1p=blend_t, scale=blend_s
+                )
+                pred_v_lp = w_v * pred_v_lp_nm + (1.0 - w_v) * pred_v_lp_ord
+
+                pred_test_lp_nm = pred_log1p_dollar_for_metrics(
+                    pred_test_nm, med_test, target_kind
+                )
+                pred_test_lp_ord = pred_log1p_dollar_for_metrics(
+                    pred_test_ord, med_test, target_kind
+                )
+                w_te = ensemble_blend_weight_log_anchor(
+                    med_test, center_log1p=blend_t, scale=blend_s
+                )
+                pred_test_lp = w_te * pred_test_lp_nm + (1.0 - w_te) * pred_test_lp_ord
+
+                y_test_lp_nm_h = log1p_dollar_targets_for_metrics(
+                    y_nm_all[test_mask], med_test, target_kind
+                )
+                y_test_lp_ord_h = log1p_dollar_targets_for_metrics(
+                    y_ord_all[test_mask], med_test, target_kind
+                )
+                m_nm_te = np.isfinite(y_nm_all[test_mask])
+                m_ord_te = np.isfinite(y_ord_all[test_mask])
+                if int(np.sum(m_nm_te)) >= 1:
+                    test_mdape_nm_h = median_ape_dollars(
+                        y_test_lp_nm_h[m_nm_te], pred_test_lp_nm[m_nm_te]
+                    )
+                else:
+                    test_mdape_nm_h = float("nan")
+                if int(np.sum(m_ord_te)) >= 1:
+                    test_mdape_ord_h = median_ape_dollars(
+                        y_test_lp_ord_h[m_ord_te], pred_test_lp_ord[m_ord_te]
+                    )
+                else:
+                    test_mdape_ord_h = float("nan")
+                nm_s = (
+                    f"{100.0 * test_mdape_nm_h:.2f}%"
+                    if not math.isnan(test_mdape_nm_h)
+                    else "n/a"
+                )
+                ord_s = (
+                    f"{100.0 * test_mdape_ord_h:.2f}%"
+                    if not math.isnan(test_mdape_ord_h)
+                    else "n/a"
+                )
+                print(
+                    "  Ensemble heads (test, vs own label where that label exists): "
+                    f"NM median APE {nm_s} (n={int(np.sum(m_nm_te))}) | "
+                    f"Ord median APE {ord_s} (n={int(np.sum(m_ord_te))})"
+                )
+                if mflow_on:
+                    if not math.isnan(test_mdape_nm_h):
+                        mlflow.log_metric(
+                            "champion_test_median_ape_nm_head_own_label",
+                            test_mdape_nm_h,
+                        )
+                    if not math.isnan(test_mdape_ord_h):
+                        mlflow.log_metric(
+                            "champion_test_median_ape_ord_head_own_label",
+                            test_mdape_ord_h,
+                        )
+            else:
+                champ = refit_champion(
+                    champion_family,
+                    champion_params,
+                    X_tr_full,
+                    y_tr_full,
+                    cols,
+                    best_iteration=champion_bi if isinstance(champion_bi, int) else None,
+                    random_state=seed,
+                    target_kind=target_kind,
+                    sample_weight=sw_full,
+                )
+                pred_v = champ.predict_log1p(X_v)
+                pred_test = champ.predict_log1p(X_test)
+                pred_v_lp = pred_log1p_dollar_for_metrics(pred_v, med_v, target_kind)
+                pred_test_lp = pred_log1p_dollar_for_metrics(
+                    pred_test, med_test, target_kind
+                )
+
             y_test_lp = log1p_dollar_targets_for_metrics(y_test, med_test, target_kind)
-            pred_test_lp = pred_log1p_dollar_for_metrics(pred_test, med_test, target_kind)
             test_mae = mae_dollars(y_test_lp, pred_test_lp)
             test_wape = wape_dollars(y_test_lp, pred_test_lp)
             test_mdape = median_ape_dollars(y_test_lp, pred_test_lp)
             y_tr_lp = log1p_dollar_targets_for_metrics(y_tr_full, med_tr_full, target_kind)
             test_mdape_bl = median_ape_train_median_baseline(y_tr_lp, y_test_lp)
             y_v_lp_q = log1p_dollar_targets_for_metrics(y_v, med_v, target_kind)
-            pred_v_lp_q = pred_log1p_dollar_for_metrics(pred_v, med_v, target_kind)
+            pred_v_lp_q = pred_v_lp
             val_q = median_ape_dollar_quartiles(y_v_lp_q, pred_v_lp_q)
             test_q = median_ape_dollar_quartiles(y_test_lp, pred_test_lp)
             slice_val = median_ape_quartile_format_slice_table(
@@ -881,6 +1544,13 @@ def _run_tuning(
             slice_test = median_ape_quartile_format_slice_table(
                 y_test_lp, pred_test_lp, X_test, cols, min_count=15
             )
+            if _slice_metric_debug_enabled():
+                _log_quartile_format_slice_diagnostics(
+                    "val", y_v_lp_q, pred_v_lp_q, X_v, cols
+                )
+                _log_quartile_format_slice_diagnostics(
+                    "test", y_test_lp, pred_test_lp, X_test, cols
+                )
             if mflow_on:
                 for i, qv in enumerate(val_q):
                     if not math.isnan(qv):
@@ -896,22 +1566,22 @@ def _run_tuning(
                     "test_median_ape_train_median_log_baseline", test_mdape_bl
                 )
                 for r in slice_val:
-                    md = float(r["median_ape"])
-                    if not math.isnan(md):
+                    slice_mdape = float(r["median_ape"])
+                    if not math.isnan(slice_mdape):
                         mlflow.log_metric(
                             f"champion_val_q{int(r['quartile']) + 1}_fmt_{r['slice']}_mdape",
-                            md,
+                            slice_mdape,
                         )
                         mlflow.log_metric(
                             f"champion_val_q{int(r['quartile']) + 1}_fmt_{r['slice']}_n",
                             float(r["n_rows"]),
                         )
                 for r in slice_test:
-                    md = float(r["median_ape"])
-                    if not math.isnan(md):
+                    slice_mdape = float(r["median_ape"])
+                    if not math.isnan(slice_mdape):
                         mlflow.log_metric(
                             f"champion_test_q{int(r['quartile']) + 1}_fmt_{r['slice']}_mdape",
-                            md,
+                            slice_mdape,
                         )
                         mlflow.log_metric(
                             f"champion_test_q{int(r['quartile']) + 1}_fmt_{r['slice']}_n",
@@ -927,8 +1597,9 @@ def _run_tuning(
                 for i, q in enumerate(test_q)
                 if not math.isnan(q)
             )
+            blend_note = " (blend vs primary label)" if ensemble_cfg else ""
             print(
-                f"Champion {champion_family} | holdout MAE $ {test_mae:.4f} | "
+                f"Champion {champion_family}{blend_note} | holdout MAE $ {test_mae:.4f} | "
                 f"WAPE {100.0 * test_wape:.2f}% | median APE {100.0 * test_mdape:.2f}% "
                 f"| baseline median APE {100.0 * test_mdape_bl:.2f}%"
             )
@@ -943,19 +1614,63 @@ def _run_tuning(
                     for r in srows:
                         if int(r["quartile"]) != qi:
                             continue
-                        md = float(r["median_ape"])
-                        if math.isnan(md):
+                        slice_mdape = float(r["median_ape"])
+                        if math.isnan(slice_mdape):
                             continue
-                        bits.append(f"{r['slice']} {100.0 * md:.1f}% (n={r['n_rows']})")
+                        bits.append(
+                            f"{r['slice']} {100.0 * slice_mdape:.1f}% (n={r['n_rows']})"
+                        )
                     if bits:
                         print(f"  {label} Q{qi + 1}: " + " | ".join(bits))
+            h_nm_val = h_nm[val_mask & train_mask]
+            h_ord_val = h_ord[val_mask & train_mask]
+            h_nm_test = h_nm[test_mask]
+            h_ord_test = h_ord[test_mask]
+            print("  Val slices (NM-comps / cold-start / ordinal-comps):")
+            _log_slice_metrics_block(
+                split_label="val",
+                y_lp=y_v_lp_q,
+                pred_lp=pred_v_lp,
+                mask_nm=h_nm_val > 0.5,
+                mask_cold=h_nm_val <= 0.5,
+                mask_ord=h_ord_val > 0.5,
+                mflow_on=mflow_on,
+                mlflow=mlflow,
+            )
+            print("  Test slices (NM-comps / cold-start / ordinal-comps):")
+            _log_slice_metrics_block(
+                split_label="test",
+                y_lp=y_test_lp,
+                pred_lp=pred_test_lp,
+                mask_nm=h_nm_test > 0.5,
+                mask_cold=h_nm_test <= 0.5,
+                mask_ord=h_ord_test > 0.5,
+                mflow_on=mflow_on,
+                mlflow=mlflow,
+            )
             if mflow_on:
                 mlflow.log_metric("test_mae_dollars_approx", test_mae)
                 mlflow.log_metric("test_wape_dollars", test_wape)
                 mlflow.log_metric("test_median_ape_dollars", test_mdape)
 
             md.mkdir(parents=True, exist_ok=True)
-            champ.save(md)
+            if ensemble_cfg:
+                _save_ensemble_manifest_and_estimators(
+                    md,
+                    backend=champ_nm.backend,
+                    target_kind=champ_nm.target_kind,
+                    target_was_log1p=(
+                        champ_nm.target_kind == TARGET_KIND_DOLLAR_LOG1P
+                        and champ_nm.target_was_log1p
+                    ),
+                    feature_columns=cols,
+                    champ_nm=champ_nm,
+                    champ_ord=champ_ord,
+                    blend_t=float(blend_t),
+                    blend_s=float(blend_s),
+                )
+            else:
+                champ.save(md)
             _write_encoder_artifacts(md, catalog_encoders)
             tt_art = (
                 {**(v.get("training_target") or {}), "kind": target_kind}
@@ -1057,6 +1772,20 @@ def main(args: argparse.Namespace | None = None) -> int:
         max_lbl = int(max_lbl)
 
     training_label_cfg = training_label_config_from_vinyliq(v)
+    if args is not None:
+        ovr = getattr(args, "sale_condition_policy", None)
+        if ovr:
+            pol = str(ovr).strip().lower()
+            if pol in ("nm_substrings_only", "ordinal_cascade"):
+                sfb = training_label_cfg.setdefault("sale_floor_blend", {})
+                if not isinstance(sfb, dict):
+                    training_label_cfg["sale_floor_blend"] = {}
+                    sfb = training_label_cfg["sale_floor_blend"]
+                sfb["sale_condition_policy"] = pol
+                print(
+                    f"CLI override: sale_floor_blend.sale_condition_policy={pol!r}",
+                    file=sys.stderr,
+                )
     target_kind = training_target_kind_from_vinyliq(v)
     raw_tt = v.get("training_target")
     training_target_artifact: dict[str, object] = (
@@ -1077,7 +1806,8 @@ def main(args: argparse.Namespace | None = None) -> int:
         print(f"Residual z clip (abs): {z_clip}")
 
     sh_arg = sh if sh.is_file() else None
-    Xrows, yvals, rids, catalog_encoders, median_anchors = load_training_frame(
+    ensemble_cfg = ensemble_blend_config_from_vinyliq(v)
+    frame = load_training_frame(
         mp,
         fs,
         max_primary_artist_ids=max_art,
@@ -1087,6 +1817,36 @@ def main(args: argparse.Namespace | None = None) -> int:
         residual_z_clip_abs=z_clip,
         sale_history_db=sh_arg,
     )
+    if ensemble_cfg is not None:
+        y_nm_ct = int(
+            np.sum(np.isfinite(np.asarray(frame.yvals_nm, dtype=np.float64)))
+        )
+        y_ord_ct = int(
+            np.sum(np.isfinite(np.asarray(frame.yvals_ord, dtype=np.float64)))
+        )
+        if y_nm_ct < 20 or y_ord_ct < 20:
+            print(
+                "Ensemble needs >=20 rows per policy with a valid sale-floor label "
+                f"(NM-substrings: {y_nm_ct}, ordinal-cascade: {y_ord_ct}; "
+                f"primary-labeled n={len(frame.rids)}).",
+                file=sys.stderr,
+            )
+            return 1
+        print(
+            "Ensemble: NM head trains on NM-policy labels only, ordinal head on "
+            f"ordinal-policy labels (rows with label: NM={y_nm_ct}, Ord={y_ord_ct}; "
+            f"primary-labeled n={len(frame.rids)}) — aligned with serving both heads on every row.",
+        )
+
+    Xrows = frame.xrows
+    yvals = frame.yvals
+    rids = frame.rids
+    catalog_encoders = frame.catalog_encoders
+    median_anchors = frame.median_anchors
+    has_nm_comp_arr = np.asarray(frame.has_nm_comp_sale, dtype=np.float64)
+    has_ord_comp_arr = np.asarray(frame.has_ord_comp_sale, dtype=np.float64)
+    y_nm_arr = np.asarray(frame.yvals_nm, dtype=np.float64)
+    y_ord_arr = np.asarray(frame.yvals_ord, dtype=np.float64)
     meta = catalog_encoders.get("_id_encoder_meta") or {}
     if meta:
         print(
@@ -1130,6 +1890,13 @@ def main(args: argparse.Namespace | None = None) -> int:
         return 0
 
     tuning = v.get("tuning") or {}
+    if ensemble_cfg is not None and not tuning.get("enabled", False):
+        print(
+            "vinyliq.ensemble.enabled requires vinyliq.tuning.enabled=true "
+            "(ensemble uses champion hyperparameters from the tuning loop).",
+            file=sys.stderr,
+        )
+        return 1
     if tuning.get("enabled", False):
         return _run_tuning(
             cfg,
@@ -1143,6 +1910,11 @@ def main(args: argparse.Namespace | None = None) -> int:
             cols,
             training_label_cfg,
             target_kind=target_kind,
+            has_nm_comp_sale=has_nm_comp_arr,
+            has_ord_comp_sale=has_ord_comp_arr,
+            y_nm=y_nm_arr,
+            y_ord=y_ord_arr,
+            ensemble_cfg=ensemble_cfg,
         )
 
     train_r, test_r = train_test_split_by_release(
@@ -1279,6 +2051,15 @@ def _cli_main() -> int:
         help=(
             "Load training frame, print residual z stats and constant-z/shuffled-anchor "
             "baselines, then exit (no tuning or model fit)."
+        ),
+    )
+    parser.add_argument(
+        "--sale-condition-policy",
+        choices=("nm_substrings_only", "ordinal_cascade"),
+        default=None,
+        help=(
+            "Override vinyliq.training_label.sale_floor_blend.sale_condition_policy for "
+            "MLflow A/B (same YAML file; logged as training_label_sf_* params)."
         ),
     )
     args, unknown = parser.parse_known_args()
