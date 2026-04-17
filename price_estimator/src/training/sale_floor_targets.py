@@ -1,4 +1,5 @@
 """§7.1d sold nowcast ``s`` + listing floor blend for ``training_label.mode: sale_floor_blend``."""
+
 from __future__ import annotations
 
 import json
@@ -24,7 +25,9 @@ _PRICE_ESTIMATOR_ROOT = Path(__file__).resolve().parents[2]
 
 
 def _parse_ps_grade(raw_json: str | None, grade_key: str) -> float | None:
-    from price_estimator.src.training.label_synthesis import parse_price_suggestion_value
+    from price_estimator.src.training.label_synthesis import (
+        parse_price_suggestion_value,
+    )
 
     return parse_price_suggestion_value(raw_json, grade_key)
 
@@ -169,6 +172,13 @@ class SaleFloorBlendConfig:
     base_beta: float = -0.04
     ref_grade: float = 8.0
     grade_delta_scale: GradeDeltaScaleParams | None = None
+    # --- label sanity caps (bad listing floors / extrapolated nowcasts)
+    label_cap_enabled: bool = True
+    label_cap_sale_nowcast_max_multiple_of_max_price: float = 15.0
+    label_cap_listing_max_multiple_of_sale_peak: float = 15.0
+    label_cap_y_max_multiple_of_sale_peak: float = 15.0
+    label_cap_y_max_multiple_of_anchor_m: float = 30.0
+    label_cap_listing_max_multiple_of_median_only: float = 40.0
 
 
 def sale_floor_blend_config_from_raw(
@@ -186,7 +196,9 @@ def sale_floor_blend_config_from_raw(
     if isinstance(nm_tup, (list, tuple)) and nm_tup:
         nm_sub = tuple(str(x) for x in nm_tup)
 
-    policy = str(merged.get("sale_condition_policy", "nm_substrings_only")).strip().lower()
+    policy = (
+        str(merged.get("sale_condition_policy", "nm_substrings_only")).strip().lower()
+    )
     if policy not in ("nm_substrings_only", "ordinal_cascade"):
         policy = "nm_substrings_only"
 
@@ -223,13 +235,43 @@ def sale_floor_blend_config_from_raw(
                 if isinstance(inner, dict):
                     scale_map.update(inner)
                 elif any(
-                    k in blob for k in ("price_gamma", "price_ref_usd", "age_k", "age_center_year")
+                    k in blob
+                    for k in (
+                        "price_gamma",
+                        "price_ref_usd",
+                        "age_k",
+                        "age_center_year",
+                    )
                 ):
                     scale_map.update(blob)
         except (json.JSONDecodeError, OSError, TypeError):
             pass
 
     gparams = GradeDeltaScaleParams.from_mapping(scale_map if scale_map else None)
+
+    lc = merged.get("label_cap")
+    if isinstance(lc, dict):
+        label_cap_enabled = bool(lc.get("enabled", True))
+        sn_max = float(
+            lc.get("sale_nowcast_max_multiple_of_max_price", 30.0),
+        )
+        lm_sale = float(lc.get("listing_max_multiple_of_sale_peak", 35.0))
+        ym_sp = float(lc.get("y_max_multiple_of_sale_peak", 20.0))
+        ym_m = float(lc.get("y_max_multiple_of_anchor_m", 50.0))
+        lm_med = float(lc.get("listing_max_multiple_of_median_only", 40.0))
+    else:
+        label_cap_enabled = bool(merged.get("label_cap_enabled", True))
+        sn_max = float(
+            merged.get("label_cap_sale_nowcast_max_multiple_of_max_price", 30.0),
+        )
+        lm_sale = float(
+            merged.get("label_cap_listing_max_multiple_of_sale_peak", 35.0),
+        )
+        ym_sp = float(merged.get("label_cap_y_max_multiple_of_sale_peak", 20.0))
+        ym_m = float(merged.get("label_cap_y_max_multiple_of_anchor_m", 50.0))
+        lm_med = float(
+            merged.get("label_cap_listing_max_multiple_of_median_only", 40.0),
+        )
 
     um = float(merged.get("uplift_nm_media_ordinal", 7.0))
     us = float(merged.get("uplift_nm_sleeve_ordinal", 7.0))
@@ -264,7 +306,53 @@ def sale_floor_blend_config_from_raw(
         base_beta=base_beta,
         ref_grade=ref_grade,
         grade_delta_scale=gparams,
+        label_cap_enabled=label_cap_enabled,
+        label_cap_sale_nowcast_max_multiple_of_max_price=sn_max,
+        label_cap_listing_max_multiple_of_sale_peak=lm_sale,
+        label_cap_y_max_multiple_of_sale_peak=ym_sp,
+        label_cap_y_max_multiple_of_anchor_m=ym_m,
+        label_cap_listing_max_multiple_of_median_only=lm_med,
     )
+
+
+def _cap_listing_floor_against_sales(
+    lo: float,
+    s: float | None,
+    p_max_obs: float | None,
+    *,
+    cfg: SaleFloorBlendConfig,
+) -> float:
+    """Pull absurd listing floors toward observed sold comps before log-blend."""
+    mult = float(cfg.label_cap_listing_max_multiple_of_sale_peak)
+    base = 0.0
+    if s is not None and math.isfinite(s) and s > 0:
+        base = max(float(s), float(p_max_obs or 0.0))
+    elif p_max_obs is not None and p_max_obs > 0:
+        base = float(p_max_obs)
+    else:
+        return lo
+    cap = base * mult
+    return float(min(lo, cap)) if cap > 0 and math.isfinite(cap) else lo
+
+
+def _cap_final_y_label(
+    y: float,
+    m_anchor: float,
+    p_max_obs: float | None,
+    *,
+    cfg: SaleFloorBlendConfig,
+) -> float:
+    """Upper-cap blended label vs sale peak and vs residual anchor ``m``."""
+    out = float(y)
+    if p_max_obs is not None and p_max_obs > 0:
+        hi_sp = float(p_max_obs) * float(cfg.label_cap_y_max_multiple_of_sale_peak)
+        if math.isfinite(hi_sp) and hi_sp > 0:
+            out = min(out, hi_sp)
+    if m_anchor is not None and math.isfinite(m_anchor) and m_anchor > 0:
+        hi_m = float(m_anchor) * float(cfg.label_cap_y_max_multiple_of_anchor_m)
+        if math.isfinite(hi_m) and hi_m > 0:
+            out = min(out, hi_m)
+    return max(out, 1e-9)
 
 
 def eligible_nm_sale_rows(
@@ -275,7 +363,11 @@ def eligible_nm_sale_rows(
 ) -> list[tuple[datetime, float]]:
     out: list[tuple[datetime, float]] = []
     for r in rows:
-        if not _nm_allowed(r.get("media_condition"), r.get("sleeve_condition"), nm_substrings=cfg.nm_substrings):
+        if not _nm_allowed(
+            r.get("media_condition"),
+            r.get("sleeve_condition"),
+            nm_substrings=cfg.nm_substrings,
+        ):
             continue
         price = sale_row_usd(r)
         if price is None:
@@ -357,10 +449,17 @@ def eligible_ordinal_cascade_sale_rows(
     """
     anchor = pre_uplift_grade_anchor_usd(mp_row, nm_grade_key=nm_grade_key)
 
-    strict = _sale_row_candidates(rows, t_ref, min_effective_ord=float(cfg.strict_min_ordinal))
+    strict = _sale_row_candidates(
+        rows, t_ref, min_effective_ord=float(cfg.strict_min_ordinal)
+    )
     if len(strict) >= int(cfg.min_rows_strict):
         elig = [
-            (d, _usd_after_optional_uplift(p, m, s, cfg=cfg, anchor_usd=anchor, release_year=release_year))
+            (
+                d,
+                _usd_after_optional_uplift(
+                    p, m, s, cfg=cfg, anchor_usd=anchor, release_year=release_year
+                ),
+            )
             for d, p, m, s in strict
         ]
         return elig, "strict"
@@ -370,7 +469,12 @@ def eligible_ordinal_cascade_sale_rows(
     pool1 = _sale_row_candidates(rows, t_ref, min_effective_ord=floor1)
     if len(pool1) >= int(cfg.min_rows_relax_1):
         elig = [
-            (d, _usd_after_optional_uplift(p, m, s, cfg=cfg, anchor_usd=anchor, release_year=release_year))
+            (
+                d,
+                _usd_after_optional_uplift(
+                    p, m, s, cfg=cfg, anchor_usd=anchor, release_year=release_year
+                ),
+            )
             for d, p, m, s in pool1
         ]
         return elig, "relax_1"
@@ -379,7 +483,12 @@ def eligible_ordinal_cascade_sale_rows(
     pool2 = _sale_row_candidates(rows, t_ref, min_effective_ord=floor2)
     if len(pool2) >= int(cfg.min_rows_relax_2):
         elig = [
-            (d, _usd_after_optional_uplift(p, m, s, cfg=cfg, anchor_usd=anchor, release_year=release_year))
+            (
+                d,
+                _usd_after_optional_uplift(
+                    p, m, s, cfg=cfg, anchor_usd=anchor, release_year=release_year
+                ),
+            )
             for d, p, m, s in pool2
         ]
         return elig, "relax_2"
@@ -421,7 +530,9 @@ def sold_nowcast_s(
             pass
 
     if n >= 3:
-        ages_days = np.array([(t_ref - d).total_seconds() / 86400.0 for d in dates], dtype=np.float64)
+        ages_days = np.array(
+            [(t_ref - d).total_seconds() / 86400.0 for d in dates], dtype=np.float64
+        )
         H = max(1.0, float(cfg.recency_half_life_days))
         w = np.exp(-np.maximum(ages_days, 0.0) / H)
         sw = float(np.sum(w))
@@ -436,7 +547,9 @@ def sold_nowcast_s(
 
 
 def effective_listing_floor_lo(row: dict[str, Any]) -> float | None:
-    return _positive(row.get("release_lowest_price")) or _positive(row.get("lowest_price"))
+    return _positive(row.get("release_lowest_price")) or _positive(
+        row.get("lowest_price")
+    )
 
 
 def max_price_suggestion_ladder_usd(row: dict[str, Any]) -> float | None:
@@ -467,7 +580,9 @@ def residual_anchor_m_full_data(
     return None
 
 
-def residual_anchor_m_no_sale_history(row: dict[str, Any], *, nm_grade_key: str) -> float | None:
+def residual_anchor_m_no_sale_history(
+    row: dict[str, Any], *, nm_grade_key: str
+) -> float | None:
     """§7.1b-style: ``lo``-first; then NM suggestion; avoid PS max ladder when no SH."""
     lo = effective_listing_floor_lo(row)
     if lo is not None:
@@ -540,7 +655,10 @@ def sale_floor_blend_bundle(
     lo = effective_listing_floor_lo(mp_row)
     has_listing_floor = 1.0 if lo is not None and lo > 0 else 0.0
 
-    sh_ok = fetch_status is not None and str(fetch_status.get("status") or "").strip().lower() == "ok"
+    sh_ok = (
+        fetch_status is not None
+        and str(fetch_status.get("status") or "").strip().lower() == "ok"
+    )
     sh_fetched = str(fetch_status.get("fetched_at") or "") if fetch_status else None
     t_ref = reference_time_t_ref(str(mp_row.get("fetched_at") or ""), sh_fetched)
 
@@ -550,6 +668,7 @@ def sale_floor_blend_bundle(
     s_imputed = 0.0
     has_sale_history = 0.0
     relax_tag = "n/a"
+    elig: list[tuple[datetime, float]] = []
 
     if t_ref is not None and sh_ok:
         if cfg.sale_condition_policy == "ordinal_cascade":
@@ -569,28 +688,87 @@ def sale_floor_blend_bundle(
         if s is not None and s > 0:
             has_sale_history = 1.0
 
-    y = sale_floor_blend_y(s, lo, tier, cfg=cfg)
-    if y is None:
-        return None, None, {
-            "has_sale_history": has_sale_history,
-            "s_imputed": s_imputed,
-            "has_listing_floor": has_listing_floor,
-            "sale_relax_tier_code": _relax_tier_code(relax_tag),
-        }
+    p_max_obs: float | None = None
+    if elig:
+        _prices = np.array([float(p) for _, p in elig], dtype=np.float64)
+        if _prices.size > 0:
+            p_max_obs = float(np.max(_prices))
 
+    if (
+        cfg.label_cap_enabled
+        and s is not None
+        and s > 0
+        and p_max_obs is not None
+        and p_max_obs > 0
+    ):
+        hi_now = p_max_obs * float(cfg.label_cap_sale_nowcast_max_multiple_of_max_price)
+        if math.isfinite(hi_now) and hi_now > 0:
+            s = min(float(s), hi_now)
+
+    lo_for_blend: float | None = lo
+    if cfg.label_cap_enabled and lo_for_blend is not None and lo_for_blend > 0:
+        lo_for_blend = _cap_listing_floor_against_sales(
+            float(lo_for_blend),
+            s,
+            p_max_obs,
+            cfg=cfg,
+        )
+        if p_max_obs is None and (s is None or s <= 0):
+            med_only = _positive(mp_row.get("median_price"))
+            if med_only is not None and med_only > 0:
+                lo_for_blend = min(
+                    lo_for_blend,
+                    float(med_only)
+                    * float(cfg.label_cap_listing_max_multiple_of_median_only),
+                )
+
+    y = sale_floor_blend_y(s, lo_for_blend, tier, cfg=cfg)
+    if y is None:
+        return (
+            None,
+            None,
+            {
+                "has_sale_history": has_sale_history,
+                "s_imputed": s_imputed,
+                "has_listing_floor": has_listing_floor,
+                "sale_relax_tier_code": _relax_tier_code(relax_tag),
+            },
+        )
+
+    y_f = float(y)
     if has_sale_history:
         m = residual_anchor_m_full_data(mp_row, nm_grade_key=nm_grade_key)
     else:
         m = residual_anchor_m_no_sale_history(mp_row, nm_grade_key=nm_grade_key)
     if m is None:
-        m = y
+        m = y_f
+    m_f = float(m)
+    if cfg.label_cap_enabled:
+        y_f = _cap_final_y_label(y_f, m_f, p_max_obs, cfg=cfg)
 
-    return float(y), float(m), {
-        "has_sale_history": has_sale_history,
-        "s_imputed": s_imputed,
-        "has_listing_floor": has_listing_floor,
-        "sale_relax_tier_code": _relax_tier_code(relax_tag),
-    }
+    return (
+        y_f,
+        m_f,
+        {
+            "has_sale_history": has_sale_history,
+            "s_imputed": s_imputed,
+            "has_listing_floor": has_listing_floor,
+            "sale_relax_tier_code": _relax_tier_code(relax_tag),
+        },
+    )
+
+
+def sale_floor_blend_sf_cfg_for_policy(
+    sf_cfg: dict[str, Any] | None,
+    policy: str,
+) -> dict[str, Any]:
+    """Shallow copy of ``sale_floor_blend`` YAML dict with ``sale_condition_policy`` set."""
+    raw = dict(sf_cfg) if isinstance(sf_cfg, dict) else {}
+    pol = str(policy).strip().lower()
+    if pol not in ("nm_substrings_only", "ordinal_cascade"):
+        pol = "nm_substrings_only"
+    out = {**raw, "sale_condition_policy": pol}
+    return out
 
 
 def _relax_tier_code(tag: str) -> float:

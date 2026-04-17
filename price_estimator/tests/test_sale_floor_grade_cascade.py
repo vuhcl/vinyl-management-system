@@ -24,6 +24,7 @@ from price_estimator.src.training.sale_floor_targets import (
     eligible_ordinal_cascade_sale_rows,
     sale_floor_blend_bundle,
     sale_floor_blend_config_from_raw,
+    sale_floor_blend_sf_cfg_for_policy,
 )
 
 
@@ -40,6 +41,15 @@ def _row(
         "media_condition": media,
         "sleeve_condition": sleeve,
     }
+
+
+def test_sale_floor_blend_sf_cfg_for_policy_overrides() -> None:
+    raw = {"sale_condition_policy": "ordinal_cascade", "w_base": 0.5}
+    nm = sale_floor_blend_sf_cfg_for_policy(raw, "nm_substrings_only")
+    oc = sale_floor_blend_sf_cfg_for_policy(raw, "ordinal_cascade")
+    assert nm["sale_condition_policy"] == "nm_substrings_only"
+    assert oc["sale_condition_policy"] == "ordinal_cascade"
+    assert nm["w_base"] == 0.5
 
 
 def test_sale_floor_blend_config_merges_ordinal_cascade_block() -> None:
@@ -114,6 +124,37 @@ def test_cascade_strict_when_enough_nm() -> None:
     )
     assert tag == "strict"
     assert len(elig) == 3
+
+
+def test_label_cap_clamps_absurd_listing_vs_modest_sales() -> None:
+    """Toxic listing floors must not produce six-figure y when comps are ~tens of USD."""
+    sf = {"sale_condition_policy": "nm_substrings_only", "nm_substrings": ["near mint"]}
+    mp = {
+        "fetched_at": "2021-01-01T00:00:00",
+        "median_price": 90.0,
+        "release_lowest_price": 117_820.87,
+    }
+    sales = [
+        _row(
+            order_date="2020-06-01",
+            price=88.0,
+            media="Near Mint (NM or M-)",
+            sleeve="Near Mint (NM or M-)",
+        ),
+    ]
+    fetch = {"status": "ok", "fetched_at": "2021-01-01T00:00:00"}
+    y, _m, flags = sale_floor_blend_bundle(
+        mp,
+        sales,
+        fetch,
+        sf_cfg=sf,
+        nm_grade_key="Near Mint (NM or M-)",
+        release_year=1999.0,
+    )
+    assert y is not None
+    assert flags.get("has_sale_history") == 1.0
+    assert y < 2000.0
+    assert y > 40.0
 
 
 def test_sale_floor_blend_bundle_legacy_policy_flag() -> None:
