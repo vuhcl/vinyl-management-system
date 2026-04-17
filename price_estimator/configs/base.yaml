@@ -34,7 +34,7 @@ vinyliq:
     price_suggestion_fallback_lowest: true
     sale_floor_blend:
       # nm_substrings_only (default) | ordinal_cascade (relax VG+ then VG when NM pool is thin).
-      sale_condition_policy: nm_substrings_only
+      sale_condition_policy: ordinal_cascade
       n_min_trend: 8
       # Longer half-life keeps older NM sales in the recency kernel (helps sparse cheap titles).
       recency_half_life_days: 420.0
@@ -53,16 +53,33 @@ vinyliq:
       gap_k_down: 0.15
       gap_k_up: 0.12
       gap_delta_cap: 0.5
-      # Optional nested keys merged into the flat sale_floor_blend dict (same names as below).
-      # ordinal_cascade:
-      #   strict_min_ordinal: 7.0
-      #   relax_steps: [6.0, 5.0]
-      #   min_rows_strict: 8
-      #   min_rows_relax_1: 5
-      #   min_rows_relax_2: 6
-      #   apply_grade_uplift_to_nm: false
-      #   condition_adjustment: { alpha: -0.06, beta: -0.04, ref_grade: 8.0 }
-      #   grade_delta_scale: { price_ref_usd: 50.0, price_gamma: 0.0, age_k: 0.0 }
+      # Caps toxic listing floors / extrapolated nowcasts (``sale_floor_targets``).
+      label_cap:
+        enabled: true
+        sale_nowcast_max_multiple_of_max_price: 10.0
+        listing_max_multiple_of_sale_peak: 15.0
+        y_max_multiple_of_sale_peak: 15.0
+        y_max_multiple_of_anchor_m: 30.0
+        listing_max_multiple_of_median_only: 40.0
+      # Merged into ``sale_floor_blend`` (see ``sale_floor_blend_config_from_raw``).
+      ordinal_cascade:
+        strict_min_ordinal: 7.0
+        relax_steps: [6.0, 5.0]
+        min_rows_strict: 8
+        min_rows_relax_1: 5
+        min_rows_relax_2: 6
+        apply_grade_uplift_to_nm: true
+        condition_adjustment:
+          alpha: -0.06
+          beta: -0.04
+          ref_grade: 8.0
+        grade_delta_scale:
+          price_ref_usd: 50.0
+          price_gamma: 0.0
+          price_scale_min: 0.25
+          price_scale_max: 4.0
+          age_k: 0.0
+          age_center_year: 2000.0
   # residual_log_median (default): y = log1p(y_label) - log1p(anchor); anchor prefers
   # release_lowest_price then stats lowest/median; X omits price/liquidity; inference
   # adds log1p(live anchor). Pyfunc column name remains ``discogs_median_price``.
@@ -71,11 +88,46 @@ vinyliq:
   training_target:
     kind: residual_log_median
     residual_z_clip_abs: null
+  # Two-head NM-substrings + ordinal-cascade ensemble (sigmoid blend on log1p anchor).
+  # Requires tuning.enabled. Each head fits on rows where that policy yields a label (like production: both heads score every row).
+  ensemble:
+    enabled: true
+    blend:
+      kind: log_anchor_sigmoid
+      t: 4.0
+      s: 0.35
+    # After both heads are fit, optionally grid-search (t,s) on the inner val set only
+    # using the same objective as tuning.selection_metric (no retraining).
+    blend_sweep:
+      enabled: true
+      t: [3.0, 4.0, 5.0, 6.0]
+      s: [0.25, 0.35, 0.5]
+    # Or explicit pairs: pairs: [[3.5, 0.3], [4.0, 0.35]]
+    share_hparams: true
   tuning:
     enabled: true
-    # Champion trial: median_ape (default, robust per-release %) | wape (dollar-mass %) |
-    # mae_dollars (legacy absolute $)
-    selection_metric: median_ape
+    # Release-level CV on outer-train for trial scoring (1 = legacy single inner val split).
+    cv_folds: 5
+    cv_agg: mean
+    # null | anchor_quartile (stratify folds by release median anchor quartiles).
+    cv_stratify: anchor_quartile
+    # Hard caps on aggregated CV val metrics (fractions of 1). Feasible trials compete on
+    # selection_metric; if none pass, violation_fallback applies.
+    constraints:
+      enabled: true
+      mdape_max: 0.03
+      wape_max: 0.15
+      violation_fallback: best_violation
+    constraint_penalty:
+      lambda_mdape: 100.0
+      lambda_wape: 1000.0
+    # Champion trial: median_ape | wape | mae_dollars | composite (with selection_composite).
+    selection_metric: composite
+    selection_composite:
+      w_mdape: 1.0
+      w_wape: 0.3
+      w_mae: 0.1
+      mae_ref_usd: 20.0
     n_trials_per_family: 8
     val_fraction: 0.15
     test_fraction: 0.15
