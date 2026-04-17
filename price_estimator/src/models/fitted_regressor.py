@@ -53,6 +53,49 @@ def pred_log1p_dollar_for_metrics(
     return p
 
 
+def ensemble_blend_weight_log_anchor(
+    median_anchor_usd: np.ndarray,
+    *,
+    center_log1p: float,
+    scale: float,
+) -> np.ndarray:
+    """
+    Sigmoid weight for the **NM-substrings** head vs **ordinal-cascade** head.
+
+    ``w -> 1`` as ``log1p(anchor)`` increases past ``center_log1p``; ordinal weight is ``1 - w``.
+    """
+    m = np.maximum(np.asarray(median_anchor_usd, dtype=np.float64), 0.0)
+    lx = np.log1p(m)
+    c = float(center_log1p)
+    s = max(float(scale), 1e-9)
+    z = (lx - c) / s
+    return 1.0 / (1.0 + np.exp(-z))
+
+
+def metrics_dollar_from_log1p_masked(
+    y_true_log1p: np.ndarray,
+    pred_log1p: np.ndarray,
+    mask: np.ndarray,
+    *,
+    min_count: int = 15,
+) -> tuple[float, float, float]:
+    """MAE / WAPE / MdAPE on a boolean row mask; NaNs if ``sum(mask) < min_count``."""
+    y = np.asarray(y_true_log1p, dtype=np.float64)
+    p = np.asarray(pred_log1p, dtype=np.float64)
+    m = (
+        np.asarray(mask, dtype=bool)
+        & np.isfinite(y)
+        & np.isfinite(p)
+    )
+    if int(np.sum(m)) < int(min_count):
+        return (float("nan"), float("nan"), float("nan"))
+    return (
+        mae_dollars(y[m], p[m]),
+        wape_dollars(y[m], p[m]),
+        median_ape_dollars(y[m], p[m]),
+    )
+
+
 @dataclass
 class FittedVinylIQRegressor:
     """Thin wrapper so inference and pyfunc share one predict path."""
@@ -520,20 +563,14 @@ def median_ape_dollar_quartiles(
     floor = max(float(price_floor), 1e-9)
     den = np.maximum(yt, floor)
     ape = np.abs(yp - yt) / den
-    qs = np.linspace(0.0, 1.0, int(n_bins) + 1)
-    edges = np.quantile(yt, qs)
-    out: list[float] = []
     n = int(n_bins)
-    for i in range(n):
-        lo, hi = float(edges[i]), float(edges[i + 1])
-        if i == n - 1:
-            mask = (yt >= lo) & (yt <= hi)
-        else:
-            mask = (yt >= lo) & (yt < hi)
-        if not np.any(mask):
+    masks = true_dollar_quartile_masks(yt, n_bins=n)
+    out: list[float] = []
+    for m in masks:
+        if not np.any(m):
             out.append(float("nan"))
         else:
-            out.append(float(np.median(ape[mask])))
+            out.append(float(np.median(ape[m])))
     return out
 
 
@@ -615,6 +652,71 @@ def mutually_exclusive_format_bucket_masks(
     }
 
 
+def true_dollar_quartile_masks(yt: np.ndarray, *, n_bins: int = 4) -> list[np.ndarray]:
+    """
+    Boolean masks partitioning rows by **true** dollar price ``yt`` (cheap → expensive).
+
+    Same edges as ``median_ape_dollar_quartiles`` / ``median_ape_quartile_format_slice_table``.
+    """
+    y = np.asarray(yt, dtype=np.float64)
+    n = int(n_bins)
+    qs = np.linspace(0.0, 1.0, n + 1)
+    edges = np.quantile(y, qs)
+    q_masks: list[np.ndarray] = []
+    for i in range(n):
+        lo, hi = float(edges[i]), float(edges[i + 1])
+        if i == n - 1:
+            q_masks.append((y >= lo) & (y <= hi))
+        else:
+            q_masks.append((y >= lo) & (y < hi))
+    return q_masks
+
+
+def median_ape_quartile_format_slice_diagnostics(
+    y_true_log1p: np.ndarray,
+    pred_log1p: np.ndarray,
+    X: np.ndarray,
+    feature_columns: list[str],
+    *,
+    price_floor: float = 1.0,
+    n_quartiles: int = 4,
+    min_count: int = 15,
+) -> list[dict[str, Any]]:
+    """
+    Per (quartile × format) cell with ``n_rows >= min_count``: median / mean / p90 / max APE.
+
+    Use to sanity-check console lines that show ``0.0%`` (one-decimal formatting can hide small
+    non-zero medians; ``max_ape`` reveals heavy tails).
+    """
+    yt, yp = _dollars_from_log1p(y_true_log1p, pred_log1p)
+    floor = max(float(price_floor), 1e-9)
+    den = np.maximum(yt, floor)
+    ape = np.abs(yp - yt) / den
+    q_masks = true_dollar_quartile_masks(yt, n_bins=int(n_quartiles))
+    buckets = mutually_exclusive_format_bucket_masks(X, feature_columns)
+    order = ("box_multi", "seven", "ten", "twelve", "lp", "cd", "other")
+    out: list[dict[str, Any]] = []
+    for qi, qm in enumerate(q_masks):
+        for name in order:
+            mask = qm & buckets[name]
+            cnt = int(np.sum(mask))
+            if cnt < int(min_count):
+                continue
+            a = ape[mask]
+            out.append(
+                {
+                    "quartile": qi,
+                    "slice": name,
+                    "n_rows": cnt,
+                    "median_ape": float(np.median(a)),
+                    "mean_ape": float(np.mean(a)),
+                    "p90_ape": float(np.percentile(a, 90)),
+                    "max_ape": float(np.max(a)),
+                }
+            )
+    return out
+
+
 def median_ape_quartile_format_slice_table(
     y_true_log1p: np.ndarray,
     pred_log1p: np.ndarray,
@@ -629,21 +731,17 @@ def median_ape_quartile_format_slice_table(
     Median APE for each (true-dollar quartile × mutually exclusive format bucket).
 
     Quartiles match ``median_ape_dollar_quartiles`` (Q1 = cheapest true ``y``).
+
+    **Printing note:** ``100 * median_ape`` at one decimal can show ``0.0%`` when the true
+    median APE is below ~0.0005 (0.05%). Use ``median_ape_quartile_format_slice_diagnostics``
+    for p90/max when spot-checking.
     """
     yt, yp = _dollars_from_log1p(y_true_log1p, pred_log1p)
     floor = max(float(price_floor), 1e-9)
     den = np.maximum(yt, floor)
     ape = np.abs(yp - yt) / den
     n_bins = int(n_quartiles)
-    qs = np.linspace(0.0, 1.0, n_bins + 1)
-    edges = np.quantile(yt, qs)
-    q_masks: list[np.ndarray] = []
-    for i in range(n_bins):
-        lo, hi = float(edges[i]), float(edges[i + 1])
-        if i == n_bins - 1:
-            q_masks.append((yt >= lo) & (yt <= hi))
-        else:
-            q_masks.append((yt >= lo) & (yt < hi))
+    q_masks = true_dollar_quartile_masks(yt, n_bins=n_bins)
 
     buckets = mutually_exclusive_format_bucket_masks(X, feature_columns)
     order = ("box_multi", "seven", "ten", "twelve", "lp", "cd", "other")
