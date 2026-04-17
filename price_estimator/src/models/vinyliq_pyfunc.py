@@ -17,7 +17,11 @@ from ..features.vinyliq_features import (
     scaled_condition_log_adjustment,
 )
 from .condition_adjustment import default_params, load_params_with_grade_delta_overlays
-from .fitted_regressor import TARGET_KIND_RESIDUAL_LOG_MEDIAN
+from .fitted_regressor import (
+    TARGET_KIND_RESIDUAL_LOG_MEDIAN,
+    ensemble_blend_weight_log_anchor,
+    pred_log1p_dollar_for_metrics,
+)
 
 # Residual reconstruction anchor: prefer release lowest, same order as training.
 _PYFUNC_MEDIAN_COL = "discogs_median_price"
@@ -31,7 +35,6 @@ class VinylIQPricePyFunc(PythonModel):
 
         art = context.artifacts
         manifest_path = Path(art["manifest"])
-        reg_path = Path(art["regressor"])
         feat_path = Path(art["feature_columns"])
         target_path = Path(art["target_log1p"])
         cond_path = Path(art["condition_params"])
@@ -44,7 +47,31 @@ class VinylIQPricePyFunc(PythonModel):
             self._target_kind = tk
         else:
             self._target_kind = "dollar_log1p"
-        self._estimator = joblib.load(reg_path)
+
+        ens_raw = manifest.get("ensemble")
+        self._ensemble: dict[str, Any] | None = (
+            ens_raw
+            if isinstance(ens_raw, dict) and ens_raw.get("enabled")
+            else None
+        )
+        self._estimator = None
+        self._estimator_nm = None
+        self._estimator_ord = None
+        self._blend_t = 4.0
+        self._blend_s = 0.35
+        if self._ensemble is not None:
+            blend = self._ensemble.get("blend") or {}
+            self._blend_t = float(blend.get("t", 4.0))
+            self._blend_s = float(blend.get("s", 0.35))
+            self._estimator_nm = joblib.load(
+                Path(art["regressor_ensemble_nm"]),
+            )
+            self._estimator_ord = joblib.load(
+                Path(art["regressor_ensemble_ord"]),
+            )
+        else:
+            self._estimator = joblib.load(Path(art["regressor"]))
+
         self._feature_columns: list[str] = list(joblib.load(feat_path))
         self._target_log1p = bool(joblib.load(target_path))
         self._cond = (
@@ -67,27 +94,62 @@ class VinylIQPricePyFunc(PythonModel):
             raise ValueError(f"Missing feature columns: {missing[:10]!r}…")
 
         X = df[cols].to_numpy(dtype=np.float64, copy=False)
-        logp = np.asarray(self._estimator.predict(X), dtype=np.float64).ravel()
         n = len(df)
-        if self._target_kind == TARGET_KIND_RESIDUAL_LOG_MEDIAN:
-            if _PYFUNC_MEDIAN_COL not in df.columns:
-                raise ValueError(
-                    f"Residual target requires {_PYFUNC_MEDIAN_COL!r} column "
-                    f"(log1p anchor; use release or marketplace lowest)"
+        if self._ensemble is not None:
+            if self._estimator_nm is None or self._estimator_ord is None:
+                raise RuntimeError("Ensemble manifest missing estimator artifacts")
+            z_nm = np.asarray(
+                self._estimator_nm.predict(X), dtype=np.float64
+            ).ravel()
+            z_ord = np.asarray(
+                self._estimator_ord.predict(X), dtype=np.float64
+            ).ravel()
+            if self._target_kind == TARGET_KIND_RESIDUAL_LOG_MEDIAN:
+                if _PYFUNC_MEDIAN_COL not in df.columns:
+                    raise ValueError(
+                        f"Residual target requires {_PYFUNC_MEDIAN_COL!r} column "
+                        f"(log1p anchor; use release or marketplace lowest)"
+                    )
+                med = np.maximum(
+                    df[_PYFUNC_MEDIAN_COL].to_numpy(dtype=np.float64, copy=False),
+                    0.0,
                 )
-            med = np.maximum(
-                df[_PYFUNC_MEDIAN_COL].to_numpy(dtype=np.float64, copy=False),
-                0.0,
-            )
-            logp = logp + np.log1p(med)
-            anchor_arr = np.maximum(med, 1e-6)
-        elif _PYFUNC_MEDIAN_COL in df.columns:
+                lp_nm = pred_log1p_dollar_for_metrics(z_nm, med, self._target_kind)
+                lp_ord = pred_log1p_dollar_for_metrics(z_ord, med, self._target_kind)
+                w = ensemble_blend_weight_log_anchor(
+                    med, center_log1p=self._blend_t, scale=self._blend_s
+                )
+                logp = w * lp_nm + (1.0 - w) * lp_ord
+            else:
+                raise ValueError(
+                    "vinyliq ensemble is only supported for residual_log_median targets"
+                )
             anchor_arr = np.maximum(
                 df[_PYFUNC_MEDIAN_COL].to_numpy(dtype=np.float64, copy=False),
                 1e-6,
-            )
+            ) if _PYFUNC_MEDIAN_COL in df.columns else np.ones(n, dtype=np.float64)
         else:
-            anchor_arr = np.ones(n, dtype=np.float64)
+            assert self._estimator is not None
+            logp = np.asarray(self._estimator.predict(X), dtype=np.float64).ravel()
+            if self._target_kind == TARGET_KIND_RESIDUAL_LOG_MEDIAN:
+                if _PYFUNC_MEDIAN_COL not in df.columns:
+                    raise ValueError(
+                        f"Residual target requires {_PYFUNC_MEDIAN_COL!r} column "
+                        f"(log1p anchor; use release or marketplace lowest)"
+                    )
+                med = np.maximum(
+                    df[_PYFUNC_MEDIAN_COL].to_numpy(dtype=np.float64, copy=False),
+                    0.0,
+                )
+                logp = logp + np.log1p(med)
+                anchor_arr = np.maximum(med, 1e-6)
+            elif _PYFUNC_MEDIAN_COL in df.columns:
+                anchor_arr = np.maximum(
+                    df[_PYFUNC_MEDIAN_COL].to_numpy(dtype=np.float64, copy=False),
+                    1e-6,
+                )
+            else:
+                anchor_arr = np.ones(n, dtype=np.float64)
         if "media_condition" in df.columns:
             media_ord = np.array(
                 [condition_string_to_ordinal(x) for x in df["media_condition"]],
@@ -143,13 +205,26 @@ class VinylIQPricePyFunc(PythonModel):
 def pyfunc_artifacts_dict(model_dir: Path) -> dict[str, str]:
     """Artifact paths for mlflow.pyfunc.log_model (all must exist)."""
     d = Path(model_dir)
-    return {
+    out: dict[str, str] = {
         "manifest": str(d / "model_manifest.json"),
         "regressor": str(d / "regressor.joblib"),
         "feature_columns": str(d / "feature_columns.joblib"),
         "target_log1p": str(d / "target_log1p.joblib"),
         "condition_params": str(d / "condition_params.json"),
     }
+    mf = d / "model_manifest.json"
+    if mf.is_file():
+        try:
+            man = json.loads(mf.read_text())
+        except (json.JSONDecodeError, OSError):
+            return out
+        ens = man.get("ensemble")
+        if isinstance(ens, dict) and ens.get("enabled"):
+            nm = str(ens.get("regressor_nm", "regressor_ensemble_nm.joblib"))
+            od = str(ens.get("regressor_ord", "regressor_ensemble_ord.joblib"))
+            out["regressor_ensemble_nm"] = str(d / nm)
+            out["regressor_ensemble_ord"] = str(d / od)
+    return out
 
 
 def build_pyfunc_input_example(
