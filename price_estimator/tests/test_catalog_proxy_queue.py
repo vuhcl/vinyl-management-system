@@ -24,9 +24,6 @@ def _schema_sql() -> str:
     CREATE TABLE releases_features (
       release_id TEXT PRIMARY KEY,
       master_id TEXT,
-      want_count INTEGER,
-      have_count INTEGER,
-      want_have_ratio REAL,
       genre TEXT,
       style TEXT,
       decade INTEGER,
@@ -55,9 +52,6 @@ def test_catalog_proxy_orders_by_master_artist_and_year(tmp_path: Path) -> None:
         (
             "1",
             "m1",
-            0,
-            0,
-            None,
             "Rock",
             None,
             1990,
@@ -78,9 +72,6 @@ def test_catalog_proxy_orders_by_master_artist_and_year(tmp_path: Path) -> None:
         (
             "2",
             "m1",
-            0,
-            0,
-            None,
             "Rock",
             None,
             1990,
@@ -101,9 +92,6 @@ def test_catalog_proxy_orders_by_master_artist_and_year(tmp_path: Path) -> None:
         (
             "3",
             "m2",
-            0,
-            0,
-            None,
             "Rock",
             None,
             1990,
@@ -123,7 +111,7 @@ def test_catalog_proxy_orders_by_master_artist_and_year(tmp_path: Path) -> None:
         ),
     ]
     conn.executemany(
-        "INSERT INTO releases_features VALUES (" + ",".join("?" * 21) + ")",
+        "INSERT INTO releases_features VALUES (" + ",".join("?" * 18) + ")",
         rows,
     )
     conn.commit()
@@ -155,9 +143,6 @@ def test_max_per_primary_artist_caps_mega_catalog(tmp_path: Path) -> None:
             (
                 rid,
                 "m_pop",
-                0,
-                0,
-                None,
                 "Rock",
                 None,
                 1990,
@@ -180,9 +165,6 @@ def test_max_per_primary_artist_caps_mega_catalog(tmp_path: Path) -> None:
         (
             "199",
             "m_other",
-            0,
-            0,
-            None,
             "Rock",
             None,
             1990,
@@ -202,7 +184,7 @@ def test_max_per_primary_artist_caps_mega_catalog(tmp_path: Path) -> None:
         ),
     )
     conn.executemany(
-        "INSERT INTO releases_features VALUES (" + ",".join("?" * 21) + ")",
+        "INSERT INTO releases_features VALUES (" + ",".join("?" * 18) + ")",
         rows,
     )
     conn.commit()
@@ -243,9 +225,6 @@ def test_file_format_releases_excluded_from_proxy_queue(tmp_path: Path) -> None:
     file_row = (
         "f1",
         "mf",
-        0,
-        0,
-        None,
         "Rock",
         None,
         1990,
@@ -266,9 +245,6 @@ def test_file_format_releases_excluded_from_proxy_queue(tmp_path: Path) -> None:
     vinyl_row = (
         "v1",
         "mf",
-        0,
-        0,
-        None,
         "Rock",
         None,
         1990,
@@ -287,7 +263,7 @@ def test_file_format_releases_excluded_from_proxy_queue(tmp_path: Path) -> None:
         '[{"name":"Vinyl","qty":"1","descriptions":[]}]',
     )
     conn.executemany(
-        "INSERT INTO releases_features VALUES (" + ",".join("?" * 21) + ")",
+        "INSERT INTO releases_features VALUES (" + ",".join("?" * 18) + ")",
         [file_row, vinyl_row],
     )
     conn.commit()
@@ -312,9 +288,6 @@ def test_unofficial_releases_excluded_from_proxy_queue(tmp_path: Path) -> None:
     unofficial_desc = (
         "u1",
         "mf",
-        0,
-        0,
-        None,
         "Rock",
         None,
         1990,
@@ -335,9 +308,6 @@ def test_unofficial_releases_excluded_from_proxy_queue(tmp_path: Path) -> None:
     unofficial_json = (
         "u2",
         "mf",
-        0,
-        0,
-        None,
         "Rock",
         None,
         1990,
@@ -358,9 +328,6 @@ def test_unofficial_releases_excluded_from_proxy_queue(tmp_path: Path) -> None:
     ok_row = (
         "ok_u",
         "mf",
-        0,
-        0,
-        None,
         "Rock",
         None,
         1990,
@@ -379,7 +346,7 @@ def test_unofficial_releases_excluded_from_proxy_queue(tmp_path: Path) -> None:
         '[{"name":"Vinyl","qty":"1","descriptions":["LP"]}]',
     )
     conn.executemany(
-        "INSERT INTO releases_features VALUES (" + ",".join("?" * 21) + ")",
+        "INSERT INTO releases_features VALUES (" + ",".join("?" * 18) + ")",
         [unofficial_desc, unofficial_json, ok_row],
     )
     conn.commit()
@@ -408,9 +375,6 @@ def test_twelve_inch_format_desc_counts_as_vinyl_without_word_vinyl(
     cd = (
         "cd12",
         "ms",
-        0,
-        0,
-        None,
         "Rock",
         None,
         1990,
@@ -431,9 +395,6 @@ def test_twelve_inch_format_desc_counts_as_vinyl_without_word_vinyl(
     twelve = (
         "tw12",
         "ms",
-        0,
-        0,
-        None,
         "Rock",
         None,
         1990,
@@ -452,7 +413,7 @@ def test_twelve_inch_format_desc_counts_as_vinyl_without_word_vinyl(
         None,
     )
     conn.executemany(
-        "INSERT INTO releases_features VALUES (" + ",".join("?" * 21) + ")",
+        "INSERT INTO releases_features VALUES (" + ",".join("?" * 18) + ")",
         [cd, twelve],
     )
     conn.commit()
@@ -481,9 +442,6 @@ def test_target_vinyl_fraction_shapes_proxy_head(tmp_path: Path) -> None:
             (
                 f"v{i}",
                 "m1",
-                0,
-                0,
-                None,
                 "Rock",
                 None,
                 1990,
@@ -507,9 +465,6 @@ def test_target_vinyl_fraction_shapes_proxy_head(tmp_path: Path) -> None:
             (
                 f"c{i}",
                 "m1",
-                0,
-                0,
-                None,
                 "Rock",
                 None,
                 1990,
@@ -529,7 +484,7 @@ def test_target_vinyl_fraction_shapes_proxy_head(tmp_path: Path) -> None:
             ),
         )
     conn.executemany(
-        "INSERT INTO releases_features VALUES (" + ",".join("?" * 21) + ")",
+        "INSERT INTO releases_features VALUES (" + ",".join("?" * 18) + ")",
         rows,
     )
     conn.commit()
@@ -555,9 +510,6 @@ def test_lp_sorts_before_twelve_inch_at_same_proxy_score(tmp_path: Path) -> None
     twelve = (
         "twelve1",
         "ms",
-        0,
-        0,
-        None,
         "Rock",
         None,
         1990,
@@ -578,9 +530,6 @@ def test_lp_sorts_before_twelve_inch_at_same_proxy_score(tmp_path: Path) -> None
     lp_row = (
         "lp1",
         "ms",
-        0,
-        0,
-        None,
         "Rock",
         None,
         1990,
@@ -599,7 +548,7 @@ def test_lp_sorts_before_twelve_inch_at_same_proxy_score(tmp_path: Path) -> None
         '[{"name":"Vinyl","qty":"1","descriptions":["LP"]}]',
     )
     conn.executemany(
-        "INSERT INTO releases_features VALUES (" + ",".join("?" * 21) + ")",
+        "INSERT INTO releases_features VALUES (" + ",".join("?" * 18) + ")",
         [twelve, lp_row],
     )
     conn.commit()
@@ -624,9 +573,6 @@ def test_vinyl_sorts_before_cd_at_same_proxy_score(tmp_path: Path) -> None:
     cd = (
         "cd1",
         "ms",
-        0,
-        0,
-        None,
         "Rock",
         None,
         1990,
@@ -647,9 +593,6 @@ def test_vinyl_sorts_before_cd_at_same_proxy_score(tmp_path: Path) -> None:
     vinyl = (
         "vin1",
         "ms",
-        0,
-        0,
-        None,
         "Rock",
         None,
         1990,
@@ -668,7 +611,7 @@ def test_vinyl_sorts_before_cd_at_same_proxy_score(tmp_path: Path) -> None:
         '[{"name":"Vinyl","qty":"1","descriptions":[]}]',
     )
     conn.executemany(
-        "INSERT INTO releases_features VALUES (" + ",".join("?" * 21) + ")",
+        "INSERT INTO releases_features VALUES (" + ",".join("?" * 18) + ")",
         [cd, vinyl],
     )
     conn.commit()
@@ -694,9 +637,6 @@ def test_proxy_excludes_various_artists_by_id_and_name(tmp_path: Path) -> None:
     va_row = (
         "va194",
         "m9",
-        0,
-        0,
-        None,
         "Comp",
         None,
         2000,
@@ -717,9 +657,6 @@ def test_proxy_excludes_various_artists_by_id_and_name(tmp_path: Path) -> None:
     va_name = (
         "va_name",
         "m9",
-        0,
-        0,
-        None,
         "Comp",
         None,
         2000,
@@ -740,9 +677,6 @@ def test_proxy_excludes_various_artists_by_id_and_name(tmp_path: Path) -> None:
     unknown_primary = (
         "unk1",
         "m9",
-        0,
-        0,
-        None,
         "Rock",
         None,
         2000,
@@ -763,9 +697,6 @@ def test_proxy_excludes_various_artists_by_id_and_name(tmp_path: Path) -> None:
     ok_row = (
         "ok1",
         "m9",
-        0,
-        0,
-        None,
         "Rock",
         None,
         2000,
@@ -784,7 +715,7 @@ def test_proxy_excludes_various_artists_by_id_and_name(tmp_path: Path) -> None:
         None,
     )
     conn.executemany(
-        "INSERT INTO releases_features VALUES (" + ",".join("?" * 21) + ")",
+        "INSERT INTO releases_features VALUES (" + ",".join("?" * 18) + ")",
         [va_row, va_name, unknown_primary, ok_row],
     )
     conn.commit()
@@ -807,14 +738,11 @@ def test_stratified_proxy_picks_top_per_decade(tmp_path: Path) -> None:
     conn = sqlite3.connect(str(db))
     conn.executescript(_schema_sql())
     conn.executemany(
-        "INSERT INTO releases_features VALUES (" + ",".join("?" * 21) + ")",
+        "INSERT INTO releases_features VALUES (" + ",".join("?" * 18) + ")",
         [
             (
                 "10",
                 "ma",
-                0,
-                0,
-                None,
                 "X",
                 None,
                 1980,
@@ -835,9 +763,6 @@ def test_stratified_proxy_picks_top_per_decade(tmp_path: Path) -> None:
             (
                 "20",
                 "ma",
-                0,
-                0,
-                None,
                 "X",
                 None,
                 1980,
@@ -858,9 +783,6 @@ def test_stratified_proxy_picks_top_per_decade(tmp_path: Path) -> None:
             (
                 "30",
                 "mb",
-                0,
-                0,
-                None,
                 "Y",
                 None,
                 1990,
@@ -918,13 +840,10 @@ def test_warns_when_community_selected_and_counts_zero(
     conn.executescript(_schema_sql())
     conn.execute(
         "INSERT INTO releases_features VALUES ("
-        + ",".join("?" * 21)
+        + ",".join("?" * 18)
         + ")",
         (
             "99",
-            None,
-            0,
-            0,
             None,
             None,
             None,
@@ -947,15 +866,29 @@ def test_warns_when_community_selected_and_counts_zero(
     conn.commit()
     conn.close()
 
+    mp = tmp_path / "mp.sqlite"
+    mconn = sqlite3.connect(str(mp))
+    mconn.execute(
+        "CREATE TABLE marketplace_stats (release_id TEXT PRIMARY KEY, "
+        "community_want INTEGER, community_have INTEGER)"
+    )
+    mconn.execute(
+        "INSERT INTO marketplace_stats (release_id, community_want, community_have) "
+        "VALUES ('99', 0, 0)"
+    )
+    mconn.commit()
+    mconn.close()
+
     mod = _load_build_queue_module()
     mod.warn_if_community_sort_useless(
         db,
+        mp,
         rank_by=rank_by,
         stratify_order=stratify,
     )
     err = capsys.readouterr().err
     assert "Warning" in err
-    assert "MAX(have_count+want_count)" in err
+    assert "MAX(community_have+community_want)" in err
     assert "release_id" in err
 
 
@@ -969,9 +902,6 @@ def _minimal_feature_row(
     return {
         "release_id": release_id,
         "master_id": master_id,
-        "want_count": 0,
-        "have_count": 0,
-        "want_have_ratio": None,
         "genre": None,
         "style": None,
         "decade": None,

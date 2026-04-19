@@ -3,9 +3,10 @@
 Build releases_features SQLite from a CSV (extract from Discogs dump or manual seed).
 
 Expected CSV columns (header row):
-  release_id, want_count, have_count, genre, year, country, format_desc, master_id, master_year
+  release_id, genre, year, country, format_desc, master_id, master_year
+  Optional: formats_json (Discogs-style list with ``descriptions`` for §1a Repress rule).
 
-Optional: is_original_pressing computed as 1 if year == master_year when both set.
+Community counts are **not** stored (plan §1b); use ``marketplace_stats`` at training time.
 
 Usage:
   PYTHONPATH=. python price_estimator/scripts/build_feature_store.py \\
@@ -34,23 +35,24 @@ def row_from_csv(rec: dict[str, str]) -> dict:
             return d
 
     rid = rec.get("release_id", "").strip()
-    wants = i(rec.get("want_count", "0"))
-    haves = i(rec.get("have_count", "0"))
-    ratio = wants / haves if haves > 0 else 0.0
     year = i(rec.get("year", "0"))
     decade = (year // 10) * 10 if year else 0
-    my = i(rec.get("master_year", "0"))
-    is_orig = 1 if year and my and year == my else 0
     fmt = rec.get("format_desc", "") or ""
-    from price_estimator.src.features.vinyliq_features import format_flags_from_text
+    from price_estimator.src.features.vinyliq_features import (
+        format_flags_from_text,
+        is_original_pressing_from_format_desc,
+        is_original_pressing_from_formats_json,
+    )
 
     flags = format_flags_from_text(fmt)
+    fj = (rec.get("formats_json") or "").strip()
+    if fj:
+        is_orig = is_original_pressing_from_formats_json(fj)
+    else:
+        is_orig = is_original_pressing_from_format_desc(fmt)
     row = {
         "release_id": rid,
         "master_id": rec.get("master_id", "").strip() or None,
-        "want_count": wants,
-        "have_count": haves,
-        "want_have_ratio": ratio,
         "genre": rec.get("genre", "").strip() or None,
         "style": rec.get("style", "").strip() or None,
         "decade": decade,

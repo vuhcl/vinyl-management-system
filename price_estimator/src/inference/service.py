@@ -11,14 +11,15 @@ import numpy as np
 import yaml
 
 from ..features.vinyliq_features import (
-    apply_condition_log_adjustment,
     condition_string_to_ordinal,
     default_feature_columns,
     first_artist_id,
     first_label_id,
+    grade_delta_scale_params_from_cond,
     row_dict_for_inference,
+    scaled_condition_log_adjustment,
 )
-from ..models.condition_adjustment import load_params
+from ..models.condition_adjustment import load_params_with_grade_delta_overlays
 from ..models.fitted_regressor import (
     TARGET_KIND_RESIDUAL_LOG_MEDIAN,
     FittedVinylIQRegressor,
@@ -247,7 +248,7 @@ class InferenceService:
         )
         cols = list(model.feature_columns) if model is not None else default_feature_columns()
         x = np.array([[float(row[c]) for c in cols]], dtype=np.float64)
-        cond_params = load_params(self.model_dir / "condition_params.json")
+        cond_params = load_params_with_grade_delta_overlays(self.model_dir)
         media_ord = condition_string_to_ordinal(media_condition)
         sleeve_ord = condition_string_to_ordinal(sleeve_condition)
 
@@ -266,6 +267,7 @@ class InferenceService:
             }
 
         logp_raw = float(model.predict_log1p(x)[0])
+        anchor = 0.0
         if model.target_kind == TARGET_KIND_RESIDUAL_LOG_MEDIAN:
             mp = (
                 stats.get("release_lowest_price")
@@ -278,13 +280,32 @@ class InferenceService:
             logp = logp_raw + float(np.log1p(max(anchor, 0.0)))
         else:
             logp = logp_raw
-        logp_adj = apply_condition_log_adjustment(
+            mp2 = (
+                stats.get("median_price")
+                or stats.get("release_lowest_price")
+                or stats.get("lowest_price")
+            )
+            if mp2 is not None and float(mp2) > 0:
+                anchor = float(mp2)
+        yr_raw = (cat or {}).get("year")
+        try:
+            release_year = float(yr_raw) if yr_raw is not None else None
+        except (TypeError, ValueError):
+            release_year = None
+        if release_year is not None and not np.isfinite(release_year):
+            release_year = None
+        scale_p = grade_delta_scale_params_from_cond(cond_params)
+        anchor_scale = float(anchor) if anchor > 0 else 1.0
+        logp_adj = scaled_condition_log_adjustment(
             logp,
             media_ord,
             sleeve_ord,
-            alpha=float(cond_params.get("alpha", -0.06)),
-            beta=float(cond_params.get("beta", -0.04)),
+            base_alpha=float(cond_params.get("alpha", -0.06)),
+            base_beta=float(cond_params.get("beta", -0.04)),
             ref_grade=float(cond_params.get("ref_grade", 8.0)),
+            anchor_usd=max(anchor_scale, 1e-6),
+            release_year=release_year,
+            scale_params=scale_p,
         )
         price = float(np.expm1(np.clip(logp_adj, 0, 25)))
         spread = max(price * 0.12, 1.0)

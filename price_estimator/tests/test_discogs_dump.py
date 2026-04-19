@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import gzip
 import json
+import sqlite3
 from pathlib import Path
 from xml.etree import ElementTree as ET
 
@@ -61,9 +62,6 @@ def test_release_element_to_row_maps_fields():
     assert row["master_id"] == "10"
     assert row["year"] == 1973
     assert row["decade"] == 1970
-    assert row["want_count"] == 5
-    assert row["have_count"] == 10
-    assert row["want_have_ratio"] == 0.5
     assert row["genre"] == "Rock"
     assert row["style"] == "Prog Rock"
     assert row["country"] == "US"
@@ -125,9 +123,6 @@ def test_probe_dump_community(tmp_path: Path):
 
 def test_row_dict_for_inference_catalog_indices_and_counts():
     cat = {
-        "want_count": 10,
-        "have_count": 5,
-        "want_have_ratio": 2.0,
         "year": 1973,
         "decade": 1970,
         "genre": "Rock",
@@ -146,7 +141,13 @@ def test_row_dict_for_inference_catalog_indices_and_counts():
         "is_picture_disc": 0,
         "is_promo": 0,
     }
-    stats = {"median_price": 0.0, "lowest_price": 0.0, "num_for_sale": 0}
+    stats = {
+        "median_price": 0.0,
+        "lowest_price": 0.0,
+        "num_for_sale": 0,
+        "community_want": 10,
+        "community_have": 5,
+    }
     row = row_dict_for_inference(
         "1",
         "Near Mint (NM or M-)",
@@ -171,14 +172,24 @@ def test_row_dict_for_inference_catalog_indices_and_counts():
 
 
 def test_feature_store_iter_release_ids_sort_by_have(tmp_path: Path):
+    mp = tmp_path / "mp.sqlite"
+    mconn = sqlite3.connect(str(mp))
+    mconn.execute(
+        "CREATE TABLE marketplace_stats (release_id TEXT PRIMARY KEY, "
+        "community_want INTEGER, community_have INTEGER)"
+    )
+    mconn.executemany(
+        "INSERT INTO marketplace_stats VALUES (?,?,?)",
+        [("1", 5, 10), ("2", 500, 99)],
+    )
+    mconn.commit()
+    mconn.close()
+
     db = FeatureStoreDB(tmp_path / "fs.sqlite")
     rows = [
         {
             "release_id": "1",
             "master_id": None,
-            "want_count": 5,
-            "have_count": 10,
-            "want_have_ratio": 0.5,
             "genre": None,
             "style": None,
             "decade": 0,
@@ -199,9 +210,6 @@ def test_feature_store_iter_release_ids_sort_by_have(tmp_path: Path):
         {
             "release_id": "2",
             "master_id": None,
-            "want_count": 500,
-            "have_count": 99,
-            "want_have_ratio": 0.0,
             "genre": None,
             "style": None,
             "decade": 0,
@@ -221,12 +229,23 @@ def test_feature_store_iter_release_ids_sort_by_have(tmp_path: Path):
         },
     ]
     db.upsert_many(rows)
-    ordered = list(db.iter_release_ids(sort_by="have_count"))
+    mp_arg = str(mp.resolve())
+    ordered = list(
+        db.iter_release_ids(sort_by="have_count", marketplace_db_path=mp_arg)
+    )
     assert ordered == ["2", "1"]
-    assert list(db.iter_release_ids(sort_by="want_count")) == ["2", "1"]
-    assert list(db.iter_release_ids(sort_by="popularity")) == ["2", "1"]
+    assert list(
+        db.iter_release_ids(sort_by="want_count", marketplace_db_path=mp_arg)
+    ) == ["2", "1"]
+    assert list(
+        db.iter_release_ids(sort_by="popularity", marketplace_db_path=mp_arg)
+    ) == ["2", "1"]
     assert list(db.iter_release_ids(sort_by="release_id")) == ["1", "2"]
-    assert list(db.iter_release_ids(sort_by="want_count", min_want=100)) == ["2"]
+    assert list(
+        db.iter_release_ids(
+            sort_by="want_count", marketplace_db_path=mp_arg, min_want=100
+        )
+    ) == ["2"]
 
 
 def test_feature_store_upsert_many(tmp_path: Path):
@@ -235,9 +254,6 @@ def test_feature_store_upsert_many(tmp_path: Path):
         {
             "release_id": "1",
             "master_id": None,
-            "want_count": 1,
-            "have_count": 2,
-            "want_have_ratio": 0.5,
             "genre": "a",
             "style": "b",
             "decade": 1990,
@@ -258,9 +274,6 @@ def test_feature_store_upsert_many(tmp_path: Path):
         {
             "release_id": "2",
             "master_id": "9",
-            "want_count": 0,
-            "have_count": 0,
-            "want_have_ratio": 0.0,
             "genre": None,
             "style": None,
             "decade": 0,

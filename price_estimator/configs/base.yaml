@@ -8,8 +8,9 @@ paths:
 
 vinyliq:
   paths:
-    marketplace_db: "data/cache/marketplace_stats.sqlite"
+    marketplace_db: "price_estimator/data/cache/marketplace_stats.sqlite"
     feature_store_db: "data/feature_store.sqlite"
+    sale_history_db: "data/cache/sale_history.sqlite"
     model_dir: "artifacts/vinyliq"
   # Which env var the API reads for the personal token (see repo .env.template).
   discogs_token_env: "DISCOGS_TOKEN"
@@ -23,25 +24,73 @@ vinyliq:
     learning_rate: 0.05
     subsample: 0.85
     colsample_bytree: 0.85
-  # Dollar target for ``log1p(y)`` (see ``label_synthesis``).
-  # spread_signal / blend / median / geometric_mean: use ``release_lowest_price``
-  # from ``GET /releases`` when present, else marketplace stats (``median_price`` there
-  # often equals lowest — not a separate Discogs median).
-  # price_suggestion: pseudo-label from ``GET /marketplace/price_suggestions`` for
-  # ``price_suggestion_grade`` (Discogs seller tool; requires token + seller settings).
-  # The collector stores the full grade→price map in ``price_suggestions_json`` for
-  # all conditions (see ``price_suggestions_ladder_from_json`` in marketplace_db).
-  # price_suggestion_strict: skip rows when suggestions JSON is empty.
-  # release_lowest: y = release or stats lowest.
-  # spread_num_for_sale_reference: listing-depth term for spread_signal only.
+  # Training label: ``sale_floor_blend`` / ``sale_floor`` only (``load_training_frame``).
+  # Sold nowcast + listing floor blend: ``sale_floor_targets.sale_floor_blend_bundle``;
+  # needs ``paths.sale_history_db`` (sale_history.sqlite). ``price_suggestion_grade``
+  # selects the NM ladder rung used inside that bundle (see plan §7.1d).
   training_label:
-    mode: spread_signal
-    blend_median_weight: 0.7
-    spread_lowest_floor_ratio: 0.35
-    spread_min_median_weight: 0.25
-    spread_num_for_sale_reference: 20
+    mode: sale_floor_blend
     price_suggestion_grade: "Near Mint (NM or M-)"
     price_suggestion_fallback_lowest: true
+    sale_floor_blend:
+      # nm_substrings_only (default) | ordinal_cascade (relax VG+ then VG when NM pool is thin).
+      sale_condition_policy: ordinal_cascade
+      n_min_trend: 8
+      # Longer half-life keeps older NM sales in the recency kernel (helps sparse cheap titles).
+      recency_half_life_days: 420.0
+      # Substrings for NM-tier sale rows (media+sleeve blob); extend for Discogs text variants.
+      nm_substrings:
+        - "near mint"
+        - "(nm"
+        - "mint (m"
+        - "nm or m-"
+      w_base: 0.55
+      w_min: 0.2
+      w_max: 0.9
+      tier_b_delta: 0.05
+      tier_c_delta: 0.1
+      gap_epsilon_log: 0.02
+      gap_k_down: 0.15
+      gap_k_up: 0.12
+      gap_delta_cap: 0.5
+      # Caps toxic listing floors / extrapolated nowcasts (``sale_floor_targets``).
+      label_cap:
+        enabled: true
+        sale_nowcast_max_multiple_of_max_price: 5.0
+        listing_max_multiple_of_sale_peak: 3.0
+        # Clip raw listing floor to this multiple of max eligible sale USD before ``listing_max_multiple_of_sale_peak``; ≤0 disables.
+        listing_lo_clip_multiple_of_sale_peak: 2.0
+        y_max_multiple_of_sale_peak: 5.0
+        y_max_multiple_of_anchor_m: 20.0
+        listing_max_multiple_of_median_only: 20.0
+      # Optional sold-nowcast stabilization (omit or use defaults — same as legacy Tier A/B/C).
+      # ``sold_nowcast_s``: week/month bins aggregate comps before Tier A Theil-Sen; shrink blends
+      # extrapolation toward recency weighted median in log space.
+      nowcast_stability:
+        trend_time_bin: month           # day | week | month
+        trend_bin_agg: median          # median | mean | last (within each bin)
+        min_history_span_days: 30       # Tier A requires max(date)-min(date) ≥ this (days); 0 disables
+        tier_a_shrink_lambda: 0.9      # 1 = pure Tier A; smaller pulls toward weighted median anchor
+        tier_b_center: weighted_median           # mean | weighted_median (Tier B recency pool)
+      # Merged into ``sale_floor_blend`` (see ``sale_floor_blend_config_from_raw``).
+      ordinal_cascade:
+        strict_min_ordinal: 7.0
+        relax_steps: [6.0, 5.0]
+        min_rows_strict: 8
+        min_rows_relax_1: 5
+        min_rows_relax_2: 6
+        apply_grade_uplift_to_nm: true
+        condition_adjustment:
+          alpha: -0.06
+          beta: -0.04
+          ref_grade: 8.0
+        grade_delta_scale:
+          price_ref_usd: 50.0
+          price_gamma: 0.0
+          price_scale_min: 0.25
+          price_scale_max: 4.0
+          age_k: 0.0
+          age_center_year: 2000.0
   # residual_log_median (default): y = log1p(y_label) - log1p(anchor); anchor prefers
   # release_lowest_price then stats lowest/median; X omits price/liquidity; inference
   # adds log1p(live anchor). Pyfunc column name remains ``discogs_median_price``.
@@ -50,17 +99,69 @@ vinyliq:
   training_target:
     kind: residual_log_median
     residual_z_clip_abs: null
+  # Two-head NM-substrings + ordinal-cascade ensemble (sigmoid blend on log1p anchor).
+  # Requires tuning.enabled. Each head fits on rows where that policy yields a label (like production: both heads score every row).
+  ensemble:
+    enabled: true
+    blend:
+      kind: log_anchor_sigmoid
+      t: 4.0
+      s: 0.35
+    # After both heads are fit, optionally grid-search (t,s) on the inner val set only
+    # using the same objective as tuning.selection_metric (no retraining).
+    blend_sweep:
+      enabled: true
+      t: [3.0, 4.0, 5.0, 6.0]
+      s: [0.25, 0.35, 0.5]
+    # Or explicit pairs: pairs: [[3.5, 0.3], [4.0, 0.35]]
+    share_hparams: true
   tuning:
     enabled: true
-    # Champion trial: median_ape (default, robust per-release %) | wape (dollar-mass %) |
-    # mae_dollars (legacy absolute $)
-    selection_metric: median_ape
+    # Release-level CV on outer-train for trial scoring (1 = legacy single inner val split).
+    cv_folds: 5
+    cv_agg: mean
+    # null | anchor_quartile (stratify folds by release median anchor quartiles).
+    cv_stratify: anchor_quartile
+    # Hard caps on aggregated CV val metrics (fractions of 1). Feasible trials compete on
+    # selection_metric; if none pass, violation_fallback applies.
+    constraints:
+      enabled: true
+      mdape_max: 0.03
+      wape_max: 0.15
+      violation_fallback: best_violation
+    constraint_penalty:
+      lambda_mdape: 100.0
+      lambda_wape: 1000.0
+    # Champion trial: median_ape | wape | mae_dollars | composite (with selection_composite).
+    selection_metric: composite
+    selection_composite:
+      w_mdape: 1.0
+      w_wape: 0.3
+      w_mae: 0.1
+      mae_ref_usd: 10.0
     n_trials_per_family: 8
     val_fraction: 0.15
     test_fraction: 0.15
     early_stopping_rounds: 50
     # null = use top-level ``seed``
     random_seed: null
+    # Optional per-row fit weights: null | inv_sqrt_anchor (upweight low-dollar anchors).
+    sample_weight: null
+    # Optional multipliers per mutually exclusive format bucket (after anchor weights).
+    # Example: emphasize LP / 12\" / box for gradient fit (mean weight stays 1).
+    # format_sample_weight_multipliers:
+    #   default: 1.0
+    #   twelve: 1.5
+    #   lp: 1.5
+    #   box_multi: 1.3
+    # # Weights for selection_metric weighted_format_mdape | weighted_format_composite
+    # # (weighted average of per-bucket val MdAPE). Omit for equal buckets.
+    # selection_format_weights:
+    #   default: 1.0
+    #   twelve: 2.0
+    #   lp: 2.0
+    #   box_multi: 1.5
+    # selection_format_min_count: 15
   model_families:
     xgboost: true
     lightgbm: true

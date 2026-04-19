@@ -17,9 +17,6 @@ def test_residual_row_dict_ignores_listing_dollar_scalars() -> None:
         "country": "us",
         "year": 1975,
         "decade": 1970,
-        "want_count": 10,
-        "have_count": 100,
-        "want_have_ratio": 0.1,
         "is_original_pressing": 1,
         "label_tier": 2.0,
         "is_colored_vinyl": 0,
@@ -32,6 +29,7 @@ def test_residual_row_dict_ignores_listing_dollar_scalars() -> None:
     zeros = {
         "median_price": 0.0,
         "lowest_price": 0.0,
+        "release_lowest_price": 40.0,
         "num_for_sale": 7,
         "community_want": 10,
         "community_have": 100,
@@ -41,6 +39,7 @@ def test_residual_row_dict_ignores_listing_dollar_scalars() -> None:
     live = {
         "median_price": 99.0,
         "lowest_price": 40.0,
+        "release_lowest_price": 40.0,
         "num_for_sale": 7,
         "community_want": 10,
         "community_have": 100,

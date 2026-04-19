@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import math
 import re
+from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
@@ -87,6 +88,49 @@ def format_flags_from_text(desc: str | None) -> dict[str, int]:
     }
 
 
+def _description_is_repress_token(raw: str) -> bool:
+    """True if Discogs format description is the **Repress** pressing tag."""
+    s = str(raw).strip().lower()
+    return s == "repress"
+
+
+def is_original_pressing_from_formats_list(
+    formats: list[Any] | None,
+) -> int:
+    """
+    Plan §1a: ``1`` when no format carries the **Repress** description; ``0`` if any
+    does. **Empty / missing formats → ``1``** (not labeled as repress in format data).
+    """
+    if not formats:
+        return 1
+    for f in formats:
+        if not isinstance(f, dict):
+            continue
+        for d in f.get("descriptions") or []:
+            if _description_is_repress_token(str(d)):
+                return 0
+    return 1
+
+
+def is_original_pressing_from_formats_json(formats_json: str | None) -> int:
+    """§1a from stored ``formats_json`` (same semantics as ``is_original_pressing_from_formats_list``)."""
+    fmts = parse_json_list(formats_json) if formats_json else []
+    return is_original_pressing_from_formats_list(fmts)
+
+
+def is_original_pressing_from_format_desc(format_desc: str | None) -> int:
+    """
+    Fallback when only a flat ``format_desc`` string exists (e.g. CSV ingest).
+    Treat whole-token **repress** as repress-labeled (conservative substring on word bounds).
+    """
+    if not format_desc:
+        return 1
+    t = format_desc.lower()
+    if re.search(r"\brepress\b", t):
+        return 0
+    return 1
+
+
 def parse_json_list(raw: Any) -> list[Any]:
     if raw is None:
         return []
@@ -101,11 +145,29 @@ def parse_json_list(raw: Any) -> list[Any]:
     return []
 
 
+def _format_qty_sum(formats: list[Any]) -> int:
+    """Sum Discogs ``formats[].qty`` when present (multi-disc / box hints)."""
+    total = 0
+    for f in formats:
+        if not isinstance(f, dict):
+            continue
+        q = f.get("qty")
+        if q is None or not str(q).strip():
+            continue
+        try:
+            qi = int(float(str(q).strip()))
+        except (TypeError, ValueError):
+            continue
+        if qi > 0:
+            total += qi
+    return total
+
+
 def format_medium_flags(
     formats: list[Any],
     format_desc: str | None,
 ) -> dict[str, float]:
-    """LP / 7\" / 12\" / CD hints from structured formats + format_desc."""
+    """LP / 7\" / 10\" / 12\" / CD + box set / multi-disc + ordinal family."""
     parts: list[str] = []
     for f in formats:
         if not isinstance(f, dict):
@@ -119,12 +181,44 @@ def format_medium_flags(
     is_lp = bool(re.search(r"\blp\b", t))
     is_7 = bool(re.search(r"7\s*\"", t)) or bool(re.search(r"\b7\s*inch\b", t))
     is_12 = bool(re.search(r"1\s*2\s*\"", t)) or bool(re.search(r"\b12\s*inch\b", t))
+    is_10 = bool(re.search(r"10\s*\"", t)) or bool(re.search(r"\b10\s*inch\b", t))
     is_cd = bool(re.search(r"\bcd\b", t)) or ("compact disc" in t)
+    is_box = "box set" in t
+    qty_sum = _format_qty_sum(formats)
+    multi_phrase = (
+        bool(re.search(r"\b[2-9]\s*x\s*vinyl\b", t))
+        or "double vinyl" in t
+        or "triple vinyl" in t
+        or ("quad" in t and "vinyl" in t)
+        or (qty_sum >= 2)
+    )
+    is_multi = float(bool(multi_phrase and not is_box))
+    is_box_f = float(is_box)
+
+    # Ordinal: cheap singles vs LP/box (trees also get raw bits).
+    fmt_family = 0.0
+    if is_box or multi_phrase:
+        fmt_family = 5.0
+    elif is_7:
+        fmt_family = 2.0
+    elif is_10:
+        fmt_family = 3.0
+    elif is_12:
+        fmt_family = 3.0
+    elif is_lp:
+        fmt_family = 4.0
+    elif is_cd:
+        fmt_family = 1.0
+
     return {
         "is_lp": float(is_lp),
         "is_7inch": float(is_7),
+        "is_10inch": float(is_10),
         "is_12inch": float(is_12),
         "is_cd": float(is_cd),
+        "is_box_set": is_box_f,
+        "is_multi_disc": is_multi,
+        "format_family": float(fmt_family),
     }
 
 
@@ -183,16 +277,24 @@ def _int_nonneg_or_zero(v: Any) -> int:
     return n if n > 0 else 0
 
 
+def _positive_listing_scalar(v: Any) -> bool:
+    if v is None:
+        return False
+    try:
+        return float(v) > 0
+    except (TypeError, ValueError):
+        return False
+
+
 def _community_counts_from_stats_or_catalog(
     stats: dict[str, Any],
     cat: dict[str, Any],
 ) -> tuple[int, int]:
-    """Prefer marketplace ``community_*`` when those keys exist (incl. SQLite NULL→0); else FS."""
-    if "community_want" in stats or "community_have" in stats:
-        cw = _int_nonneg_or_zero(stats.get("community_want"))
-        ch = _int_nonneg_or_zero(stats.get("community_have"))
-        return cw, ch
-    return int(cat.get("want_count") or 0), int(cat.get("have_count") or 0)
+    """Plan §1b: community counts from marketplace row only (``cat`` unused, kept for API)."""
+    _ = cat
+    cw = _int_nonneg_or_zero(stats.get("community_want"))
+    ch = _int_nonneg_or_zero(stats.get("community_have"))
+    return cw, ch
 
 
 def _marketplace_depth_feature_block(
@@ -292,8 +394,12 @@ def _catalog_tail(
         "format_count": counts["format_count"],
         "is_lp": medium["is_lp"],
         "is_7inch": medium["is_7inch"],
+        "is_10inch": medium["is_10inch"],
         "is_12inch": medium["is_12inch"],
         "is_cd": medium["is_cd"],
+        "is_box_set": medium["is_box_set"],
+        "is_multi_disc": medium["is_multi_disc"],
+        "format_family": medium["format_family"],
         "genre_index": float(genre_index),
     }
 
@@ -310,6 +416,7 @@ def row_dict_for_inference(
     primary_artist_index: float = 0.0,
     primary_label_index: float = 0.0,
     include_marketplace_scalars_in_features: bool = True,
+    cold_start_flags: dict[str, float] | None = None,
 ) -> dict[str, float]:
     """Build one numeric feature dict for XGBoost (categoricals encoded externally).
 
@@ -335,6 +442,24 @@ def row_dict_for_inference(
 
     cat = catalog or {}
     depth = _marketplace_depth_feature_block(stats, cat)
+    lo_pos = bool(
+        _positive_listing_scalar(
+            stats.get("release_lowest_price")
+            or stats.get("lowest_price")
+            or stats.get("median_price"),
+        )
+    )
+    if cold_start_flags is not None:
+        has_sh = float(cold_start_flags.get("has_sale_history", 0.0) or 0.0)
+        s_imp = float(cold_start_flags.get("s_imputed", 0.0) or 0.0)
+        has_lf = float(cold_start_flags.get("has_listing_floor", 0.0) or 0.0)
+    else:
+        has_sh = 0.0
+        s_imp = 0.0
+        has_lf = 1.0 if lo_pos else 0.0
+    depth["has_sale_history"] = has_sh
+    depth["s_imputed"] = s_imp
+    depth["has_listing_floor"] = has_lf
     tail = _catalog_tail(
         cat,
         genre_index=genre_index,
@@ -358,6 +483,15 @@ def row_dict_for_inference(
     return out
 
 
+def _cold_start_feature_column_names() -> list[str]:
+    """Plan §4d / §7.1b: training-time missingness for sale history and listing floor."""
+    return [
+        "has_sale_history",
+        "s_imputed",
+        "has_listing_floor",
+    ]
+
+
 def _marketplace_depth_column_names() -> list[str]:
     return [
         "log1p_community_want",
@@ -372,6 +506,7 @@ def _marketplace_depth_column_names() -> list[str]:
         "has_nfs_delta",
         "blocked_from_sale",
         "has_blocked_from_sale",
+        *_cold_start_feature_column_names(),
     ]
 
 
@@ -399,8 +534,12 @@ def residual_training_feature_columns() -> list[str]:
         "format_count",
         "is_lp",
         "is_7inch",
+        "is_10inch",
         "is_12inch",
         "is_cd",
+        "is_box_set",
+        "is_multi_disc",
+        "format_family",
         "genre_index",
     ]
 
@@ -430,8 +569,12 @@ def default_feature_columns() -> list[str]:
         "format_count",
         "is_lp",
         "is_7inch",
+        "is_10inch",
         "is_12inch",
         "is_cd",
+        "is_box_set",
+        "is_multi_disc",
+        "format_family",
         "genre_index",
     ]
 
@@ -451,3 +594,147 @@ def apply_condition_log_adjustment(
         + alpha * (media_ord - ref_grade)
         + beta * (sleeve_ord - ref_grade)
     )
+
+
+@dataclass(frozen=True)
+class GradeDeltaScaleParams:
+    """
+    Optional multipliers for condition ``alpha`` / ``beta`` by anchor price and year.
+
+    When ``price_gamma`` and ``age_k`` are both zero, ``grade_scale_from_params`` is 1.0
+    (legacy constant adjustment).
+    """
+
+    price_ref_usd: float = 50.0
+    price_gamma: float = 0.0
+    price_scale_min: float = 0.25
+    price_scale_max: float = 4.0
+    age_k: float = 0.0
+    age_center_year: float = 2000.0
+
+    @staticmethod
+    def from_mapping(raw: dict[str, Any] | None) -> GradeDeltaScaleParams | None:
+        if not raw or not isinstance(raw, dict):
+            return None
+        def _f(key: str, default: float) -> float:
+            v = raw.get(key)
+            if v is None:
+                return default
+            try:
+                return float(v)
+            except (TypeError, ValueError):
+                return default
+
+        return GradeDeltaScaleParams(
+            price_ref_usd=_f("price_ref_usd", 50.0),
+            price_gamma=_f("price_gamma", 0.0),
+            price_scale_min=_f("price_scale_min", 0.25),
+            price_scale_max=_f("price_scale_max", 4.0),
+            age_k=_f("age_k", 0.0),
+            age_center_year=_f("age_center_year", 2000.0),
+        )
+
+
+def grade_delta_scale_params_from_cond(cond: dict[str, Any] | None) -> GradeDeltaScaleParams | None:
+    """Read nested ``grade_delta_scale`` from merged condition params (YAML / JSON)."""
+    if not cond:
+        return None
+    raw = cond.get("grade_delta_scale")
+    return GradeDeltaScaleParams.from_mapping(raw) if raw is not None else None
+
+
+def scale_price_from_anchor(anchor_usd: float, p: GradeDeltaScaleParams) -> float:
+    if p.price_gamma == 0.0:
+        return 1.0
+    a = max(float(anchor_usd), 1e-6)
+    den = math.log1p(max(float(p.price_ref_usd), 1e-6))
+    if den <= 1e-12:
+        return 1.0
+    raw = (math.log1p(a) / den) ** float(p.price_gamma)
+    lo, hi = float(p.price_scale_min), float(p.price_scale_max)
+    return max(lo, min(hi, float(raw)))
+
+
+def scale_age_from_year(year: float | None, p: GradeDeltaScaleParams) -> float:
+    if p.age_k == 0.0 or year is None:
+        return 1.0
+    try:
+        y = float(year)
+    except (TypeError, ValueError):
+        return 1.0
+    if not math.isfinite(y):
+        return 1.0
+    raw = 1.0 + float(p.age_k) * (float(p.age_center_year) - y) / 50.0
+    return max(0.25, min(4.0, float(raw)))
+
+
+def grade_scale_from_params(
+    anchor_usd: float,
+    release_year: float | None,
+    p: GradeDeltaScaleParams | None,
+) -> float:
+    if p is None:
+        return 1.0
+    return scale_price_from_anchor(anchor_usd, p) * scale_age_from_year(release_year, p)
+
+
+def scaled_condition_log_adjustment(
+    log_price: float,
+    media_ord: float,
+    sleeve_ord: float,
+    *,
+    base_alpha: float,
+    base_beta: float,
+    ref_grade: float,
+    anchor_usd: float | None = None,
+    release_year: float | None = None,
+    scale_params: GradeDeltaScaleParams | None = None,
+) -> float:
+    """
+    Same law as ``apply_condition_log_adjustment`` with ``alpha_eff = base_alpha * g``,
+    ``beta_eff = base_beta * g``, ``g = grade_scale_from_params(anchor, year, scale)``.
+
+    When ``scale_params`` is None or both ``price_gamma`` and ``age_k`` are zero,
+    delegates to ``apply_condition_log_adjustment`` for bitwise parity with legacy.
+    """
+    if scale_params is None or (
+        scale_params.price_gamma == 0.0 and scale_params.age_k == 0.0
+    ):
+        return apply_condition_log_adjustment(
+            log_price,
+            media_ord,
+            sleeve_ord,
+            alpha=base_alpha,
+            beta=base_beta,
+            ref_grade=ref_grade,
+        )
+    anchor = (
+        float(anchor_usd)
+        if anchor_usd is not None and float(anchor_usd) > 0
+        else 1.0
+    )
+    g = grade_scale_from_params(anchor, release_year, scale_params)
+    ae = float(base_alpha) * g
+    be = float(base_beta) * g
+    return log_price + ae * (media_ord - ref_grade) + be * (sleeve_ord - ref_grade)
+
+
+def log1p_nm_equivalent_from_sale_usd(
+    sale_usd: float,
+    media_ord: float,
+    sleeve_ord: float,
+    nm_media_ord: float,
+    nm_sleeve_ord: float,
+    *,
+    base_alpha: float,
+    base_beta: float,
+    anchor_usd: float,
+    release_year: float | None,
+    scale_params: GradeDeltaScaleParams | None,
+) -> float:
+    """``log1p`` dollar at NM reference ordinals (sale-history uplift), shared law as pyfunc."""
+    log_obs = math.log1p(max(float(sale_usd), 0.0))
+    g = grade_scale_from_params(max(float(anchor_usd), 1e-6), release_year, scale_params)
+    return log_obs + float(base_alpha) * g * (float(nm_media_ord) - float(media_ord)) + float(
+        base_beta
+    ) * g * (float(nm_sleeve_ord) - float(sleeve_ord))

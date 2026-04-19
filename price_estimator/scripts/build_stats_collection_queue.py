@@ -78,13 +78,19 @@ def _root() -> Path:
     return Path(__file__).resolve().parents[1]
 
 
-def max_community_sum(db_path: Path) -> int:
+def max_community_sum(db_path: Path, marketplace_db_path: Path) -> int:
+    if not marketplace_db_path.is_file():
+        return 0
+    mp = str(marketplace_db_path.resolve())
     conn = sqlite3.connect(str(db_path))
     try:
+        conn.execute("ATTACH DATABASE ? AS mdb", (mp,))
         row = conn.execute(
-            "SELECT MAX(COALESCE(have_count,0) + COALESCE(want_count,0)) "
-            "FROM releases_features"
+            "SELECT MAX(COALESCE(m.community_have,0) + COALESCE(m.community_want,0)) "
+            "FROM releases_features AS f "
+            "LEFT JOIN mdb.marketplace_stats AS m ON m.release_id = f.release_id"
         ).fetchone()
+        conn.execute("DETACH DATABASE mdb")
         return int(row[0] or 0)
     finally:
         conn.close()
@@ -92,6 +98,7 @@ def max_community_sum(db_path: Path) -> int:
 
 def warn_if_community_sort_useless(
     db_path: Path,
+    marketplace_db_path: Path,
     *,
     rank_by: str,
     stratify_order: str,
@@ -102,12 +109,19 @@ def warn_if_community_sort_useless(
     )
     if not uses_community:
         return
-    mx = max_community_sum(db_path)
+    if not marketplace_db_path.is_file():
+        print(
+            "Warning: community ordering needs --marketplace-db "
+            "(marketplace_stats.sqlite).",
+            file=sys.stderr,
+        )
+        return
+    mx = max_community_sum(db_path, marketplace_db_path)
     if mx > 0:
         return
     print(
         "Warning: community ordering (have/want) selected but "
-        "MAX(have_count+want_count) is 0 in this feature store — "
+        "MAX(community_have+community_want) is 0 in marketplace_stats — "
         "order matches release_id only. Use --rank-by proxy for "
         "catalog-based ranking.",
         file=sys.stderr,
@@ -300,6 +314,7 @@ def collect_ranked_ids(
     primary_limit: int,
     extra_limit: int,
     rank_by: str = "proxy",
+    marketplace_db_path: Path | None = None,
     w_master: float = 1.0,
     w_artist: float = 1.0,
     max_per_primary_artist: int = 5,
@@ -337,6 +352,12 @@ def collect_ranked_ids(
         "have_count" if rank_by == "want" else "want_count"
     )
 
+    if marketplace_db_path is None or not marketplace_db_path.is_file():
+        raise ValueError(
+            "rank_by combined/have/want requires marketplace_db_path to "
+            "marketplace_stats.sqlite (plan §1b)."
+        )
+    mp_path = Path(marketplace_db_path).resolve()
     store = FeatureStoreDB(db_path)
     out: list[str] = []
     seen: set[str] = set()
@@ -348,6 +369,7 @@ def collect_ranked_ids(
                 (rid, "", v)
                 for rid, v in store.iter_community_release_rows(
                     sort_by=primary_sort,
+                    marketplace_db_path=mp_path,
                     min_have=0,
                     min_want=0,
                     exclude_various_artists=True,
@@ -371,6 +393,7 @@ def collect_ranked_ids(
                 (rid, "", v)
                 for rid, v in store.iter_community_release_rows(
                     sort_by=secondary_sort,
+                    marketplace_db_path=mp_path,
                     min_have=0,
                     min_want=0,
                     exclude_various_artists=True,
@@ -398,6 +421,7 @@ def collect_stratified_ids(
     stratify_by: str,
     seed: int,
     order: str = "random",
+    marketplace_db_path: Path | None = None,
     w_master: float = 1.0,
     w_artist: float = 1.0,
     max_per_primary_artist_per_bucket: int = 0,
@@ -431,11 +455,11 @@ def collect_stratified_ids(
         )
 
         queue_row_filter = (
-            f"({sql_exclude_various_primary_artist('artists_json')}) AND "
-            f"({sql_exclude_file_format_releases('formats_json', 'format_desc')}) "
-            f"AND ({sql_exclude_unofficial_releases('formats_json', 'format_desc')})"
+            f"({sql_exclude_various_primary_artist('f.artists_json')}) AND "
+            f"({sql_exclude_file_format_releases('f.formats_json', 'f.format_desc')}) "
+            f"AND ({sql_exclude_unofficial_releases('f.formats_json', 'f.format_desc')})"
         )
-        _vinyl_rank_plain = sql_vinyl_format_rank("formats_json", "format_desc")
+        _vinyl_rank_plain = sql_vinyl_format_rank("f.formats_json", "f.format_desc")
 
         split: tuple[int, int] | None = None
         if target_vinyl_fraction is not None and 0 < float(
@@ -449,20 +473,36 @@ def collect_stratified_ids(
             partition_plain = "decade"
             partition_inner = "decade"
         else:
-            partition_plain = "decade, COALESCE(genre, '')"
+            partition_plain = "decade, _g"
             partition_inner = "decade, _g"
+
+        mp_attached = False
+        if order == "community":
+            if marketplace_db_path is None or not Path(marketplace_db_path).is_file():
+                print(
+                    "Stratified community order needs --marketplace-db "
+                    "(marketplace_stats.sqlite).",
+                    file=sys.stderr,
+                )
+                return []
+            conn.execute(
+                "ATTACH DATABASE ? AS mdb",
+                (str(Path(marketplace_db_path).resolve()),),
+            )
+            mp_attached = True
 
         if order == "community":
             if split is not None:
                 kv, kn = split
                 sql = f"""
 WITH inner AS (
-  SELECT release_id,
-         decade,
-         COALESCE(genre, '') AS _g,
+  SELECT f.release_id AS release_id,
+         f.decade AS decade,
+         COALESCE(f.genre, '') AS _g,
          CAST(({_vinyl_rank_plain}) AS INTEGER) AS _v,
-         (COALESCE(have_count, 0) + COALESCE(want_count, 0)) AS pop
-  FROM releases_features
+         (COALESCE(m.community_have, 0) + COALESCE(m.community_want, 0)) AS pop
+  FROM releases_features AS f
+  LEFT JOIN mdb.marketplace_stats AS m ON m.release_id = f.release_id
   WHERE {queue_row_filter}
 ),
 vin AS (
@@ -492,18 +532,19 @@ SELECT release_id FROM non
                 params = (kv, kn)
             else:
                 inner_order = (
-                    "(COALESCE(have_count, 0) + COALESCE(want_count, 0)) DESC, "
+                    "(COALESCE(m.community_have, 0) + COALESCE(m.community_want, 0)) DESC, "
                     f"{_vinyl_rank_plain} DESC, "
-                    "release_id ASC"
+                    "f.release_id ASC"
                 )
                 sql = f"""
                 SELECT release_id FROM (
-                  SELECT release_id,
+                  SELECT f.release_id AS release_id,
                          row_number() OVER (
                            PARTITION BY {partition_plain}
                            ORDER BY {inner_order}
                          ) AS rn
-                  FROM releases_features
+                  FROM releases_features AS f
+                  LEFT JOIN mdb.marketplace_stats AS m ON m.release_id = f.release_id
                   WHERE {queue_row_filter}
                 )
                 WHERE rn <= ?
@@ -537,12 +578,12 @@ SELECT release_id FROM non
                 kv, kn = split
                 sql = f"""
 WITH inner AS (
-  SELECT release_id,
-         decade,
-         COALESCE(genre, '') AS _g,
+  SELECT f.release_id AS release_id,
+         f.decade AS decade,
+         COALESCE(f.genre, '') AS _g,
          CAST(({_vinyl_rank_plain}) AS INTEGER) AS _v,
-         abs((CAST(release_id AS INTEGER) * 7919 + ?) % 2147483647) AS h
-  FROM releases_features
+         abs((CAST(f.release_id AS INTEGER) * 7919 + ?) % 2147483647) AS h
+  FROM releases_features AS f
   WHERE {queue_row_filter}
 ),
 vin AS (
@@ -573,14 +614,14 @@ SELECT release_id FROM non
             else:
                 sql = f"""
                 SELECT release_id FROM (
-                  SELECT release_id,
+                  SELECT f.release_id AS release_id,
                          row_number() OVER (
                            PARTITION BY {partition_plain}
                            ORDER BY abs(
-                             (CAST(release_id AS INTEGER) * 7919 + ?) % 2147483647
+                             (CAST(f.release_id AS INTEGER) * 7919 + ?) % 2147483647
                            )
                          ) AS rn
-                  FROM releases_features
+                  FROM releases_features AS f
                   WHERE {queue_row_filter}
                 )
                 WHERE rn <= ?
@@ -597,6 +638,12 @@ SELECT release_id FROM non
                 file=sys.stderr,
             )
             return []
+        finally:
+            if mp_attached:
+                try:
+                    conn.execute("DETACH DATABASE mdb")
+                except sqlite3.OperationalError:
+                    pass
     finally:
         conn.close()
 
@@ -636,6 +683,15 @@ def main() -> int:
         type=Path,
         default=None,
         help="feature_store.sqlite (default: price_estimator/data/feature_store.sqlite)",
+    )
+    p.add_argument(
+        "--marketplace-db",
+        type=Path,
+        default=None,
+        help=(
+            "marketplace_stats.sqlite for have/want/combined ranks and community "
+            "stratify (default: <parent of --db>/cache/marketplace_stats.sqlite)"
+        ),
     )
     p.add_argument(
         "--out", type=Path, required=True, help="Output file, one ID per line"
@@ -750,6 +806,9 @@ def main() -> int:
     db_path = args.db or (root / "data" / "feature_store.sqlite")
     if not db_path.is_absolute():
         db_path = root / db_path
+    mp_path = args.marketplace_db or (db_path.parent / "cache" / "marketplace_stats.sqlite")
+    if not mp_path.is_absolute():
+        mp_path = root / mp_path
 
     if not db_path.is_file():
         print(f"Feature store not found: {db_path}", file=sys.stderr)
@@ -769,6 +828,7 @@ def main() -> int:
 
     warn_if_community_sort_useless(
         db_path,
+        mp_path,
         rank_by=args.rank_by,
         stratify_order=strat_order,
     )
@@ -781,6 +841,7 @@ def main() -> int:
         primary_limit=max(0, args.primary_limit),
         extra_limit=max(0, args.extra_limit),
         rank_by=args.rank_by,
+        marketplace_db_path=mp_path if args.rank_by != "proxy" else None,
         w_master=float(args.proxy_weight_master),
         w_artist=float(args.proxy_weight_artist),
         max_per_primary_artist=mpp if args.rank_by == "proxy" else 0,
@@ -793,6 +854,7 @@ def main() -> int:
         stratify_by=args.stratify_by,
         seed=args.seed,
         order=strat_order,
+        marketplace_db_path=mp_path if strat_order == "community" else None,
         w_master=float(args.proxy_weight_master),
         w_artist=float(args.proxy_weight_artist),
         max_per_primary_artist_per_bucket=strat_mpp,
