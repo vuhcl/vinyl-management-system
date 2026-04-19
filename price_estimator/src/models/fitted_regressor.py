@@ -652,6 +652,87 @@ def mutually_exclusive_format_bucket_masks(
     }
 
 
+def combine_anchor_and_format_sample_weights(
+    anchors: np.ndarray,
+    anchor_mode: str | None,
+    X: np.ndarray,
+    feature_columns: list[str],
+    format_multipliers: dict[str, float] | None,
+) -> np.ndarray | None:
+    """
+    Apply optional per-format multipliers on top of ``training_sample_weights_from_anchors``.
+
+    Final weights are renormalized to mean 1. ``format_multipliers`` maps bucket names
+    (``box_multi``, ``seven``, … ``other``) and optional ``default`` for unspecified keys.
+    """
+    base = training_sample_weights_from_anchors(anchors, anchor_mode)
+    return apply_format_multipliers_to_weights(base, X, feature_columns, format_multipliers)
+
+
+def apply_format_multipliers_to_weights(
+    base: np.ndarray | None,
+    X: np.ndarray,
+    feature_columns: list[str],
+    mults: dict[str, float] | None,
+) -> np.ndarray | None:
+    """Multiply per-row weights by format bucket multipliers; renorm to mean 1."""
+    if mults is None or not mults:
+        return base
+    n = int(X.shape[0])
+    if base is None:
+        w = np.ones(n, dtype=np.float64)
+    else:
+        w = np.asarray(base, dtype=np.float64).copy()
+    default_m = float(mults.get("default", 1.0))
+    buckets = mutually_exclusive_format_bucket_masks(X, feature_columns)
+    order = ("box_multi", "seven", "ten", "twelve", "lp", "cd", "other")
+    for name in order:
+        mf = float(mults.get(name, default_m))
+        if mf != 1.0 and name in buckets:
+            w[buckets[name]] *= mf
+    s = float(np.sum(w))
+    if s <= 0:
+        return base
+    w *= float(n) / s
+    return w.astype(np.float64)
+
+
+def weighted_format_median_ape_dollars(
+    y_true_log1p: np.ndarray,
+    pred_log1p: np.ndarray,
+    X: np.ndarray,
+    feature_columns: list[str],
+    format_weights: dict[str, float],
+    *,
+    min_count: int = 15,
+) -> float:
+    """
+    Average of per-bucket median APE (log1p dollar space), weighted by ``format_weights``.
+
+    Buckets use the same mutually exclusive masks as slice tables. Buckets with
+    fewer than ``min_count`` rows are skipped.
+    """
+    buckets = mutually_exclusive_format_bucket_masks(X, feature_columns)
+    default_w = float(format_weights.get("default", 1.0))
+    order = ("box_multi", "seven", "ten", "twelve", "lp", "cd", "other")
+    num = 0.0
+    den = 0.0
+    for name in order:
+        m = buckets[name]
+        cnt = int(np.sum(m))
+        if cnt < int(min_count):
+            continue
+        md = median_ape_dollars(y_true_log1p[m], pred_log1p[m])
+        if not np.isfinite(md):
+            continue
+        wf = float(format_weights.get(name, default_w))
+        num += wf * float(md)
+        den += wf
+    if den <= 0:
+        return float("nan")
+    return float(num / den)
+
+
 def true_dollar_quartile_masks(yt: np.ndarray, *, n_bins: int = 4) -> list[np.ndarray]:
     """
     Boolean masks partitioning rows by **true** dollar price ``yt`` (cheap → expensive).

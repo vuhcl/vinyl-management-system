@@ -10,6 +10,8 @@ from price_estimator.src.features.vinyliq_features import residual_training_feat
 from price_estimator.src.models.fitted_regressor import (
     TARGET_KIND_RESIDUAL_LOG_MEDIAN,
     FittedVinylIQRegressor,
+    apply_format_multipliers_to_weights,
+    combine_anchor_and_format_sample_weights,
     ensemble_blend_weight_log_anchor,
     fit_regressor,
     load_fitted_regressor,
@@ -24,6 +26,7 @@ from price_estimator.src.models.fitted_regressor import (
     true_dollar_quartile_masks,
     training_sample_weights_from_anchors,
     wape_dollars,
+    weighted_format_median_ape_dollars,
 )
 
 
@@ -235,3 +238,67 @@ def test_metrics_dollar_from_log1p_masked_respects_min_count() -> None:
         y, p, mask, min_count=5
     )
     assert np.isnan(mae) and np.isnan(wape) and np.isnan(md)
+
+
+def test_apply_format_multipliers_increases_lp_weight() -> None:
+    cols = residual_training_feature_columns()
+    n = 10
+    X = np.zeros((n, len(cols)))
+    X[:5, cols.index("is_lp")] = 1.0
+    X[5:, cols.index("is_cd")] = 1.0
+    base = np.ones(n)
+    w = apply_format_multipliers_to_weights(
+        base,
+        X,
+        cols,
+        {"default": 1.0, "lp": 2.0},
+    )
+    assert w is not None
+    assert np.mean(w) == pytest.approx(1.0)
+    lp_m = X[:, cols.index("is_lp")] >= 0.5
+    cd_m = X[:, cols.index("is_cd")] >= 0.5
+    assert float(np.mean(w[lp_m])) > float(np.mean(w[cd_m]))
+
+
+def test_combine_anchor_format_weights_mean_one() -> None:
+    cols = residual_training_feature_columns()
+    n = 8
+    X = np.zeros((n, len(cols)))
+    X[:, cols.index("is_cd")] = 1.0
+    med = np.array([16.0, 25.0, 100.0, 4.0, 9.0, 36.0, 49.0, 4.0])
+    w = combine_anchor_and_format_sample_weights(
+        med,
+        "inv_sqrt_anchor",
+        X,
+        cols,
+        {"default": 1.0, "cd": 1.5},
+    )
+    assert w is not None
+    assert np.mean(w) == pytest.approx(1.0)
+
+
+def test_weighted_format_median_ape_finite_per_bucket() -> None:
+    cols = residual_training_feature_columns()
+    n = 80
+    rng = np.random.default_rng(42)
+    y_lp = np.log1p(rng.uniform(10.0, 80.0, size=n))
+    pred_lp = y_lp.copy()
+    pred_lp[:40] += 0.08
+    X = np.zeros((n, len(cols)))
+    X[:40, cols.index("is_lp")] = 1.0
+    X[40:, cols.index("is_7inch")] = 1.0
+    wf = weighted_format_median_ape_dollars(
+        y_lp,
+        pred_lp,
+        X,
+        cols,
+        {"default": 1.0, "lp": 4.0, "seven": 1.0},
+        min_count=15,
+    )
+    assert np.isfinite(wf)
+
+
+def test_slice_percent_one_decimal_can_hide_small_mdape() -> None:
+    """Ablation tip: compare slice diagnostics (p90/max) when cells show 0.0%."""
+    md = 0.003 / 100.0
+    assert f"{100.0 * md:.1f}" == "0.0"
