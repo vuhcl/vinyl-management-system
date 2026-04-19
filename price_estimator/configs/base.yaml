@@ -56,11 +56,22 @@ vinyliq:
       # Caps toxic listing floors / extrapolated nowcasts (``sale_floor_targets``).
       label_cap:
         enabled: true
-        sale_nowcast_max_multiple_of_max_price: 10.0
-        listing_max_multiple_of_sale_peak: 15.0
-        y_max_multiple_of_sale_peak: 15.0
-        y_max_multiple_of_anchor_m: 30.0
-        listing_max_multiple_of_median_only: 40.0
+        sale_nowcast_max_multiple_of_max_price: 5.0
+        listing_max_multiple_of_sale_peak: 3.0
+        # Clip raw listing floor to this multiple of max eligible sale USD before ``listing_max_multiple_of_sale_peak``; ≤0 disables.
+        listing_lo_clip_multiple_of_sale_peak: 2.0
+        y_max_multiple_of_sale_peak: 5.0
+        y_max_multiple_of_anchor_m: 20.0
+        listing_max_multiple_of_median_only: 20.0
+      # Optional sold-nowcast stabilization (omit or use defaults — same as legacy Tier A/B/C).
+      # ``sold_nowcast_s``: week/month bins aggregate comps before Tier A Theil-Sen; shrink blends
+      # extrapolation toward recency weighted median in log space.
+      nowcast_stability:
+        trend_time_bin: month           # day | week | month
+        trend_bin_agg: median          # median | mean | last (within each bin)
+        min_history_span_days: 30       # Tier A requires max(date)-min(date) ≥ this (days); 0 disables
+        tier_a_shrink_lambda: 0.9      # 1 = pure Tier A; smaller pulls toward weighted median anchor
+        tier_b_center: weighted_median           # mean | weighted_median (Tier B recency pool)
       # Merged into ``sale_floor_blend`` (see ``sale_floor_blend_config_from_raw``).
       ordinal_cascade:
         strict_min_ordinal: 7.0
@@ -127,7 +138,7 @@ vinyliq:
       w_mdape: 1.0
       w_wape: 0.3
       w_mae: 0.1
-      mae_ref_usd: 20.0
+      mae_ref_usd: 10.0
     n_trials_per_family: 8
     val_fraction: 0.15
     test_fraction: 0.15
@@ -136,6 +147,21 @@ vinyliq:
     random_seed: null
     # Optional per-row fit weights: null | inv_sqrt_anchor (upweight low-dollar anchors).
     sample_weight: null
+    # Optional multipliers per mutually exclusive format bucket (after anchor weights).
+    # Example: emphasize LP / 12\" / box for gradient fit (mean weight stays 1).
+    # format_sample_weight_multipliers:
+    #   default: 1.0
+    #   twelve: 1.5
+    #   lp: 1.5
+    #   box_multi: 1.3
+    # # Weights for selection_metric weighted_format_mdape | weighted_format_composite
+    # # (weighted average of per-bucket val MdAPE). Omit for equal buckets.
+    # selection_format_weights:
+    #   default: 1.0
+    #   twelve: 2.0
+    #   lp: 2.0
+    #   box_multi: 1.5
+    # selection_format_min_count: 15
   model_families:
     xgboost: true
     lightgbm: true
