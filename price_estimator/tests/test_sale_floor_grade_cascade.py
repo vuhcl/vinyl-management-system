@@ -25,6 +25,7 @@ from price_estimator.src.training.sale_floor_targets import (
     sale_floor_blend_bundle,
     sale_floor_blend_config_from_raw,
     sale_floor_blend_sf_cfg_for_policy,
+    sale_floor_label_diagnostics,
 )
 
 
@@ -124,6 +125,123 @@ def test_cascade_strict_when_enough_nm() -> None:
     )
     assert tag == "strict"
     assert len(elig) == 3
+
+
+def test_listing_lo_clip_vs_p_max_applied() -> None:
+    """Raw listing far above max sale is clipped to k * p_max before the listing-vs-sales cap."""
+    sf = {
+        "sale_condition_policy": "nm_substrings_only",
+        "nm_substrings": ["near mint"],
+        "n_min_trend": 3,
+        "label_cap": {
+            "enabled": True,
+            "listing_max_multiple_of_sale_peak": 15.0,
+            "listing_lo_clip_multiple_of_sale_peak": 2.0,
+            "sale_nowcast_max_multiple_of_max_price": 30.0,
+        },
+    }
+    mp = {
+        "fetched_at": "2021-01-01T00:00:00",
+        "median_price": 90.0,
+        "release_lowest_price": 50_000.0,
+    }
+    sales = [
+        _row(
+            order_date="2020-06-01",
+            price=88.0,
+            media="Near Mint (NM or M-)",
+            sleeve="Near Mint (NM or M-)",
+        ),
+    ]
+    fetch = {"status": "ok", "fetched_at": "2021-01-01T00:00:00"}
+    _y, _m, _f, diag = sale_floor_label_diagnostics(
+        mp,
+        sales,
+        fetch,
+        sf_cfg=sf,
+        nm_grade_key="Near Mint (NM or M-)",
+        release_year=1999.0,
+    )
+    assert diag.get("listing_lo_clip_applied") is True
+    assert diag.get("p_max_sale_observed_usd") == pytest.approx(88.0)
+    lo_blend = diag.get("listing_floor_for_blend_usd")
+    assert lo_blend is not None and lo_blend <= 88.0 * 2.0 + 1e-6
+
+
+def test_listing_lo_clip_not_applied_when_lo_within_multiple() -> None:
+    """No pre-clip when listing is already at or below k * p_max."""
+    sf = {
+        "sale_condition_policy": "nm_substrings_only",
+        "nm_substrings": ["near mint"],
+        "n_min_trend": 3,
+        "label_cap": {
+            "enabled": True,
+            "listing_max_multiple_of_sale_peak": 15.0,
+            "listing_lo_clip_multiple_of_sale_peak": 2.0,
+        },
+    }
+    mp = {
+        "fetched_at": "2021-01-01T00:00:00",
+        "median_price": 200.0,
+        "release_lowest_price": 150.0,
+    }
+    sales = [
+        _row(
+            order_date="2020-06-01",
+            price=100.0,
+            media="Near Mint (NM or M-)",
+            sleeve="Near Mint (NM or M-)",
+        ),
+    ]
+    fetch = {"status": "ok", "fetched_at": "2021-01-01T00:00:00"}
+    _y, _m, _f, diag = sale_floor_label_diagnostics(
+        mp,
+        sales,
+        fetch,
+        sf_cfg=sf,
+        nm_grade_key="Near Mint (NM or M-)",
+        release_year=None,
+    )
+    assert diag.get("listing_lo_clip_applied") is False
+
+
+def test_listing_lo_clip_disabled_when_k_nonpositive() -> None:
+    """``listing_lo_clip_multiple_of_sale_peak`` ≤ 0 skips the p_max pre-clip."""
+    sf = {
+        "sale_condition_policy": "nm_substrings_only",
+        "nm_substrings": ["near mint"],
+        "n_min_trend": 3,
+        "label_cap": {
+            "enabled": True,
+            "listing_max_multiple_of_sale_peak": 15.0,
+            "listing_lo_clip_multiple_of_sale_peak": 0.0,
+        },
+    }
+    mp = {
+        "fetched_at": "2021-01-01T00:00:00",
+        "median_price": 90.0,
+        "release_lowest_price": 10_000.0,
+    }
+    sales = [
+        _row(
+            order_date="2020-06-01",
+            price=88.0,
+            media="Near Mint (NM or M-)",
+            sleeve="Near Mint (NM or M-)",
+        ),
+    ]
+    fetch = {"status": "ok", "fetched_at": "2021-01-01T00:00:00"}
+    _y, _m, _f, diag = sale_floor_label_diagnostics(
+        mp,
+        sales,
+        fetch,
+        sf_cfg=sf,
+        nm_grade_key="Near Mint (NM or M-)",
+        release_year=None,
+    )
+    assert diag.get("listing_lo_clip_applied") is False
+    lo_blend = diag.get("listing_floor_for_blend_usd")
+    assert lo_blend is not None and lo_blend > 88.0 * 2.0
 
 
 def test_label_cap_clamps_absurd_listing_vs_modest_sales() -> None:

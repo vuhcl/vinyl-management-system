@@ -6,7 +6,7 @@ import json
 import math
 import re
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -176,9 +176,17 @@ class SaleFloorBlendConfig:
     label_cap_enabled: bool = True
     label_cap_sale_nowcast_max_multiple_of_max_price: float = 15.0
     label_cap_listing_max_multiple_of_sale_peak: float = 15.0
+    # Pre-cap raw listing floor before ``_cap_listing_floor_against_sales`` (disabled if ≤ 0).
+    label_cap_listing_lo_clip_multiple_of_sale_peak: float = 2.0
     label_cap_y_max_multiple_of_sale_peak: float = 15.0
     label_cap_y_max_multiple_of_anchor_m: float = 30.0
     label_cap_listing_max_multiple_of_median_only: float = 40.0
+    # --- optional sold-nowcast stabilization (omit `nowcast_stability` / defaults = legacy math)
+    trend_time_bin: str = "day"
+    trend_bin_agg: str = "median"
+    min_history_span_days: float = 0.0
+    tier_a_shrink_lambda: float = 1.0
+    tier_b_center: str = "mean"
 
 
 def sale_floor_blend_config_from_raw(
@@ -256,6 +264,12 @@ def sale_floor_blend_config_from_raw(
             lc.get("sale_nowcast_max_multiple_of_max_price", 30.0),
         )
         lm_sale = float(lc.get("listing_max_multiple_of_sale_peak", 35.0))
+        lo_clip = float(
+            lc.get(
+                "listing_lo_clip_multiple_of_sale_peak",
+                SaleFloorBlendConfig.label_cap_listing_lo_clip_multiple_of_sale_peak,
+            ),
+        )
         ym_sp = float(lc.get("y_max_multiple_of_sale_peak", 20.0))
         ym_m = float(lc.get("y_max_multiple_of_anchor_m", 50.0))
         lm_med = float(lc.get("listing_max_multiple_of_median_only", 40.0))
@@ -266,6 +280,12 @@ def sale_floor_blend_config_from_raw(
         )
         lm_sale = float(
             merged.get("label_cap_listing_max_multiple_of_sale_peak", 35.0),
+        )
+        lo_clip = float(
+            merged.get(
+                "label_cap_listing_lo_clip_multiple_of_sale_peak",
+                SaleFloorBlendConfig.label_cap_listing_lo_clip_multiple_of_sale_peak,
+            ),
         )
         ym_sp = float(merged.get("label_cap_y_max_multiple_of_sale_peak", 20.0))
         ym_m = float(merged.get("label_cap_y_max_multiple_of_anchor_m", 50.0))
@@ -279,6 +299,25 @@ def sale_floor_blend_config_from_raw(
         o = condition_string_to_ordinal(nm_grade_key)
         if o >= 0:
             um = us = float(o)
+
+    ns = merged.get("nowcast_stability")
+    trend_time_bin = SaleFloorBlendConfig.trend_time_bin
+    trend_bin_agg = SaleFloorBlendConfig.trend_bin_agg
+    min_history_span_days = SaleFloorBlendConfig.min_history_span_days
+    tier_a_shrink_lambda = SaleFloorBlendConfig.tier_a_shrink_lambda
+    tier_b_center = SaleFloorBlendConfig.tier_b_center
+    if isinstance(ns, dict):
+        ttb = str(ns.get("trend_time_bin", trend_time_bin)).strip().lower()
+        if ttb in ("day", "week", "month"):
+            trend_time_bin = ttb
+        tba = str(ns.get("trend_bin_agg", trend_bin_agg)).strip().lower()
+        if tba in ("median", "mean", "last"):
+            trend_bin_agg = tba
+        min_history_span_days = float(ns.get("min_history_span_days", min_history_span_days))
+        tier_a_shrink_lambda = float(ns.get("tier_a_shrink_lambda", tier_a_shrink_lambda))
+        tbc = str(ns.get("tier_b_center", tier_b_center)).strip().lower()
+        if tbc in ("mean", "weighted_median"):
+            tier_b_center = tbc
 
     return SaleFloorBlendConfig(
         n_min_trend=int(merged.get("n_min_trend", 8)),
@@ -309,9 +348,15 @@ def sale_floor_blend_config_from_raw(
         label_cap_enabled=label_cap_enabled,
         label_cap_sale_nowcast_max_multiple_of_max_price=sn_max,
         label_cap_listing_max_multiple_of_sale_peak=lm_sale,
+        label_cap_listing_lo_clip_multiple_of_sale_peak=lo_clip,
         label_cap_y_max_multiple_of_sale_peak=ym_sp,
         label_cap_y_max_multiple_of_anchor_m=ym_m,
         label_cap_listing_max_multiple_of_median_only=lm_med,
+        trend_time_bin=trend_time_bin,
+        trend_bin_agg=trend_bin_agg,
+        min_history_span_days=min_history_span_days,
+        tier_a_shrink_lambda=tier_a_shrink_lambda,
+        tier_b_center=tier_b_center,
     )
 
 
@@ -496,6 +541,116 @@ def eligible_ordinal_cascade_sale_rows(
     return [], "none"
 
 
+def _iso_week_bucket_center(dt: datetime) -> datetime:
+    y, w, _ = dt.isocalendar()
+    return datetime.fromisocalendar(y, w, 4).replace(
+        hour=12, minute=0, second=0, microsecond=0
+    )
+
+
+def _month_bucket_center(dt: datetime) -> datetime:
+    return datetime(dt.year, dt.month, 15, 12, 0, 0)
+
+
+def _tier_a_bucket_key(dt: datetime, *, trend_time_bin: str) -> tuple[Any, ...]:
+    if trend_time_bin == "month":
+        return (dt.year, dt.month)
+    return dt.isocalendar()[:2]
+
+
+def _tier_a_bucket_center_for_date(dt: datetime, *, trend_time_bin: str) -> datetime:
+    if trend_time_bin == "month":
+        return _month_bucket_center(dt)
+    return _iso_week_bucket_center(dt)
+
+
+def _aggregate_bin_prices(values: list[float], dates_in_bin: list[datetime], agg: str) -> float:
+    arr = np.array(values, dtype=np.float64)
+    if agg == "mean":
+        return float(np.mean(arr))
+    if agg == "last":
+        latest = max(range(len(dates_in_bin)), key=lambda i: dates_in_bin[i])
+        return float(values[latest])
+    return float(np.median(arr))
+
+
+def _weighted_median(prices: np.ndarray, weights: np.ndarray) -> float | None:
+    if prices.size == 0:
+        return None
+    sw = float(np.sum(weights))
+    if sw <= 1e-18:
+        med = float(np.median(prices))
+        return med if med > 0 else None
+    order = np.argsort(prices)
+    p_sorted = prices[order]
+    w_sorted = weights[order]
+    cw = np.cumsum(w_sorted)
+    half = 0.5 * sw
+    idx = int(np.searchsorted(cw, half, side="left"))
+    idx = min(idx, int(p_sorted.size - 1))
+    out = float(p_sorted[idx])
+    return out if out > 0 else None
+
+
+def _tier_b_center(prices: np.ndarray, weights: np.ndarray, mode: str) -> float | None:
+    mode_l = mode.strip().lower()
+    if mode_l == "weighted_median":
+        return _weighted_median(prices, weights)
+    sw = float(np.sum(weights))
+    if sw <= 1e-18:
+        med = float(np.median(prices))
+        return med if med > 0 else None
+    return float(np.sum(prices * weights) / sw)
+
+
+def _tier_a_xy_for_theil(
+    eligible: list[tuple[datetime, float]],
+    t_ref: datetime,
+    *,
+    t0: datetime,
+    cfg: SaleFloorBlendConfig,
+) -> tuple[np.ndarray, np.ndarray, float] | None:
+    """Build ``(xs, ys=log price)`` and evaluation abscissa ``t_x`` for ``t_ref``."""
+    bin_kind = cfg.trend_time_bin.strip().lower()
+    if bin_kind == "day":
+        dates = [d for d, _ in eligible]
+        prices = np.array([p for _, p in eligible], dtype=np.float64)
+        xs = np.array([(d - t0).total_seconds() / 86400.0 for d in dates], dtype=np.float64)
+        ys = np.log(prices)
+        t_x = (t_ref - t0).total_seconds() / 86400.0
+        return xs, ys, float(t_x)
+
+    buckets: dict[tuple[Any, ...], list[tuple[datetime, float]]] = {}
+    for d, p in eligible:
+        if p <= 0 or not math.isfinite(float(p)):
+            continue
+        key = _tier_a_bucket_key(d, trend_time_bin=bin_kind)
+        buckets.setdefault(key, []).append((d, float(p)))
+
+    if not buckets:
+        return None
+
+    centers: list[datetime] = []
+    y_vals: list[float] = []
+    for key in sorted(buckets.keys()):
+        rows = buckets[key]
+        ds = [x[0] for x in rows]
+        pv = [x[1] for x in rows]
+        c0 = rows[0][0]
+        center = _tier_a_bucket_center_for_date(c0, trend_time_bin=bin_kind)
+        centers.append(center)
+        y_vals.append(_aggregate_bin_prices(pv, ds, cfg.trend_bin_agg.strip().lower()))
+
+    xs = np.array([(c - t0).total_seconds() / 86400.0 for c in centers], dtype=np.float64)
+    y_arr = np.array(y_vals, dtype=np.float64)
+    if np.any(~np.isfinite(y_arr)) or np.any(y_arr <= 0):
+        return None
+    ys = np.log(y_arr)
+    cref = _tier_a_bucket_center_for_date(t_ref, trend_time_bin=bin_kind)
+    t_x = (cref - t0).total_seconds() / 86400.0
+    return xs, ys, float(t_x)
+
+
 def sold_nowcast_s(
     eligible: list[tuple[datetime, float]],
     t_ref: datetime,
@@ -513,11 +668,26 @@ def sold_nowcast_s(
     prices = np.array([p for _, p in eligible], dtype=np.float64)
     dates = [d for d, _ in eligible]
     t0 = min(dates)
-    xs = np.array([(d - t0).total_seconds() / 86400.0 for d in dates], dtype=np.float64)
-    t_x = (t_ref - t0).total_seconds() / 86400.0
-    ys = np.log(prices)
 
-    if n >= cfg.n_min_trend and float(np.std(xs)) > 1e-9:
+    span_days = (max(dates) - min(dates)).total_seconds() / 86400.0
+    min_span = float(cfg.min_history_span_days)
+    tier_a_allowed = min_span <= 0.0 or span_days >= min_span
+
+    series = _tier_a_xy_for_theil(eligible, t_ref, t0=t0, cfg=cfg)
+    xs: np.ndarray | None = None
+    ys: np.ndarray | None = None
+    t_x = 0.0
+    if series is not None:
+        xs, ys, t_x = series
+
+    n_trend = int(xs.shape[0]) if xs is not None else 0
+    if (
+        tier_a_allowed
+        and xs is not None
+        and ys is not None
+        and n_trend >= cfg.n_min_trend
+        and float(np.std(xs)) > 1e-9
+    ):
         try:
             res = theilslopes(ys, xs)
             intercept = float(res.intercept)
@@ -525,7 +695,21 @@ def sold_nowcast_s(
             log_s = intercept + slope * float(t_x)
             s = float(math.exp(log_s))
             if s > 0 and math.isfinite(s):
-                return s, "A", n
+                lam = float(cfg.tier_a_shrink_lambda)
+                lam = max(0.0, min(1.0, lam))
+                if lam < 1.0:
+                    ages_days = np.array(
+                        [(t_ref - d).total_seconds() / 86400.0 for d in dates],
+                        dtype=np.float64,
+                    )
+                    H = max(1.0, float(cfg.recency_half_life_days))
+                    w = np.exp(-np.maximum(ages_days, 0.0) / H)
+                    anchor = _weighted_median(prices, w)
+                    if anchor is not None and anchor > 0 and math.isfinite(anchor):
+                        log_s = lam * math.log(s) + (1.0 - lam) * math.log(float(anchor))
+                        s = float(math.exp(log_s))
+                if s > 0 and math.isfinite(s):
+                    return s, "A", n
         except (ValueError, RuntimeError):
             pass
 
@@ -539,8 +723,8 @@ def sold_nowcast_s(
         if sw <= 0:
             med = float(np.median(prices))
             return med if med > 0 else None, "B", n
-        yb = float(np.sum(prices * w) / sw)
-        return yb if yb > 0 else None, "B", n
+        yb = _tier_b_center(prices, w, cfg.tier_b_center)
+        return yb if yb is not None and yb > 0 else None, "B", n
 
     last_p = float(prices[-1])
     return last_p if last_p > 0 else None, "C", n
@@ -635,7 +819,7 @@ def sale_floor_blend_y(
     return None
 
 
-def sale_floor_blend_bundle(
+def _sale_floor_blend_compute(
     mp_row: dict[str, Any],
     sale_rows: list[dict[str, Any]],
     fetch_status: dict[str, Any] | None,
@@ -643,16 +827,17 @@ def sale_floor_blend_bundle(
     sf_cfg: dict[str, Any],
     nm_grade_key: str,
     release_year: float | None = None,
-) -> tuple[float | None, float | None, dict[str, float]]:
+) -> tuple[float | None, float | None, dict[str, float], dict[str, Any]]:
     """
-    Returns ``(y_label, m_anchor, x_flags)``.
+    Core sale-floor blend; returns ``(y_label, m_anchor, x_flags, diagnostics)``.
 
-    ``x_flags`` includes ``has_sale_history``, ``s_imputed``, ``has_listing_floor`` (0/1 floats).
+    ``diagnostics`` is for QA (listing vs sold nowcast vs caps); safe to log, not used in training X.
     """
     raw_cfg = sf_cfg if isinstance(sf_cfg, dict) else {}
     cfg = sale_floor_blend_config_from_raw(raw_cfg, nm_grade_key=nm_grade_key)
 
     lo = effective_listing_floor_lo(mp_row)
+    lo_raw_usd = float(lo) if lo is not None and lo > 0 else None
     has_listing_floor = 1.0 if lo is not None and lo > 0 else 0.0
 
     sh_ok = (
@@ -694,6 +879,7 @@ def sale_floor_blend_bundle(
         if _prices.size > 0:
             p_max_obs = float(np.max(_prices))
 
+    s_pre_cap = float(s) if s is not None and s > 0 else None
     if (
         cfg.label_cap_enabled
         and s is not None
@@ -706,7 +892,20 @@ def sale_floor_blend_bundle(
             s = min(float(s), hi_now)
 
     lo_for_blend: float | None = lo
+    listing_lo_clip_applied = False
     if cfg.label_cap_enabled and lo_for_blend is not None and lo_for_blend > 0:
+        k_clip = float(cfg.label_cap_listing_lo_clip_multiple_of_sale_peak)
+        if (
+            p_max_obs is not None
+            and p_max_obs > 0
+            and k_clip > 0
+            and math.isfinite(k_clip)
+            and math.isfinite(float(lo_for_blend))
+        ):
+            hi_clip = float(p_max_obs) * k_clip
+            if hi_clip > 0 and math.isfinite(hi_clip) and float(lo_for_blend) > hi_clip:
+                lo_for_blend = hi_clip
+                listing_lo_clip_applied = True
         lo_for_blend = _cap_listing_floor_against_sales(
             float(lo_for_blend),
             s,
@@ -722,20 +921,35 @@ def sale_floor_blend_bundle(
                     * float(cfg.label_cap_listing_max_multiple_of_median_only),
                 )
 
-    y = sale_floor_blend_y(s, lo_for_blend, tier, cfg=cfg)
-    if y is None:
-        return (
-            None,
-            None,
-            {
-                "has_sale_history": has_sale_history,
-                "s_imputed": s_imputed,
-                "has_listing_floor": has_listing_floor,
-                "sale_relax_tier_code": _relax_tier_code(relax_tag),
-            },
-        )
+    y_blend = sale_floor_blend_y(s, lo_for_blend, tier, cfg=cfg)
+    diag: dict[str, Any] = {
+        "listing_floor_raw_usd": lo_raw_usd,
+        "listing_floor_for_blend_usd": float(lo_for_blend)
+        if lo_for_blend is not None and lo_for_blend > 0
+        else None,
+        "sold_nowcast_usd": float(s) if s is not None and s > 0 else None,
+        "sold_nowcast_usd_pre_cap": s_pre_cap,
+        "sold_tier": tier,
+        "n_eligible_sales": int(n_elig),
+        "p_max_sale_observed_usd": p_max_obs,
+        "sale_history_fetch_ok": bool(sh_ok),
+        "sale_relax_tag": relax_tag,
+        "median_price_mp_usd": _positive(mp_row.get("median_price")),
+        "y_blend_usd": float(y_blend) if y_blend is not None and y_blend > 0 else None,
+        "listing_lo_clip_applied": listing_lo_clip_applied,
+    }
 
-    y_f = float(y)
+    flags = {
+        "has_sale_history": has_sale_history,
+        "s_imputed": s_imputed,
+        "has_listing_floor": has_listing_floor,
+        "sale_relax_tier_code": _relax_tier_code(relax_tag),
+    }
+
+    if y_blend is None:
+        return None, None, flags, diag
+
+    y_f = float(y_blend)
     if has_sale_history:
         m = residual_anchor_m_full_data(mp_row, nm_grade_key=nm_grade_key)
     else:
@@ -744,18 +958,69 @@ def sale_floor_blend_bundle(
         m = y_f
     m_f = float(m)
     if cfg.label_cap_enabled:
-        y_f = _cap_final_y_label(y_f, m_f, p_max_obs, cfg=cfg)
-
+        y_final = _cap_final_y_label(y_f, m_f, p_max_obs, cfg=cfg)
+    else:
+        y_final = y_f
+    diag["m_anchor_usd"] = float(m_f)
+    diag["y_label_final_usd"] = float(y_final)
+    diag["label_cap_enabled"] = bool(cfg.label_cap_enabled)
     return (
-        y_f,
-        m_f,
-        {
-            "has_sale_history": has_sale_history,
-            "s_imputed": s_imputed,
-            "has_listing_floor": has_listing_floor,
-            "sale_relax_tier_code": _relax_tier_code(relax_tag),
-        },
+        float(y_final),
+        float(m_f),
+        flags,
+        diag,
     )
+
+
+def sale_floor_label_diagnostics(
+    mp_row: dict[str, Any],
+    sale_rows: list[dict[str, Any]],
+    fetch_status: dict[str, Any] | None,
+    *,
+    sf_cfg: dict[str, Any],
+    nm_grade_key: str,
+    release_year: float | None = None,
+) -> tuple[float | None, float | None, dict[str, float], dict[str, Any]]:
+    """
+    Training-time sale-floor bundle plus a **diagnostic** dict for label QA.
+
+    The diagnostic keys include ``listing_floor_raw_usd``, ``sold_nowcast_usd``,
+    ``p_max_sale_observed_usd``, ``listing_lo_clip_applied``, ``y_label_final_usd``,
+    ``m_anchor_usd``, etc.
+    """
+    return _sale_floor_blend_compute(
+        mp_row,
+        sale_rows,
+        fetch_status,
+        sf_cfg=sf_cfg,
+        nm_grade_key=nm_grade_key,
+        release_year=release_year,
+    )
+
+
+def sale_floor_blend_bundle(
+    mp_row: dict[str, Any],
+    sale_rows: list[dict[str, Any]],
+    fetch_status: dict[str, Any] | None,
+    *,
+    sf_cfg: dict[str, Any],
+    nm_grade_key: str,
+    release_year: float | None = None,
+) -> tuple[float | None, float | None, dict[str, float]]:
+    """
+    Returns ``(y_label, m_anchor, x_flags)``.
+
+    ``x_flags`` includes ``has_sale_history``, ``s_imputed``, ``has_listing_floor`` (0/1 floats).
+    """
+    y, m, flags, _diag = _sale_floor_blend_compute(
+        mp_row,
+        sale_rows,
+        fetch_status,
+        sf_cfg=sf_cfg,
+        nm_grade_key=nm_grade_key,
+        release_year=release_year,
+    )
+    return y, m, flags
 
 
 def sale_floor_blend_sf_cfg_for_policy(
