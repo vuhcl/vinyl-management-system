@@ -2,12 +2,14 @@
 from __future__ import annotations
 
 import numpy as np
+import pytest
 
 from price_estimator.src.training.vinyliq_tuning_selection import (
     base_selection_score,
     build_cv_fold_val_release_sets,
     build_trial_record,
     is_feasible,
+    parse_selection_format_weights,
     parse_selection_objective,
     parse_tuning_constraints,
     pick_champion_trial,
@@ -236,3 +238,67 @@ def test_build_cv_folds_stratify_anchor_quartile() -> None:
     )
     assert len(folds) == 3
     assert folds[0] | folds[1] | folds[2] == train_r
+
+
+def test_parse_weighted_format_selection_metrics() -> None:
+    o1 = parse_selection_objective({"selection_metric": "weighted_format_mdape"})
+    assert o1.use_weighted_format_mdape is True
+    assert o1.composite is False
+    o2 = parse_selection_objective(
+        {
+            "selection_metric": "weighted_format_composite",
+            "selection_composite": {
+                "w_mdape": 2.0,
+                "w_wape": 0.5,
+                "w_mae": 0.1,
+                "mae_ref_usd": 20.0,
+            },
+        }
+    )
+    assert o2.composite is True
+    assert o2.use_weighted_format_mdape is True
+
+
+def test_parse_selection_format_weights_defaults() -> None:
+    w = parse_selection_format_weights(
+        {"selection_format_weights": {"twelve": 2.0, "default": 1.0}}
+    )
+    assert w["twelve"] == 2.0
+    assert w["seven"] == 1.0
+
+
+def test_build_trial_record_selection_mdapes_used_for_weighted_objective() -> None:
+    cons = parse_tuning_constraints({})
+    obj_w = parse_selection_objective(
+        {"selection_metric": "weighted_format_mdape"}
+    )
+    obj_g = parse_selection_objective({"selection_metric": "median_ape"})
+    rec_w = build_trial_record(
+        family="x",
+        params={},
+        mdapes=[0.20],
+        maes=[5.0],
+        wapes=[0.3],
+        best_iters=[10],
+        cv_agg="mean",
+        cons=cons,
+        sel_obj=obj_w,
+        cv_folds_used=1,
+        selection_mdapes=[0.05],
+    )
+    rec_g = build_trial_record(
+        family="x",
+        params={},
+        mdapes=[0.20],
+        maes=[5.0],
+        wapes=[0.3],
+        best_iters=[10],
+        cv_agg="mean",
+        cons=cons,
+        sel_obj=obj_g,
+        cv_folds_used=1,
+    )
+    assert rec_w is not None and rec_g is not None
+    assert rec_w.base_score == pytest.approx(0.05)
+    assert rec_g.base_score == pytest.approx(0.20)
+    assert rec_w.val_mdape == pytest.approx(0.20)

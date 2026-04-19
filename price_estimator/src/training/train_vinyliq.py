@@ -45,6 +45,7 @@ from ..models.condition_adjustment import default_params, save_params
 from ..models.fitted_regressor import (
     TARGET_KIND_DOLLAR_LOG1P,
     TARGET_KIND_RESIDUAL_LOG_MEDIAN,
+    combine_anchor_and_format_sample_weights,
     ensemble_blend_weight_log_anchor,
     fit_regressor,
     log1p_dollar_targets_for_metrics,
@@ -57,8 +58,8 @@ from ..models.fitted_regressor import (
     metrics_dollar_from_log1p_masked,
     pred_log1p_dollar_for_metrics,
     refit_champion,
-    training_sample_weights_from_anchors,
     wape_dollars,
+    weighted_format_median_ape_dollars,
 )
 from ..models.vinyliq_pyfunc import (
     VinylIQPricePyFunc,
@@ -79,6 +80,7 @@ from .vinyliq_tuning_selection import (
     build_cv_fold_val_release_sets,
     build_trial_record,
     log_split_anchor_format_diagnostics,
+    parse_selection_format_weights,
     parse_selection_objective,
     parse_tuning_constraints,
     pick_champion_trial,
@@ -122,6 +124,20 @@ def _tuning_sample_weight_mode(v: dict[str, Any]) -> str | None:
         return None
     s = str(sw).strip()
     return s if s else None
+
+
+def _format_sample_weight_multipliers(v: dict[str, Any]) -> dict[str, float] | None:
+    t = v.get("tuning") or {}
+    raw = t.get("format_sample_weight_multipliers")
+    if not isinstance(raw, dict) or not raw:
+        return None
+    out: dict[str, float] = {}
+    for k, val in raw.items():
+        try:
+            out[str(k)] = float(val)
+        except (TypeError, ValueError):
+            continue
+    return out or None
 
 
 def _training_label_console_summary(tl: dict[str, object]) -> str:
@@ -1021,6 +1037,8 @@ def _run_tuning(
     cons = parse_tuning_constraints(tuning)
     sel_obj = parse_selection_objective(tuning)
     sel_mlflow = sel_obj.mlflow_name
+    sel_fmt_weights = parse_selection_format_weights(tuning)
+    wf_min_count = int(tuning.get("selection_format_min_count", 15))
     cv_folds_cfg = int(tuning.get("cv_folds", 5))
     cv_agg = str(tuning.get("cv_agg", "mean")).strip().lower()
     if cv_agg not in ("mean", "max"):
@@ -1054,8 +1072,13 @@ def _run_tuning(
     spaces = v.get("search_spaces") or {}
     families = _enabled_families(v)
     sw_mode = _tuning_sample_weight_mode(v)
-    sw_tt = training_sample_weights_from_anchors(med_tt, sw_mode)
-    sw_full = training_sample_weights_from_anchors(med_tr_full, sw_mode)
+    fmt_mults = _format_sample_weight_multipliers(v)
+    sw_tt = combine_anchor_and_format_sample_weights(
+        med_tt, sw_mode, X_tt, cols, fmt_mults
+    )
+    sw_full = combine_anchor_and_format_sample_weights(
+        med_tr_full, sw_mode, X_tr_full, cols, fmt_mults
+    )
 
     trial_records: list[TrialRecord] = []
 
@@ -1108,6 +1131,11 @@ def _run_tuning(
                 mlflow.log_param("constraints_violation_fallback", cons.violation_fallback)
             if sw_mode:
                 mlflow.log_param("tuning_sample_weight", sw_mode)
+            if fmt_mults:
+                mlflow.log_param(
+                    "tuning_format_sample_weight_multipliers",
+                    json.dumps(fmt_mults, sort_keys=True),
+                )
             if not mflow_art:
                 mlflow.log_param("mlflow_log_artifacts", "false")
             mlflow.log_param("training_target_kind", str(target_kind))
@@ -1134,6 +1162,8 @@ def _run_tuning(
             )
         if sw_mode:
             print(f"Tuning sample_weight mode: {sw_mode}")
+        if fmt_mults:
+            print(f"Tuning format_sample_weight_multipliers: {fmt_mults}")
 
         trial_run = 0
         for family in families:
@@ -1156,6 +1186,9 @@ def _run_tuning(
                             mlflow.log_param(f"hparam_{pk}", str(pv))
                     try:
                         mdapes: list[float] = []
+                        wf_mdapes: list[float] | None = (
+                            [] if sel_obj.use_weighted_format_mdape else None
+                        )
                         maes: list[float] = []
                         wapes: list[float] = []
                         best_iters: list[int | None] = []
@@ -1172,8 +1205,12 @@ def _run_tuning(
                                     continue
                                 m_tt_f = med[tt_m]
                                 m_v_f = med[va_m]
-                                sw_f = training_sample_weights_from_anchors(
-                                    m_tt_f, sw_mode
+                                sw_f = combine_anchor_and_format_sample_weights(
+                                    m_tt_f,
+                                    sw_mode,
+                                    X_tt_f,
+                                    cols,
+                                    fmt_mults,
                                 )
                                 reg, meta = fit_regressor(
                                     family,
@@ -1198,6 +1235,17 @@ def _run_tuning(
                                 mdapes.append(
                                     median_ape_dollars(y_v_lp_m, pred_v_lp)
                                 )
+                                if wf_mdapes is not None:
+                                    wf_mdapes.append(
+                                        weighted_format_median_ape_dollars(
+                                            y_v_lp_m,
+                                            pred_v_lp,
+                                            X_v_f,
+                                            cols,
+                                            sel_fmt_weights,
+                                            min_count=wf_min_count,
+                                        )
+                                    )
                                 maes.append(mae_dollars(y_v_lp_m, pred_v_lp))
                                 wapes.append(wape_dollars(y_v_lp_m, pred_v_lp))
                                 best_iters.append(meta.get("best_iteration"))
@@ -1227,6 +1275,17 @@ def _run_tuning(
                             mdapes.append(
                                 median_ape_dollars(y_v_lp_m, pred_v_lp)
                             )
+                            if wf_mdapes is not None:
+                                wf_mdapes.append(
+                                    weighted_format_median_ape_dollars(
+                                        y_v_lp_m,
+                                        pred_v_lp,
+                                        X_v,
+                                        cols,
+                                        sel_fmt_weights,
+                                        min_count=wf_min_count,
+                                    )
+                                )
                             maes.append(mae_dollars(y_v_lp_m, pred_v_lp))
                             wapes.append(wape_dollars(y_v_lp_m, pred_v_lp))
                             best_iters.append(meta.get("best_iteration"))
@@ -1242,6 +1301,7 @@ def _run_tuning(
                             cons=cons,
                             sel_obj=sel_obj,
                             cv_folds_used=len(mdapes),
+                            selection_mdapes=wf_mdapes,
                         )
                         if rec is None:
                             raise RuntimeError("CV metrics non-finite")
@@ -1422,7 +1482,19 @@ def _run_tuning(
                             w_try * pred_v_lp_nm
                             + (1.0 - w_try) * pred_v_lp_ord
                         )
-                        mdape_v = median_ape_dollars(y_v_lp_primary, pred_try)
+                        if sel_obj.use_weighted_format_mdape:
+                            mdape_v = weighted_format_median_ape_dollars(
+                                y_v_lp_primary,
+                                pred_try,
+                                X_v,
+                                cols,
+                                sel_fmt_weights,
+                                min_count=wf_min_count,
+                            )
+                        else:
+                            mdape_v = median_ape_dollars(
+                                y_v_lp_primary, pred_try
+                            )
                         ma = mae_dollars(y_v_lp_primary, pred_try)
                         wa = wape_dollars(y_v_lp_primary, pred_try)
                         sc = base_selection_score(sel_obj, mdape_v, ma, wa)

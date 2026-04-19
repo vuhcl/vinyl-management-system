@@ -40,6 +40,8 @@ class SelectionObjective:
     w_wape: float
     w_mae: float
     mae_ref_usd: float
+    #: When True, ``mdape`` passed into ``base_selection_score`` is format-weighted val MdAPE.
+    use_weighted_format_mdape: bool = False
 
 
 def parse_tuning_constraints(tuning: dict[str, Any] | None) -> TuningConstraints:
@@ -84,6 +86,18 @@ def _resolve_single_selection_metric(
     return aliases.get(raw, ("mdape", "val_median_ape_dollars"))
 
 
+def parse_selection_format_weights(
+    tuning: dict[str, Any] | None,
+) -> dict[str, float]:
+    """Weights for ``weighted_format_*`` metrics; keys match format slice buckets."""
+    raw = (tuning or {}).get("selection_format_weights")
+    if not isinstance(raw, dict):
+        raw = {}
+    default_w = float(raw.get("default", 1.0))
+    order = ("box_multi", "seven", "ten", "twelve", "lp", "cd", "other")
+    return {name: float(raw.get(name, default_w)) for name in order}
+
+
 def parse_selection_objective(tuning: dict[str, Any] | None) -> SelectionObjective:
     raw = str((tuning or {}).get("selection_metric", "median_ape")).strip().lower()
     if raw == "composite":
@@ -98,6 +112,32 @@ def parse_selection_objective(tuning: dict[str, Any] | None) -> SelectionObjecti
             w_wape=float(sc.get("w_wape", 0.5)),
             w_mae=float(sc.get("w_mae", 0.3)),
             mae_ref_usd=max(float(sc.get("mae_ref_usd", 50.0)), 1e-6),
+            use_weighted_format_mdape=False,
+        )
+    if raw == "weighted_format_composite":
+        sc = tuning.get("selection_composite") or {}
+        if not isinstance(sc, dict):
+            sc = {}
+        return SelectionObjective(
+            composite=True,
+            single_field=None,
+            mlflow_name="val_selection_weighted_format_composite",
+            w_mdape=float(sc.get("w_mdape", 1.0)),
+            w_wape=float(sc.get("w_wape", 0.5)),
+            w_mae=float(sc.get("w_mae", 0.3)),
+            mae_ref_usd=max(float(sc.get("mae_ref_usd", 50.0)), 1e-6),
+            use_weighted_format_mdape=True,
+        )
+    if raw == "weighted_format_mdape":
+        return SelectionObjective(
+            composite=False,
+            single_field="mdape",
+            mlflow_name="val_weighted_format_median_ape",
+            w_mdape=1.0,
+            w_wape=0.0,
+            w_mae=0.0,
+            mae_ref_usd=50.0,
+            use_weighted_format_mdape=True,
         )
     field, name = _resolve_single_selection_metric(tuning)
     return SelectionObjective(
@@ -108,6 +148,7 @@ def parse_selection_objective(tuning: dict[str, Any] | None) -> SelectionObjecti
         w_wape=0.0,
         w_mae=0.0,
         mae_ref_usd=50.0,
+        use_weighted_format_mdape=False,
     )
 
 
@@ -342,13 +383,17 @@ def build_trial_record(
     cons: TuningConstraints,
     sel_obj: SelectionObjective,
     cv_folds_used: int,
+    selection_mdapes: list[float] | None = None,
 ) -> TrialRecord | None:
     md = aggregate_cv(mdapes, cv_agg)
     ma = aggregate_cv(maes, cv_agg)
     wa = aggregate_cv(wapes, cv_agg)
+    md_sel = aggregate_cv(selection_mdapes, cv_agg) if selection_mdapes else md
     if not all(map(math.isfinite, (md, ma, wa))):
         return None
-    base = base_selection_score(sel_obj, md, ma, wa)
+    if not math.isfinite(md_sel):
+        return None
+    base = base_selection_score(sel_obj, md_sel, ma, wa)
     feas = is_feasible(md, wa, cons)
     slack = violation_slack(md, wa, cons)
     pen = penalty_augmented_score(base, md, wa, cons)
