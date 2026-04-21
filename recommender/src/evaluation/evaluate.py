@@ -1,46 +1,29 @@
 """
 Offline evaluation: train/test split, run NDCG@K, MAP@K, Recall@K.
-"""
 
-import warnings
+Stage-1 is always full-catalog ALS (predict_als over all matrix items).
+The optional reranker takes ALS top-N candidates and reorders them using
+content-based features derived from RetrievalMetadata.
+"""
 
 import numpy as np
 import pandas as pd
 from scipy import sparse
 
 from ..features.build_matrix import build_user_item_matrix, get_user_item_mappers
-from ..models.als import predict_als, predict_als_in_candidates, train_als
+from ..models.als import predict_als, train_als
+from ..models.reranker import (
+    ReRankerBundle,
+    build_reranker_training_frame,
+    rerank_candidates_for_user,
+    reranker_config_from_dict,
+    train_reranker,
+)
 from ..retrieval.candidates import (
-    CandidateRetrievalConfig,
     RetrievalMetadata,
     build_retrieval_metadata,
-    candidate_item_indices_for_user,
-    retrieval_config_from_dict,
 )
 from .metrics import ap_at_k, ndcg_at_k, recall_at_k
-
-
-def _maybe_warn_candidate_hit_rate(
-    retrieval: dict | None,
-    metrics: dict[str, float],
-) -> None:
-    """Warn if candidate_relevant_hit_rate is below configured minimum."""
-    if not retrieval or retrieval.get("min_candidate_relevant_hit_rate") is None:
-        return
-    key = "candidate_relevant_hit_rate"
-    if key not in metrics:
-        return
-    min_rate = float(retrieval["min_candidate_relevant_hit_rate"])
-    actual = float(metrics[key])
-    if actual < min_rate:
-        metrics["candidate_retrieval_hit_rate_below_min"] = 1.0
-        msg = (
-            f"{key}={actual:.4f} is below "
-            f"min_candidate_relevant_hit_rate={min_rate:.4f}"
-        )
-        if retrieval.get("fail_on_low_candidate_hit_rate"):
-            raise ValueError(msg)
-        warnings.warn(msg, UserWarning, stacklevel=2)
 
 
 def leave_one_out_split(
@@ -76,79 +59,97 @@ def evaluate_pretrained_als(
     k: int,
     *,
     meta: RetrievalMetadata | None = None,
-    retrieval_cfg: CandidateRetrievalConfig | None = None,
+    reranker_bundle: ReRankerBundle | None = None,
 ) -> dict[str, float]:
     """
     Rank with a fitted ALS model without re-training.
 
-    If ``meta`` and ``retrieval_cfg`` are set, uses two-stage candidate pools
-    (``retrieval_cfg.max_candidates`` etc.). Otherwise full-catalog
-    ``predict_als``.
+    Stage-1 recall is always full-catalog ALS (``predict_als``).
+    When ``reranker_bundle`` and ``meta`` are both present, re-ranks
+    ALS top-N candidates using the trained reranker.
     """
-    use_two_stage = bool(meta and retrieval_cfg and meta.valid_album_ids)
     test_by_user = test_interactions.groupby("user_id")["album_id"].apply(set).to_dict()
+    _ti = train_interactions.assign(
+        user_id=train_interactions["user_id"].astype(str),
+        album_id=train_interactions["album_id"].astype(str),
+    )
+    train_by_user: dict[str, set[str]] = (
+        _ti.groupby("user_id")["album_id"].apply(set).to_dict()
+    )
+    item_train_counts: dict[str, int] = {
+        str(a): int(v)
+        for a, v in train_interactions.groupby("album_id", sort=False)
+        .size()
+        .items()
+    }
+    n_items = len(item_ids)
+    all_item_idxs = np.arange(n_items, dtype=np.int64)
+
     ndcgs, maps, recalls = [], [], []
-    rel_hits: list[int] = []
-    two_stage_used: list[int] = []
+    strat_pop_head: list[float] = []
+    strat_pop_tail: list[float] = []
+    pops_for_median: list[int] = []
+
     for uid, relevant in test_by_user.items():
         if uid not in user_id2idx:
             continue
         user_idx = user_id2idx[uid]
-        train_items = set(
-            train_interactions[train_interactions["user_id"] == uid][
-                "album_id"
-            ].astype(str)
-        )
+        train_items = train_by_user.get(uid, set())
         exclude_idxs = np.array(
             [item_id2idx[a] for a in train_items if a in item_id2idx], dtype=int
         )
         relevant_idx = {item_id2idx[a] for a in relevant if a in item_id2idx}
         if not relevant_idx:
             continue
+        rel_album = str(next(iter(relevant)))
+        pop_obs = item_train_counts.get(rel_album, 0)
+        pops_for_median.append(int(pop_obs))
+
         pred_idxs: np.ndarray
-        if use_two_stage and meta is not None and retrieval_cfg is not None:
-            train_albums = {
-                str(x) for x in train_items if str(x) in meta.valid_album_ids
-            }
-            cand = candidate_item_indices_for_user(
-                train_albums,
-                meta,
-                item_id2idx,
-                retrieval_cfg,
+        if reranker_bundle is not None and meta is not None:
+            train_albums = {str(x) for x in train_items}
+            pred_idxs, _ = rerank_candidates_for_user(
+                bundle=reranker_bundle,
+                model=model,
+                user_idx=user_idx,
+                train_albums=train_albums,
+                candidate_item_idxs=all_item_idxs,
+                exclude_idxs=exclude_idxs,
+                item_ids=item_ids,
+                meta=meta,
+                item_train_counts=item_train_counts,
+                top_k=k,
             )
-            cand_set = set(int(x) for x in cand.tolist())
-            rel_hits.append(1 if relevant_idx & cand_set else 0)
-            if cand.size > 0:
-                two_stage_used.append(1)
-                pred_idxs, _ = predict_als_in_candidates(
-                    model,
-                    user_idx,
-                    matrix,
-                    exclude_idxs,
-                    cand,
-                    top_k=k,
-                )
-            else:
-                two_stage_used.append(0)
-                pred_idxs, _ = predict_als(
-                    model, user_idx, matrix, item_ids, exclude_idxs, top_k=k
-                )
         else:
             pred_idxs, _ = predict_als(
                 model, user_idx, matrix, item_ids, exclude_idxs, top_k=k
             )
+
         rel_arr = np.array([1 if i in relevant_idx else 0 for i in pred_idxs])
-        ndcgs.append(ndcg_at_k(rel_arr, k))
+        n = ndcg_at_k(rel_arr, k)
+        ndcgs.append(n)
         maps.append(ap_at_k(pred_idxs, relevant_idx, k))
         recalls.append(recall_at_k(pred_idxs, relevant_idx, k))
+
     out: dict[str, float] = {
         f"ndcg@{k}": float(np.mean(ndcgs)) if ndcgs else 0.0,
         f"map@{k}": float(np.mean(maps)) if maps else 0.0,
         f"recall@{k}": float(np.mean(recalls)) if recalls else 0.0,
     }
-    if use_two_stage and rel_hits:
-        out["candidate_relevant_hit_rate"] = float(np.mean(rel_hits))
-        out["two_stage_candidate_nonempty_rate"] = float(np.mean(two_stage_used))
+    if pops_for_median and ndcgs:
+        med = float(np.median(pops_for_median))
+        for n_dcg, p in zip(ndcgs, pops_for_median):
+            if float(p) >= med:
+                strat_pop_head.append(n_dcg)
+            else:
+                strat_pop_tail.append(n_dcg)
+        if strat_pop_head:
+            out[f"ndcg@{k}_pop_head"] = float(np.mean(strat_pop_head))
+            out[f"n_users_pop_head"] = float(len(strat_pop_head))
+        if strat_pop_tail:
+            out[f"ndcg@{k}_pop_tail"] = float(np.mean(strat_pop_tail))
+            out[f"n_users_pop_tail"] = float(len(strat_pop_tail))
+        out["heldout_item_train_count_median"] = med
     return out
 
 
@@ -159,15 +160,17 @@ def run_evaluation(
     k: int = 10,
     random_state: int = 42,
     albums: pd.DataFrame | None = None,
-    retrieval: dict | None = None,
+    reranker: dict | None = None,
 ) -> dict[str, float]:
     """
-    Build matrix from train, fit ALS, for each test user predict top-k and compute metrics.
-    Returns aggregate NDCG@k, MAP@k, Recall@k (averaged over users with test items).
+    Build matrix from train, fit ALS, evaluate top-k predictions.
 
-    If ``retrieval`` is provided with ``{"enabled": True}`` and ``albums`` is non-empty,
-    stage-1 builds a candidate pool (genres ∪ same-artist, quality floors) and stage-2
-    scores only those items with ALS (faster when the pool is small).
+    Returns aggregate NDCG@k, MAP@k, Recall@k averaged over users with test items.
+    Stage-1 recall is always full-catalog ALS.
+
+    When ``reranker`` is ``{"enabled": True, ...}`` and ``albums`` is non-empty,
+    trains a second-stage reranker over ALS top-N and reports reranked metrics
+    alongside ALS-only metrics.
     """
     all_item_ids = np.unique(
         np.concatenate(
@@ -180,7 +183,7 @@ def run_evaluation(
     matrix, user_ids, item_ids = build_user_item_matrix(
         train_interactions, weight_col="strength", all_item_ids=all_item_ids
     )
-    user_id2idx, item_id2idx, _, idx2item_id = get_user_item_mappers(user_ids, item_ids)
+    user_id2idx, item_id2idx, _, _ = get_user_item_mappers(user_ids, item_ids)
     model = train_als(
         matrix,
         factors=als_config.get("factors", 64),
@@ -189,47 +192,49 @@ def run_evaluation(
         alpha=als_config.get("alpha", 40.0),
         random_state=random_state,
     )
-    use_two_stage = bool(
-        retrieval
-        and retrieval.get("enabled")
-        and albums is not None
-        and not albums.empty
+
+    base_out = evaluate_pretrained_als(
+        model, matrix, user_id2idx, item_id2idx, item_ids,
+        train_interactions, test_interactions, k,
     )
+    out = dict(base_out)
+
+    rr_cfg = reranker_config_from_dict(reranker)
     meta: RetrievalMetadata | None = None
-    rcfg: CandidateRetrievalConfig | None = None
-    if use_two_stage:
-        rcfg = retrieval_config_from_dict(retrieval or {})
+    if rr_cfg.enabled and albums is not None and not albums.empty:
         meta = build_retrieval_metadata(albums, train_interactions)
         if not meta.valid_album_ids:
-            use_two_stage = False
             meta = None
-            rcfg = None
 
-    if use_two_stage:
-        out = evaluate_pretrained_als(
-            model,
-            matrix,
-            user_id2idx,
-            item_id2idx,
-            item_ids,
-            train_interactions,
-            test_interactions,
-            k,
+    can_rerank = bool(rr_cfg.enabled and meta is not None)
+    if can_rerank:
+        rr_df, rr_stats = build_reranker_training_frame(
+            model=model,
+            item_ids=item_ids,
+            user_id2idx=user_id2idx,
+            item_id2idx=item_id2idx,
+            train_interactions=train_interactions,
+            test_interactions=test_interactions,
             meta=meta,
-            retrieval_cfg=rcfg,
+            rr_cfg=rr_cfg,
         )
-    else:
-        out = evaluate_pretrained_als(
-            model,
-            matrix,
-            user_id2idx,
-            item_id2idx,
-            item_ids,
-            train_interactions,
-            test_interactions,
-            k,
-            meta=None,
-            retrieval_cfg=None,
-        )
-    _maybe_warn_candidate_hit_rate(retrieval, out)
+        rr_bundle = train_reranker(rr_df, rr_cfg)
+        out.update(rr_stats)
+        if rr_bundle is not None:
+            reranked = evaluate_pretrained_als(
+                model, matrix, user_id2idx, item_id2idx, item_ids,
+                train_interactions, test_interactions, k,
+                meta=meta, reranker_bundle=rr_bundle,
+            )
+            for key in (f"ndcg@{k}", f"map@{k}", f"recall@{k}"):
+                out[f"als_only_{key}"] = float(base_out.get(key, 0.0))
+                out[key] = float(reranked.get(key, 0.0))
+            out["reranker_enabled"] = 1.0
+            out["reranker_model_type"] = 1.0 if rr_bundle.model_type == "linear" else 2.0
+            out["reranker_train_rows"] = float(rr_bundle.train_rows)
+            out["reranker_positive_rate"] = float(rr_bundle.positive_rate)
+            for k2, v2 in reranked.items():
+                if k2 in (f"ndcg@{k}", f"map@{k}", f"recall@{k}"):
+                    continue
+                out[k2] = float(v2)
     return out
