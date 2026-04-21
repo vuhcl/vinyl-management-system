@@ -4,7 +4,7 @@ Hybrid vinyl recommendation system: **Discogs** (shared API) + **AOTY scraped da
 
 This subproject is part of **vinyl_management_system**. It uses:
 
-- **Shared Discogs API** (`shared.discogs_api`) for collection and wantlist when `configs/base.yaml` has `discogs.use_api` and usernames/token.
+- **Shared Discogs API** (`shared.discogs_api`) for collection and wantlist when **`recommender/configs/base.yaml`** (or merged root config) has `discogs.use_api` and usernames/token.
 - **AOTY scraped data** (`shared.aoty`) when `aoty_scraped.dir` points to your scraped data directory.
 - **CSV fallback** in `data/raw/` when Discogs or AOTY is not configured.
 
@@ -14,17 +14,19 @@ This subproject is part of **vinyl_management_system**. It uses:
 
 ```
 recommender/
+├── configs/
+│   └── base.yaml   # Pipeline YAML (inherits repo `configs/base.yaml`)
 ├── src/
 │   ├── data/       # ingest.py (Discogs API + AOTY scraped + CSV), preprocess.py
 │   ├── features/   # build_matrix.py, content_features.py
-│   ├── models/     # als.py, content_model.py, hybrid.py
+│   ├── models/     # als.py, content_model.py, hybrid.py, reranker.py
 │   ├── evaluation/ # metrics.py, evaluate.py
-│   ├── retrieval/  # candidates.py — two-stage metadata pools
+│   ├── retrieval/  # candidates.py — metadata helpers for reranker features
 │   └── pipeline.py # orchestration + recommend API
 └── README.md
 ```
 
-Config and paths live at project root: `configs/base.yaml`, `data/raw`, `data/processed`, `artifacts`.
+**Config:** `recommender/configs/base.yaml` holds ALS, evaluation, reranker, and Discogs ingest settings; it merges with **`configs/base.yaml`** (paths, tokens). Data dirs: `data/raw`, `data/processed`, `artifacts`.
 
 ---
 
@@ -37,53 +39,35 @@ Config and paths live at project root: `configs/base.yaml`, `data/raw`, `data/pr
 | Ratings    | AOTY scraped data directory | `data/raw/ratings.csv` |
 | Albums     | AOTY scraped data directory | `data/raw/albums.csv` |
 
-Set in `configs/base.yaml`:
+Set in **`recommender/configs/base.yaml`** (or override `--config`):
 
 - **Discogs**: `discogs.use_api: true`, `discogs.usernames: ["your_username"]`, and `DISCOGS_USER_TOKEN` in env (or `DISCOGS_TOKEN`), or put either key in the **repo-root `.env`** — `python -m recommender.pipeline` and `scripts/smoke_recommender_ingest.py` load `.env` automatically (via `shared.project_env`). You can also set `discogs.token` in YAML instead of env.
 - **Discogs → AOTY (recommended)**: incremental Mongo-backed pipeline (candidate masters from your collection ∪ wantlist only — **no** full AOTY catalog Discogs search):
   1. `scripts/build_discogs_master_to_aoty_artifact.py` — release→master + master→AOTY (Mongo upserts + `artifacts/discogs_master_to_aoty.json`).
   2. `scripts/build_discogs_release_to_aoty_artifact.py` — compose `artifacts/discogs_release_to_aoty.json` + Mongo `discogs_release_aoty`.
-  Then set `discogs.release_to_aoty_map_path` / `skip_live_discogs_aoty_mapping` as in the smoke config comments.
+  Then set `discogs.release_to_aoty_map_path` / `skip_live_discogs_aoty_mapping` in **`recommender/configs/base.yaml`**.
 - **Legacy monolithic script**: `scripts/build_discogs_aoty_release_map.py` (full old flow; avoid for large catalogs).
 - **AOTY**: `aoty_scraped.dir: "data/aoty_scraped"` (or path to your scraped output).
 
-### Two-stage retrieval (optional)
+### Reranker (optional second stage)
 
-Evaluation and smoke scripts can **restrict ALS scoring** to a candidate pool built from
-`albums.parquet` metadata (no test leakage: pools use **train** interactions only):
+Stage-1 recall is always **ALS over the full item matrix** — no metadata-gated candidate pool.
+An optional learned reranker (second stage) takes the ALS top-N candidates and reorders
+them using content-based features derived from `RetrievalMetadata`:
 
-- **Genre expansion**: albums sharing any genre with the user’s train albums.
-- **Same-artist expansion**: other albums by those artists.
-- **Quality floors**: `min_avg_rating`, `min_train_count`, `min_distinct_users`,
-  `min_rating_rows` (rating-source rows only, needs `source` on interactions),
-  optional `min_priority_score` (from album `priority_score`).
-- **Year band**: quantiles of the user’s train-album `year` values, always expanded
-  to include min/max train year; optional `year_window_years` slack. Albums with
-  `year == 0` are not excluded by the band. **`release_date`** is stored on
-  albums (Mongo/CSV) for traceability; filtering uses integer **`year`**.
-- **Cap**: `max_candidates` (sort: train count, then priority, distinct users,
-  rating rows, year).
+- **Features**: genre Jaccard, artist match, year distance, item popularity, item avg rating,
+  item priority score, item distinct users.
+- **Models**: `linear` (logistic regression) or `pointwise` (gradient-boosted tree).
 
-Enable in YAML under `retrieval.enabled: true` (see `configs/smoke_pipeline.yaml`) or:
+Enable in **`recommender/configs/base.yaml`** under `reranker.enabled: true`, then run the
+full pipeline to train and save the reranker bundle (`artifacts/reranker.pkl`).
 
-```bash
-python scripts/smoke_recommender_als_eval_only.py --two-stage --processed-dir data/processed ...
-```
+**Serving:** `artifacts/retrieval_serving.pkl` stores `RetrievalMetadata` + per-item train
+counts needed by the reranker at serving time. If this file was produced by a pre-ALS-full-
+catalog run, `load_pipeline_artifacts` logs a clear rebuild message and falls back gracefully
+to full-catalog ALS without the reranker.
 
-Metrics include `candidate_relevant_hit_rate` (fraction of test users whose held-out
-item appears in the candidate pool) and `two_stage_candidate_nonempty_rate`.
-
-Set `retrieval.min_candidate_relevant_hit_rate` (e.g. `0.15`) to emit a **warning** when
-the measured rate falls below that threshold; set `fail_on_low_candidate_hit_rate: true`
-to **raise** instead. When below threshold, metrics include
-`candidate_retrieval_hit_rate_below_min: 1.0`.
-
-**Serving:** After training, `artifacts/retrieval_serving.pkl` stores the same
-metadata used in eval (when `save_for_serving: true` and albums exist).
-`recommend()` uses two-stage candidate ALS by default when that file is loaded
-(`load_pipeline_artifacts`); set `use_candidate_retrieval=False` to force full-catalog
-`recommend()`. Hybrid blending (`content_sim` + `alpha` < 1) still uses the full
-catalog path.
+Hybrid blending (`content_sim` + `alpha` < 1) also uses full-catalog ALS for stage-1.
 
 ### Discogs ↔ AOTY ID matching (API limits)
 
@@ -105,10 +89,96 @@ From **project root** (vinyl_management_system):
 
 ```bash
 uv sync --extra test   # or: pip install -e . from repo root (workspace)
-python -m recommender.pipeline --config configs/base.yaml --data-dir data/raw --processed-dir data/processed --artifacts-dir artifacts
+python -m recommender.pipeline --config recommender/configs/base.yaml --data-dir data/raw --processed-dir data/processed --artifacts-dir artifacts
 ```
 
 Use `--skip-ingest` to reuse existing processed data.
+
+---
+
+## Training workflow
+
+Run from project root in this order:
+
+1. **Tune ALS hyperparameters** — pick best `als.*` by NDCG@10 on leave-one-out.
+2. **Train final ALS** on full processed data (reranker disabled).
+3. **Measure ALS hit rate** at candidate cutoffs to calibrate `reranker.candidate_top_n`.
+4. **Re-run final training with reranker enabled** once `hit_rate@candidate_top_n >= 0.8`.
+
+### 1) ALS tuning
+
+Stage-1 is full-catalog ALS (exhaustive dot product over all items). Alpha is
+fixed at 10; the sweep varies factors, regularization, and iterations
+(3x3x3 = 27 runs).
+
+```bash
+uv run python -u scripts/tune_recommender_als.py \
+  --config recommender/configs/base.yaml \
+  --sample-n 3000000 \
+  --factors "64,128,256" \
+  --regularization "0.01,0.1,1.0" \
+  --alpha "10" \
+  --iterations "10,15,20" \
+  --max-runs 27 \
+  --random-state 42 2>&1 | tee artifacts/tune_als.log
+```
+
+Best run is written to `artifacts/als_tuning_best.json`. Update the `als.*`
+block in `recommender/configs/base.yaml` with the winning values before
+continuing.
+
+### 2) Final training run (artifact build)
+
+Keep `reranker.enabled: false` in the config for this pass so the ALS
+hit-rate diagnostic in step 3 can be run on a clean ALS-only build.
+
+```bash
+uv run python -m recommender.pipeline \
+  --config recommender/configs/base.yaml \
+  --data-dir data/raw \
+  --processed-dir data/processed \
+  --artifacts-dir artifacts \
+  --skip-ingest
+```
+
+Drop `--skip-ingest` when you want fresh ingest/preprocess from raw sources.
+
+Set `MLFLOW_TRACKING_URI` in `.env` (see `.env.template`) to route runs to a remote or local tracking server. Pass `--no-mlflow` to disable tracking entirely.
+
+### 3) Hit-rate diagnostic (calibrate `reranker.candidate_top_n`)
+
+Measures `hit_rate@N` for full-catalog ALS top-N at several cutoffs so you
+can pick the smallest N that clears the reranker's recall floor. The script
+trains its own ALS on a leave-one-out train split (held-out item is unseen
+during fit), so the measurement is unbiased.
+
+```bash
+uv run python -u scripts/measure_als_hit_rate.py \
+  --config recommender/configs/base.yaml \
+  --processed-dir data/processed \
+  --sample-n 3000000 \
+  --cutoffs "50,100,200,500,1000,2000,5000" \
+  --random-state 42 \
+  --artifacts-dir artifacts
+```
+
+Inspect `artifacts/als_hit_rate.json`. Pick the smallest N where
+`hit_rate@N >= 0.8`, then set `reranker.candidate_top_n: <N>` in
+`recommender/configs/base.yaml`.
+
+### 4) Final training with reranker
+
+Flip `reranker.enabled: true` in `recommender/configs/base.yaml` and re-run
+the step 2 command. The pipeline trains and saves the reranker bundle
+(`artifacts/reranker.pkl`) alongside the ALS artifacts.
+
+### Overnight runs (optional)
+
+Use `caffeinate` on macOS to prevent sleep:
+
+```bash
+caffeinate -dimsu uv run python -u scripts/tune_recommender_als.py ... 2>&1 | tee artifacts/tune_overnight.log
+```
 
 ---
 
@@ -126,6 +196,6 @@ out = recommend("user_id", pipeline_artifacts, top_k=10, exclude_owned=True, alp
 
 ## Config summary
 
-- `interaction_weights`, `als`, `hybrid`, `evaluation`, `recommendation` (see `configs/base.yaml`).
+- `interaction_weights`, `als`, `hybrid`, `evaluation`, `reranker`, `recommendation` (see **`recommender/configs/base.yaml`**).
 - `discogs`: use_api, usernames, token.
 - `aoty_scraped`: dir, ratings_file, albums_file.

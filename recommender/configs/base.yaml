@@ -1,0 +1,69 @@
+# ============================================================
+# recommender/configs/base.yaml
+#
+# Recommender pipeline: Discogs ingest, ALS (full-catalog stage-1), optional reranker.
+# Inherits shared repo defaults from configs/base.yaml (paths, Discogs token, mlflow).
+#
+# Architecture: Stage-1 recall = ALS over the full item matrix.
+#               Stage-2 (optional) = learned reranker over ALS top-N, with
+#               content-based features (genre Jaccard, artist match, year distance).
+# ============================================================
+
+inherits: configs/base.yaml
+
+seed: 42
+
+# Discogs + optional precomputed release → AOTY map.
+# Preferred: scripts/build_discogs_master_to_aoty_artifact.py then
+#            scripts/build_discogs_release_to_aoty_artifact.py (Mongo incremental).
+discogs:
+  use_api: true
+  usernames: ["nowaki027"]
+  # token: ${DISCOGS_TOKEN}
+  release_to_aoty_map_path: artifacts/discogs_release_to_aoty.json
+  skip_live_discogs_aoty_mapping: true
+
+# Implicit strengths (ablations: uncomment and tune).
+# interaction_weights:
+#   collection: 1.0
+#   wantlist: 2.0
+#   rating_high: 2.5
+#   rating_mid: 1.5
+#   rating_low_2: 0.8
+#   rating_low_1: 0.4
+#   drop_exclusively_low_rating_albums: true
+#   exclusive_low_rating_below: 3.0
+
+# ALS — stronger defaults than smoke-short runs; tune with scripts/tune_recommender_als.py.
+# factors/regularization/iterations are overridden after the tuning sweep;
+# alpha is held fixed at 10 (tuning sweep does not vary it).
+als:
+  factors: 128
+  regularization: 0.01
+  iterations: 15
+  alpha: 10.0
+
+evaluation:
+  k: 10
+
+recommendation:
+  top_k: 20
+
+content:
+  max_items_for_similarity: 1000
+  genre_top_k: 20
+
+# Optional second-stage learned reranker over ALS top-N candidates.
+# Set enabled: true and run recommender.pipeline to train + save the bundle.
+# candidate_top_n: recalibrate from artifacts/als_hit_rate.json
+# (target hit_rate@N >= 0.8) via scripts/measure_als_hit_rate.py.
+reranker:
+  enabled: false
+  model_type: pointwise   # linear | pointwise
+  candidate_top_n: 500
+  train_sample_n: 250000
+  negative_sampling: 200
+  class_weight: balanced
+  hard_negative_ratio: 0.7
+  user_chunk_size: 10000
+  random_state: 42
