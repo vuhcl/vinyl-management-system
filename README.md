@@ -38,7 +38,8 @@ Open **http://127.0.0.1:8000** → [Log in with Discogs](http://127.0.0.1:8000/a
 
 ```
 vinyl_management_system/
-├── configs/base.yaml       # Shared config (paths, Discogs, AOTY, model params)
+├── configs/base.yaml       # Shared repo config (paths, Discogs, MLflow)
+├── recommender/configs/base.yaml  # Recommender pipeline (inherits root; ALS, retrieval)
 ├── core/                   # Config loader, auth, ingest jobs
 ├── shared/discogs_api/    # Shared Discogs API client
 ├── shared/aoty/           # AOTY scraped data loader
@@ -79,10 +80,10 @@ That installs `vinyl-shared`, `vinyl-core`, `vinyl-grader[serve]`, `vinyl-recomm
 
 ### Config
 
-Edit **`configs/base.yaml`** to:
+Edit **`configs/base.yaml`** for shared paths and tokens. For the **recommender** pipeline, edit **`recommender/configs/base.yaml`** (it **inherits** the root file via `inherits: configs/base.yaml`) and set:
 
-- **Discogs**: set `discogs.use_api: true`, `discogs.usernames: ["your_username"]`, and either `discogs.token` or env `DISCOGS_USER_TOKEN`.
-- **AOTY**: set `aoty_scraped.dir` to the path of your scraped data (e.g. `data/aoty_scraped`) if you use it; otherwise the recommender uses CSVs in `data/raw/`.
+- **Discogs**: `discogs.use_api`, `discogs.usernames`, token via env or YAML.
+- **AOTY**: `aoty_scraped.dir` (e.g. `data/aoty_scraped`) or CSVs in `data/raw/`.
 
 ---
 
@@ -111,7 +112,7 @@ After logging in and running ingest, you can call:
 2. Train and save artifacts:
 
 ```bash
-python -m recommender.pipeline --config configs/base.yaml --data-dir data/raw --processed-dir data/processed --artifacts-dir artifacts
+python -m recommender.pipeline --config recommender/configs/base.yaml --data-dir data/raw --processed-dir data/processed --artifacts-dir artifacts
 ```
 
 3. Use in code or via web: `GET /api/recommendations` (when logged in).

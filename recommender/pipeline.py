@@ -4,22 +4,30 @@ Run from project root: python -m recommender.pipeline (or PYTHONPATH=. python re
 """
 from pathlib import Path
 import json
+import pickle
 import yaml
 
 import numpy as np
 import pandas as pd
 
-from core.config import load_config as load_project_config
+from core.config import get_project_root, load_config as load_project_config
 
 from recommender.src.data.ingest import ingest_all
 from recommender.src.data.preprocess import preprocess, save_processed, load_processed
 from recommender.src.features.build_matrix import build_user_item_matrix, get_user_item_mappers
 from recommender.src.features.content_features import prepare_album_features
-from recommender.src.models.als import predict_als, predict_als_in_candidates, train_als
+from recommender.src.models.als import predict_als, train_als
+from recommender.src.models.reranker import (
+    build_reranker_training_frame,
+    load_reranker_bundle,
+    rerank_candidates_for_user,
+    reranker_config_from_dict,
+    save_reranker_bundle,
+    train_reranker,
+)
 from recommender.src.retrieval.candidates import (
+    RetrievalMetadata,
     build_retrieval_metadata,
-    candidate_item_indices_for_user,
-    retrieval_config_from_dict,
 )
 from recommender.src.models.content_model import build_content_similarity, content_scores_vector
 from recommender.src.models.hybrid import rank_hybrid
@@ -41,8 +49,8 @@ def run_pipeline(
     als_cfg = config.get("als", {})
     hybrid_cfg = config.get("hybrid", {})
     eval_cfg = config.get("evaluation", {})
+    reranker_cfg = config.get("reranker") or {}
     k = eval_cfg.get("k", 10)
-    top_k = config.get("recommendation", {}).get("top_k", 10)
 
     data_dir = Path(data_dir)
     processed_dir = Path(processed_dir)
@@ -52,12 +60,11 @@ def run_pipeline(
     if not skip_ingest:
         discogs_cfg = config.get("discogs", {})
         aoty_cfg = config.get("aoty_scraped", {})
-        project_root = Path(config_path).resolve().parent.parent
+        project_root = get_project_root()
         aoty_dir = aoty_cfg.get("dir")
         if aoty_dir is not None:
             aoty_dir = Path(aoty_dir)
             if not aoty_dir.is_absolute():
-                # Resolve relative to project root (parent of configs/)
                 aoty_dir = project_root / aoty_dir
         release_map_path = discogs_cfg.get("release_to_aoty_map_path")
         if release_map_path:
@@ -100,8 +107,6 @@ def run_pipeline(
     album_features = None
     if not albums.empty and "album_id" in albums.columns:
         content_cfg = config.get("content", {})
-        # Building the full (n_items x n_items) similarity matrix is O(n^2).
-        # On real datasets this can be prohibitively slow/large, so we guard it.
         max_items = content_cfg.get("max_items_for_similarity", 5000)
         if len(item_ids) > max_items:
             print(
@@ -119,7 +124,6 @@ def run_pipeline(
 
     # Train/test split and evaluate
     train_int, test_int = leave_one_out_split(interactions, random_state=seed)
-    retrieval_cfg = config.get("retrieval") or {}
     metrics = run_evaluation(
         train_int,
         test_int,
@@ -127,15 +131,8 @@ def run_pipeline(
         k=k,
         random_state=seed,
         albums=albums if not albums.empty else None,
-        retrieval=retrieval_cfg if retrieval_cfg else None,
+        reranker=reranker_cfg if reranker_cfg else None,
     )
-    if log_mlflow:
-        try:
-            import mlflow
-            mlflow.log_metrics(metrics)
-            mlflow.log_params(als_cfg)
-        except Exception:
-            pass
     print("Evaluation metrics:", metrics)
 
     # Train final ALS on full data
@@ -149,7 +146,6 @@ def run_pipeline(
     )
 
     # Save artifacts for serving
-    import pickle
     from scipy.sparse import save_npz
     with open(artifacts_dir / "als_model.pkl", "wb") as f:
         pickle.dump(model, f)
@@ -170,17 +166,88 @@ def run_pipeline(
     with open(artifacts_dir / "metrics.json", "w") as f:
         json.dump(metrics, f, indent=2)
 
-    retrieval_meta = None
-    retrieval_cfg_obj = None
-    r_cfg = config.get("retrieval") or {}
-    if not albums.empty and r_cfg.get("save_for_serving", True):
+    # Build and save retrieval metadata for reranker serving
+    retrieval_meta: RetrievalMetadata | None = None
+    reranker_bundle = None
+    rr_cfg_obj = reranker_config_from_dict(reranker_cfg)
+
+    if not albums.empty:
         retrieval_meta = build_retrieval_metadata(albums, interactions)
-        retrieval_cfg_obj = retrieval_config_from_dict(r_cfg)
+        item_train_counts: dict[str, int] = {
+            str(a): int(v)
+            for a, v in interactions.groupby("album_id", sort=False).size().items()
+        }
         with open(artifacts_dir / "retrieval_serving.pkl", "wb") as f:
             pickle.dump(
-                {"meta": retrieval_meta, "cfg": retrieval_cfg_obj},
+                {"meta": retrieval_meta, "item_train_counts": item_train_counts},
                 f,
             )
+
+        if rr_cfg_obj.enabled and retrieval_meta.valid_album_ids:
+            rr_df, rr_stats = build_reranker_training_frame(
+                model=model,
+                item_ids=item_ids,
+                user_id2idx=user_id2idx,
+                item_id2idx=item_id2idx,
+                train_interactions=train_int,
+                test_interactions=test_int,
+                meta=retrieval_meta,
+                rr_cfg=rr_cfg_obj,
+            )
+            reranker_bundle = train_reranker(rr_df, rr_cfg_obj)
+            if reranker_bundle is not None:
+                save_reranker_bundle(reranker_bundle, artifacts_dir / "reranker.pkl")
+                with open(artifacts_dir / "reranker_meta.json", "w", encoding="utf-8") as f:
+                    json.dump(
+                        {
+                            "model_type": reranker_bundle.model_type,
+                            "candidate_top_n": reranker_bundle.candidate_top_n,
+                            "train_rows": reranker_bundle.train_rows,
+                            "positive_rate": reranker_bundle.positive_rate,
+                            **rr_stats,
+                        },
+                        f,
+                        indent=2,
+                    )
+                with open(artifacts_dir / "reranker_champion.json", "w", encoding="utf-8") as f:
+                    json.dump(
+                        {
+                            "enabled": True,
+                            "model_type": reranker_bundle.model_type,
+                            "artifact": "reranker.pkl",
+                            "primary_metric": f"ndcg@{k}",
+                            "score": float(metrics.get(f"ndcg@{k}", 0.0)),
+                        },
+                        f,
+                        indent=2,
+                    )
+    if log_mlflow:
+        try:
+            import mlflow
+            import os
+            uri = os.environ.get("MLFLOW_TRACKING_URI")
+            if uri:
+                mlflow.set_tracking_uri(uri)
+            mlflow.set_experiment("recommender-als")
+            with mlflow.start_run(run_name="final_train"):
+                mlflow.log_params(als_cfg)
+                mlflow.log_metrics(metrics)
+                if reranker_bundle is not None:
+                    mlflow.log_params(
+                        {
+                            "reranker.enabled": True,
+                            "reranker.model_type": reranker_bundle.model_type,
+                            "reranker.candidate_top_n": reranker_bundle.candidate_top_n,
+                        }
+                    )
+                    mlflow.log_metrics(
+                        {
+                            "reranker_train_rows": float(reranker_bundle.train_rows),
+                            "reranker_positive_rate": float(reranker_bundle.positive_rate),
+                        }
+                    )
+        except Exception:
+            pass
 
     return {
         "model": model,
@@ -195,7 +262,7 @@ def run_pipeline(
         "metrics": metrics,
         "config": config,
         "retrieval_meta": retrieval_meta,
-        "retrieval_cfg": retrieval_cfg_obj,
+        "reranker_bundle": reranker_bundle,
     }
 
 
@@ -204,7 +271,6 @@ def load_pipeline_artifacts(artifacts_dir: Path) -> dict | None:
     Load saved artifacts (model, mappers, matrix, content_sim) for serving.
     Returns None if any required file is missing.
     """
-    import pickle
     artifacts_dir = Path(artifacts_dir)
     if not (artifacts_dir / "als_model.pkl").exists() or not (artifacts_dir / "mappers.pkl").exists():
         return None
@@ -212,9 +278,6 @@ def load_pipeline_artifacts(artifacts_dir: Path) -> dict | None:
         model = pickle.load(f)
     with open(artifacts_dir / "mappers.pkl", "rb") as f:
         mappers = pickle.load(f)
-    # Rebuild matrix from processed data if needed; for now we need it saved
-    # Pipeline currently doesn't save matrix. So we need to load processed and rebuild, or save matrix.
-    # Check: pipeline saves processed to processed_dir, not artifacts_dir. So we need matrix in artifacts.
     from scipy.sparse import load_npz
     matrix_path = artifacts_dir / "user_item_matrix.npz"
     if not matrix_path.exists():
@@ -226,13 +289,19 @@ def load_pipeline_artifacts(artifacts_dir: Path) -> dict | None:
         if hasattr(content_sim, "item"):
             content_sim = content_sim.item()
     retrieval_meta = None
-    retrieval_cfg = None
+    item_train_counts = None
     rs_path = artifacts_dir / "retrieval_serving.pkl"
     if rs_path.exists():
-        with open(rs_path, "rb") as f:
-            rs = pickle.load(f)
-        retrieval_meta = rs.get("meta")
-        retrieval_cfg = rs.get("cfg")
+        try:
+            with open(rs_path, "rb") as f:
+                rs = pickle.load(f)
+            retrieval_meta = rs.get("meta")
+            item_train_counts = rs.get("item_train_counts")
+        except (AttributeError, ModuleNotFoundError, pickle.UnpicklingError):
+            print(
+                "retrieval_serving.pkl is from a pre-ALS-full-catalog run; "
+                "re-run recommender.pipeline to regenerate."
+            )
     out = {
         "model": model,
         "matrix": matrix,
@@ -246,8 +315,12 @@ def load_pipeline_artifacts(artifacts_dir: Path) -> dict | None:
     }
     if retrieval_meta is not None:
         out["retrieval_meta"] = retrieval_meta
-    if retrieval_cfg is not None:
-        out["retrieval_cfg"] = retrieval_cfg
+    if item_train_counts is not None:
+        out["item_train_counts"] = item_train_counts
+    rr_path = artifacts_dir / "reranker.pkl"
+    rr_bundle = load_reranker_bundle(rr_path)
+    if rr_bundle is not None:
+        out["reranker_bundle"] = rr_bundle
     return out
 
 
@@ -257,18 +330,16 @@ def recommend(
     top_k: int = 10,
     exclude_owned: bool = True,
     alpha: float = 0.7,
-    *,
-    use_candidate_retrieval: bool | None = None,
 ) -> dict:
     """
-    Return recommendations for user_id in the format:
-    {"user_id": "...", "recommendations": [{"album_id": "...", "score": float, "rank": int}, ...]}
+    Return recommendations for user_id.
 
-    Two-stage candidate retrieval (same as training eval when ``retrieval`` is enabled)
-    applies when ``retrieval_serving.pkl`` is present (see pipeline run) and
-    ``use_candidate_retrieval`` is True (default: True if artifacts contain
-    retrieval metadata). It is **skipped** when hybrid content blending is
-    active (``content_sim`` is set and ``alpha`` < 1).
+    Flow: hybrid content blending (if ``content_sim`` and ``alpha`` < 1)
+    → reranker over full-catalog ALS top-N (if reranker bundle + retrieval meta)
+    → full-catalog ``predict_als``.
+
+    Returns:
+        {"user_id": "...", "recommendations": [{"album_id": "...", "score": float, "rank": int}, ...]}
     """
     user_id2idx = pipeline_artifacts["user_id2idx"]
     item_id2idx = pipeline_artifacts["item_id2idx"]
@@ -278,50 +349,19 @@ def recommend(
     item_ids = pipeline_artifacts["item_ids"]
     content_sim = pipeline_artifacts.get("content_sim")
     retrieval_meta = pipeline_artifacts.get("retrieval_meta")
-    retrieval_cfg = pipeline_artifacts.get("retrieval_cfg")
+    reranker_bundle = pipeline_artifacts.get("reranker_bundle")
+    item_train_counts = pipeline_artifacts.get("item_train_counts")
     n_items = len(item_ids)
 
     if user_id not in user_id2idx:
         return {"user_id": user_id, "recommendations": []}
 
     user_idx = user_id2idx[user_id]
-    # Exclude already owned (from matrix)
     owned = set(matrix[user_idx].indices) if exclude_owned else set()
     exclude_idxs = np.array(list(owned), dtype=int)
 
-    if use_candidate_retrieval is None:
-        use_candidate_retrieval = bool(retrieval_meta and retrieval_cfg)
-
     hybrid_on = content_sim is not None and alpha < 1.0
-    if (
-        use_candidate_retrieval
-        and retrieval_meta
-        and retrieval_cfg
-        and not hybrid_on
-    ):
-        train_albums = {
-            str(idx2item_id[int(i)]) for i in matrix[user_idx].indices
-        }
-        cand = candidate_item_indices_for_user(
-            train_albums,
-            retrieval_meta,
-            item_id2idx,
-            retrieval_cfg,
-        )
-        if cand.size > 0:
-            rank_idx, scores = predict_als_in_candidates(
-                model,
-                user_idx,
-                matrix,
-                exclude_idxs,
-                cand,
-                top_k=top_k,
-            )
-        else:
-            rank_idx, scores = predict_als(
-                model, user_idx, matrix, item_ids, exclude_idxs, top_k=top_k
-            )
-    elif hybrid_on:
+    if hybrid_on:
         cf_scores = np.zeros(n_items, dtype=np.float64)
         for i in range(n_items):
             if i in owned:
@@ -337,6 +377,25 @@ def recommend(
         exclude_mask[exclude_idxs] = True
         rank_idx, scores = rank_hybrid(
             cf_scores, content_scores, alpha, exclude_mask, top_k
+        )
+    elif (
+        reranker_bundle is not None
+        and retrieval_meta is not None
+        and item_train_counts is not None
+    ):
+        train_albums = {str(idx2item_id[int(i)]) for i in matrix[user_idx].indices}
+        cand = np.arange(n_items, dtype=np.int64)
+        rank_idx, scores = rerank_candidates_for_user(
+            bundle=reranker_bundle,
+            model=model,
+            user_idx=user_idx,
+            train_albums=train_albums,
+            candidate_item_idxs=cand,
+            exclude_idxs=exclude_idxs,
+            item_ids=item_ids,
+            meta=retrieval_meta,
+            item_train_counts=item_train_counts,
+            top_k=top_k,
         )
     else:
         rank_idx, scores = predict_als(
@@ -363,7 +422,11 @@ if __name__ == "__main__":
     load_project_dotenv()
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("--config", default="configs/base.yaml")
+    parser.add_argument(
+        "--config",
+        default="recommender/configs/base.yaml",
+        help="YAML (may use inherits: configs/base.yaml)",
+    )
     parser.add_argument("--data-dir", default="data/raw")
     parser.add_argument("--processed-dir", default="data/processed")
     parser.add_argument("--artifacts-dir", default="artifacts")

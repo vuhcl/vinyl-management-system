@@ -24,9 +24,11 @@ def train_als(
     """
     if AlternatingLeastSquares is None:
         raise ImportError("Install 'implicit' for ALS: pip install implicit")
-    # `implicit` expects USER-ITEM matrix for fit:
-    # rows=users, cols=items.
-    user_items = user_item.tocsr()
+    # `implicit` expects USER-ITEM confidence matrix for fit:
+    # rows=users, cols=items. For implicit feedback, alpha scales confidence.
+    user_items = user_item.tocsr().astype(np.float32)
+    if alpha != 1.0:
+        user_items = user_items * float(alpha)
     model = AlternatingLeastSquares(
         factors=factors,
         regularization=regularization,
@@ -76,11 +78,16 @@ def predict_als_in_candidates(
     exclude_item_idxs: np.ndarray,
     candidate_item_idxs: np.ndarray,
     top_k: int = 10,
+    *,
+    score_bonus: np.ndarray | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """
     Score only items in ``candidate_item_idxs`` via latent dot products.
 
     Faster than full-catalog ``recommend`` when |candidates| << n_items.
+
+    If ``score_bonus`` is set, it must have shape ``(len(candidate_item_idxs),)``
+    and is added element-wise to ALS dot scores before ranking (e.g. content).
     """
     if candidate_item_idxs.size == 0:
         return np.array([], dtype=np.int64), np.array([], dtype=np.float64)
@@ -89,6 +96,13 @@ def predict_als_in_candidates(
     inds = np.asarray(candidate_item_idxs, dtype=np.int64)
     IF = np.asarray(model.item_factors[inds], dtype=np.float64)
     scores = IF @ uf
+    if score_bonus is not None:
+        sb = np.asarray(score_bonus, dtype=np.float64).ravel()
+        if sb.shape[0] != inds.shape[0]:
+            raise ValueError(
+                "score_bonus length must match candidate_item_idxs"
+            )
+        scores = scores + sb
     order = np.argsort(-scores)
     picked: list[int] = []
     picked_scores: list[float] = []

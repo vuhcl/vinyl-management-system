@@ -17,6 +17,27 @@ def get_project_root() -> Path:
     return root
 
 
+def _load_yaml_with_inherits(path: Path, *, root: Path) -> dict[str, Any]:
+    """
+    Load YAML; if ``inherits`` is set (path relative to project root), load and
+    deep-merge parent first so the current file overrides. ``inherits`` is removed
+    from the result.
+    """
+    if not path.exists():
+        return {}
+    with open(path) as f:
+        cfg = yaml.safe_load(f) or {}
+    parent = cfg.pop("inherits", None)
+    if parent:
+        parent_path = Path(parent)
+        if not parent_path.is_absolute():
+            parent_path = root / parent_path
+        base = _load_yaml_with_inherits(parent_path, root=root)
+        _deep_merge(base, cfg)
+        return base
+    return cfg
+
+
 def load_config(
     config_path: Path | str | None = None,
     *,
@@ -24,6 +45,9 @@ def load_config(
 ) -> dict[str, Any]:
     """
     Load base config from configs/base.yaml (or given path) and optionally merge overrides.
+
+    If the YAML defines ``inherits`` (string path to another YAML under the project
+    root), that file is loaded first and merged so the current file's keys win.
 
     Relative paths in config (paths.raw_data, paths.processed_data, aoty_scraped.dir)
     are resolved against project root.
@@ -35,8 +59,7 @@ def load_config(
     if not path.exists():
         return dict(overrides or {})
 
-    with open(path) as f:
-        cfg = yaml.safe_load(f) or {}
+    cfg = _load_yaml_with_inherits(path, root=root)
 
     if overrides:
         _deep_merge(cfg, overrides)
