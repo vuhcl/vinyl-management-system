@@ -72,7 +72,7 @@ async def get_recommendations(request: Request, top_k: int = 10):
     Get recommendations for the logged-in user.
 
     Requires recommender pipeline to have been run
-    (ingest data, then: python -m recommender.pipeline --config configs/base.yaml).
+    (ingest data, then: python -m recommender.pipeline --config recommender/configs/base.yaml).
     """
     username = get_current_username(request)
     if not username:
@@ -91,7 +91,7 @@ async def get_recommendations(request: Request, top_k: int = 10):
                 detail=(
                     "Recommender not trained. Ingest data then run: "
                     "python -m recommender.pipeline --config "
-                    "configs/base.yaml"
+                    "recommender/configs/base.yaml"
                 ),
             )
         from recommender.pipeline import recommend, load_pipeline_artifacts

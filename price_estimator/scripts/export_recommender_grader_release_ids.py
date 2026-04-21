@@ -16,7 +16,7 @@ Examples::
   PYTHONPATH=. python price_estimator/scripts/export_recommender_grader_release_ids.py
 
   PYTHONPATH=. python price_estimator/scripts/export_recommender_grader_release_ids.py \\
-      --recommender-config configs/smoke_pipeline.yaml \\
+      --recommender-config recommender/configs/base.yaml \\
       --data-dir data/raw \\
       --grader-config grader/configs/grader.yaml \\
       --out price_estimator/data/raw/recommender_grader_release_ids.txt
@@ -213,8 +213,8 @@ def main() -> int:
     parser.add_argument(
         "--recommender-config",
         type=Path,
-        default=repo / "configs" / "smoke_pipeline.yaml",
-        help="YAML with discogs.usernames (default: configs/smoke_pipeline.yaml)",
+        default=repo / "recommender" / "configs" / "base.yaml",
+        help="YAML with discogs.usernames (default: recommender/configs/base.yaml)",
     )
     parser.add_argument(
         "--data-dir",

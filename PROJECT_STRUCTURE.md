@@ -17,10 +17,11 @@ This document describes the **master project structure** that houses and coordin
 
 Root `pyproject.toml` lists these as `[tool.uv.workspace]` members.
 
-### Two config roots
+### Config roots
 
-- **Repository root:** `configs/base.yaml` loaded with `core.config.load_config()`. Relative `paths.*` and `aoty_scraped.dir` are resolved against the repo root. Used by `core.jobs`, the web app, and `recommender.pipeline` (same file for training).
-- **Price estimator package:** `price_estimator/configs/base.yaml` is loaded by `price_estimator.src.pipeline` using the package root (not the repo root). Override path via env `VINYLIQ_CONFIG` where supported. Do not assume `core.config` applies to VinylIQ paths without an explicit integration step.
+- **Repository root:** `configs/base.yaml` — shared paths, Discogs token placeholder, MLflow. Loaded with `core.config.load_config()` (default path). Used by `core.jobs` and the web app for artifact paths.
+- **Recommender:** `recommender/configs/base.yaml` — ALS, evaluation, two-stage `retrieval`, ingest-related `discogs` / `aoty_scraped`. Uses `inherits: configs/base.yaml` so `core.config.load_config("recommender/configs/base.yaml")` merges both. `recommender.pipeline` defaults to this file.
+- **Price estimator:** `price_estimator/configs/base.yaml` is loaded by `price_estimator.src.pipeline` using the package root (not the repo root). Override via env `VINYLIQ_CONFIG` where supported.
 
 ---
 
@@ -33,7 +34,7 @@ vinyl_management_system/
 ├── pyproject.toml
 ├── uv.lock                    # Pinned deps (uv); optional for pip-only workflows
 ├── configs/
-│   └── base.yaml                 # Shared config (paths, Discogs, AOTY, recommender params)
+│   └── base.yaml                 # Shared config (paths, Discogs, MLflow)
 │
 ├── core/                          # Shared orchestration & contracts
 │   ├── __init__.py
@@ -50,6 +51,8 @@ vinyl_management_system/
 │   └── loader.py
 │
 ├── recommender/                   # ML component 1: hybrid recommendations
+│   ├── configs/
+│   │   └── base.yaml              # Recommender YAML (inherits ../configs/base.yaml)
 │   ├── src/
 │   │   ├── data/                  # ingest (Discogs + AOTY + CSV), preprocess
 │   │   ├── features/               # build_matrix, content_features
@@ -106,7 +109,7 @@ vinyl_management_system/
 
 | Concern | Where it lives | How it’s used |
 |--------|----------------|----------------|
-| **Config** | `configs/base.yaml` + `core/config.py` | Shared stack: `core.config.load_config()` resolves paths under the **repo root**. VinylIQ uses its own YAML under `price_estimator/configs/` (see **Two config roots** above). |
+| **Config** | `configs/base.yaml`, `recommender/configs/base.yaml`, `price_estimator/configs/base.yaml` + `core/config.py` | `core.config.load_config()` supports `inherits` and resolves paths under the **repo root**. Recommender training uses **`recommender/configs/base.yaml`**. VinylIQ uses `price_estimator/configs/`. |
 | **Discogs** | `shared/discogs_api/` | Recommender ingest, web ingest, and (future) price_estimator use the same client. Token comes from env or from web login (stored in `core.auth`). |
 | **AOTY data** | `shared/aoty/` | Recommender reads ratings/albums from a scraped directory or CSV fallback. |
 | **Ingest** | `core/jobs.py` | Web app calls `run_discogs_ingest(username, token)` or `run_full_ingest(...)` after login; writes to `data/raw/`. |
@@ -129,7 +132,7 @@ vinyl_management_system/
 - **Install**: From project root, `uv sync --extra test` (see root `README.md`).
 - **Web app**: `uvicorn web.app.main:app --reload` (from project root, so `core`, `shared`, `recommender`, etc. are on `PYTHONPATH`).
 - **Ingest**: Use the web UI (Login → Ingest) or call POST `/ingest/sync` with a logged-in session.
-- **Recommender**: After ingest, run `python -m recommender.pipeline --config configs/base.yaml`.
+- **Recommender**: After ingest, run `python -m recommender.pipeline --config recommender/configs/base.yaml`.
 - **Vinyl condition grader**: `python -m grader.src.pipeline train --baseline-only`.
 - **Price estimator**: `uvicorn price_estimator.src.api.main:app --port 8801` (see `price_estimator/README.md`); train: `python -m price_estimator.src.training.train_vinyliq`.
 
