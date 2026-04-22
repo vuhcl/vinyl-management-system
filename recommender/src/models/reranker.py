@@ -107,6 +107,9 @@ def topn_als_from_candidates(
     )
 
 
+_USER_TOP_GENRES_K = 10
+
+
 def _feature_rows(
     *,
     top_idx: np.ndarray,
@@ -115,20 +118,42 @@ def _feature_rows(
     train_albums: set[str],
     meta: RetrievalMetadata,
 ) -> list[dict[str, float]]:
-    user_genres: set[str] = set()
+    # User genre + artist profile. We compute counts once per user and reuse
+    # them across the full candidate pool: the cost is O(|train_albums|),
+    # dominated by the per-candidate feature loop.
+    user_genre_counts: dict[str, int] = {}
+    user_artist_counts: dict[str, int] = {}
+    years: list[int] = []
+    user_ratings: list[float] = []
     for a in train_albums:
-        user_genres |= meta.album_genres.get(str(a), set())
-    user_artist_set = {
-        meta.album_id_to_artist.get(str(a), "")
-        for a in train_albums
-        if meta.album_id_to_artist.get(str(a), "")
-    }
-    years = [
-        meta.album_year.get(str(a), 0)
-        for a in train_albums
-        if meta.album_year.get(str(a), 0) > 0
-    ]
+        aid = str(a)
+        for g in meta.album_genres.get(aid, set()):
+            user_genre_counts[g] = user_genre_counts.get(g, 0) + 1
+        art = meta.album_id_to_artist.get(aid, "")
+        if art:
+            user_artist_counts[art] = user_artist_counts.get(art, 0) + 1
+        y = meta.album_year.get(aid, 0)
+        if y > 0:
+            years.append(int(y))
+        r = meta.album_avg_rating.get(aid, 0.0)
+        if r > 0:
+            user_ratings.append(float(r))
+
+    user_genres: set[str] = set(user_genre_counts.keys())
+    user_top_genres: set[str] = set(
+        sorted(user_genre_counts, key=user_genre_counts.get, reverse=True)[
+            :_USER_TOP_GENRES_K
+        ]
+    )
+    total_genre_mass = sum(user_genre_counts.values()) or 1
+    user_artist_set = set(user_artist_counts.keys())
     user_year = float(np.mean(years)) if years else 0.0
+    # np.std over <2 samples returns 0; treat that as "single-era user" and
+    # let the zdist feature fall back to the raw year distance.
+    user_year_std = float(np.std(years)) if len(years) >= 2 else 0.0
+    user_rating_mean = float(np.mean(user_ratings)) if user_ratings else 0.0
+    user_n_train = len(train_albums)
+    user_activity_log = float(np.log1p(user_n_train))
 
     # Per-user z-score of ALS scores over the candidate pool. Removes the
     # ||user_factor|| scale leak that raw als_score had across users.
@@ -144,6 +169,9 @@ def _feature_rows(
         cg = meta.album_genres.get(aid, set())
         c_artist = meta.album_id_to_artist.get(aid, "")
         c_year = float(meta.album_year.get(aid, 0))
+        c_rating = float(meta.album_avg_rating.get(aid, 0.0))
+        genre_mass_matched = sum(user_genre_counts.get(g, 0) for g in cg)
+        year_valid = user_year > 0 and c_year > 0
         rows.append(
             {
                 "als_score_z": (float(als_s) - mu) / sd,
@@ -153,11 +181,29 @@ def _feature_rows(
                     1.0 if c_artist and c_artist in user_artist_set else 0.0
                 ),
                 "year_distance": (
-                    abs(c_year - user_year)
-                    if user_year > 0 and c_year > 0
+                    abs(c_year - user_year) if year_valid else 0.0
+                ),
+                "item_avg_rating": c_rating,
+                "user_top_genre_jaccard": _genre_jaccard(user_top_genres, cg),
+                "user_genre_affinity": (
+                    float(genre_mass_matched) / float(total_genre_mass)
+                ),
+                "user_artist_affinity": float(
+                    np.log1p(user_artist_counts.get(c_artist, 0))
+                    if c_artist
                     else 0.0
                 ),
-                "item_avg_rating": float(meta.album_avg_rating.get(aid, 0.0)),
+                "user_year_zdist": (
+                    abs(c_year - user_year) / max(1.0, user_year_std)
+                    if year_valid
+                    else 0.0
+                ),
+                "item_rating_vs_user_mean": (
+                    c_rating - user_rating_mean
+                    if user_rating_mean > 0 and c_rating > 0
+                    else 0.0
+                ),
+                "user_activity_log": user_activity_log,
             }
         )
     return rows
@@ -304,6 +350,12 @@ def train_reranker(
         "artist_match",
         "year_distance",
         "item_avg_rating",
+        "user_top_genre_jaccard",
+        "user_genre_affinity",
+        "user_artist_affinity",
+        "user_year_zdist",
+        "item_rating_vs_user_mean",
+        "user_activity_log",
     ]
     X = train_df[feature_names].astype(float).values
     y = train_df["label"].astype(int).values

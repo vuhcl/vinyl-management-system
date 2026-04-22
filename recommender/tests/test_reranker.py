@@ -143,9 +143,10 @@ def test_build_train_and_rerank_smoke() -> None:
     assert len(rank_idx) == len(scores)
 
 
-def test_feature_set_is_lean_six() -> None:
-    """The post-cleanup feature list must contain als_score_z + the five
-    intentionally-kept features, and must not contain the dropped ones."""
+def test_feature_set_includes_user_side_features() -> None:
+    """The feature list must contain the 6 base features plus the 6
+    user-side features added in Phase 1, and must not contain the dropped
+    pre-cleanup ones."""
     interactions, albums = _toy_data()
     train_i, test_i = leave_one_out_split(interactions, random_state=42)
     all_item_ids = np.unique(
@@ -197,6 +198,12 @@ def test_feature_set_is_lean_six() -> None:
         "artist_match",
         "year_distance",
         "item_avg_rating",
+        "user_top_genre_jaccard",
+        "user_genre_affinity",
+        "user_artist_affinity",
+        "user_year_zdist",
+        "item_rating_vs_user_mean",
+        "user_activity_log",
     }
     forbidden = {
         "als_score",
@@ -208,6 +215,84 @@ def test_feature_set_is_lean_six() -> None:
     assert expected.issubset(cols), f"missing {expected - cols}"
     assert forbidden.isdisjoint(cols), (
         f"legacy features leaked into frame: {forbidden & cols}"
+    )
+
+
+def test_user_side_features_are_finite_and_non_constant() -> None:
+    """User-side features must be finite and exhibit variation across
+    candidates for at least one user (otherwise they are dead weight for
+    ranking within a pool)."""
+    interactions, albums = _toy_data()
+    train_i, test_i = leave_one_out_split(interactions, random_state=42)
+    all_item_ids = np.unique(
+        np.concatenate(
+            [
+                train_i["album_id"].astype(str).values,
+                test_i["album_id"].astype(str).values,
+            ]
+        )
+    )
+    matrix, user_ids, item_ids = build_user_item_matrix(
+        train_i, weight_col="strength", all_item_ids=all_item_ids
+    )
+    user_id2idx, item_id2idx, _, _ = get_user_item_mappers(user_ids, item_ids)
+    model = train_als(
+        matrix,
+        factors=8,
+        regularization=0.05,
+        iterations=2,
+        alpha=10.0,
+        random_state=42,
+    )
+    meta = build_retrieval_metadata(albums, train_i)
+    rr_cfg = ReRankerConfig(
+        enabled=True,
+        model_type="linear",
+        candidate_top_n=20,
+        train_sample_n=1000,
+        negative_sampling=10,
+        random_state=42,
+    )
+    rr_df, _ = build_reranker_training_frame(
+        model=model,
+        item_ids=item_ids,
+        user_id2idx=user_id2idx,
+        item_id2idx=item_id2idx,
+        train_interactions=train_i,
+        test_interactions=test_i,
+        meta=meta,
+        rr_cfg=rr_cfg,
+    )
+    if rr_df.empty:
+        pytest.skip("Toy split produced empty reranker frame.")
+
+    within_user_varying = {
+        "user_top_genre_jaccard",
+        "user_genre_affinity",
+        "user_artist_affinity",
+        "user_year_zdist",
+        "item_rating_vs_user_mean",
+    }
+    user_constant = {"user_activity_log"}
+    for col in within_user_varying | user_constant:
+        assert np.isfinite(rr_df[col].to_numpy(dtype=float)).all(), (
+            f"non-finite values in {col}"
+        )
+
+    # At least one user's candidate pool should show >1 unique value across
+    # the within-user-varying features; a toy dataset where every candidate
+    # is identical for every user would be a red flag.
+    any_user_varies = False
+    for _, g in rr_df.groupby("user_id"):
+        for col in within_user_varying:
+            if g[col].nunique(dropna=False) > 1:
+                any_user_varies = True
+                break
+        if any_user_varies:
+            break
+    assert any_user_varies, (
+        "user-side features were constant for every user; feature "
+        "computation likely dropped per-candidate variation"
     )
 
 
