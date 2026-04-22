@@ -429,12 +429,7 @@ def row_dict_for_inference(
     """
     media_ord = condition_string_to_ordinal(media_condition)
     sleeve_ord = condition_string_to_ordinal(sleeve_condition)
-    lowest = (
-        stats.get("release_lowest_price")
-        or stats.get("lowest_price")
-        or stats.get("median_price")
-        or 0.0
-    )
+    lowest = stats.get("release_lowest_price") or 0.0
     if lowest is None:
         lowest = 0.0
     if not include_marketplace_scalars_in_features:
@@ -442,13 +437,7 @@ def row_dict_for_inference(
 
     cat = catalog or {}
     depth = _marketplace_depth_feature_block(stats, cat)
-    lo_pos = bool(
-        _positive_listing_scalar(
-            stats.get("release_lowest_price")
-            or stats.get("lowest_price")
-            or stats.get("median_price"),
-        )
-    )
+    lo_pos = bool(_positive_listing_scalar(stats.get("release_lowest_price")))
     if cold_start_flags is not None:
         has_sh = float(cold_start_flags.get("has_sale_history", 0.0) or 0.0)
         s_imp = float(cold_start_flags.get("s_imputed", 0.0) or 0.0)

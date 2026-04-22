@@ -110,11 +110,10 @@ def pre_uplift_grade_anchor_usd(row: dict[str, Any], *, nm_grade_key: str) -> fl
     """
     USD anchor for grade-delta scaling (not sold-nowcast ``s``).
 
-    Prefers Discogs ``median_price``, then listing low, PS ladder, NM suggestion.
+    Prefers listing low, PS ladder, NM suggestion. (Legacy Discogs
+    ``median_price`` was a mirror of ``release_lowest_price`` and has been
+    retired; the listing-floor branch produces the same value.)
     """
-    m = _positive(row.get("median_price"))
-    if m is not None:
-        return float(m)
     lo = effective_listing_floor_lo(row)
     if lo is not None:
         return float(lo)
@@ -731,9 +730,7 @@ def sold_nowcast_s(
 
 
 def effective_listing_floor_lo(row: dict[str, Any]) -> float | None:
-    return _positive(row.get("release_lowest_price")) or _positive(
-        row.get("lowest_price")
-    )
+    return _positive(row.get("release_lowest_price"))
 
 
 def max_price_suggestion_ladder_usd(row: dict[str, Any]) -> float | None:
@@ -913,7 +910,7 @@ def _sale_floor_blend_compute(
             cfg=cfg,
         )
         if p_max_obs is None and (s is None or s <= 0):
-            med_only = _positive(mp_row.get("median_price"))
+            med_only = _positive(mp_row.get("release_lowest_price"))
             if med_only is not None and med_only > 0:
                 lo_for_blend = min(
                     lo_for_blend,
@@ -934,7 +931,7 @@ def _sale_floor_blend_compute(
         "p_max_sale_observed_usd": p_max_obs,
         "sale_history_fetch_ok": bool(sh_ok),
         "sale_relax_tag": relax_tag,
-        "median_price_mp_usd": _positive(mp_row.get("median_price")),
+        "release_lowest_price_mp_usd": _positive(mp_row.get("release_lowest_price")),
         "y_blend_usd": float(y_blend) if y_blend is not None and y_blend > 0 else None,
         "listing_lo_clip_applied": listing_lo_clip_applied,
     }

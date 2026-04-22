@@ -111,32 +111,25 @@ def merge_release_listing_into_norm(
     release_payload: dict[str, Any] | None,
 ) -> dict[str, Any]:
     """
-    When ``GET /marketplace/stats`` is not used, fill ``lowest_price`` /
-    ``median_price`` / ``num_for_sale`` from ``GET /releases`` for the same
-    fields the stats endpoint would have covered.
+    When ``GET /marketplace/stats`` is not used, fill ``num_for_sale`` from
+    ``GET /releases`` for the field the stats endpoint would have covered.
+    Listing-floor data lives in ``release_lowest_price`` (written separately
+    by ``upsert`` from ``extract_release_listing_fields``).
 
-    If the stats payload already includes a lowest price or ``num_for_sale``,
-    those values are kept.
+    If the stats payload already includes ``num_for_sale``, that value is kept.
     """
     if not isinstance(release_payload, dict):
         return norm
     ext = extract_release_listing_fields(release_payload)
-    lp = ext.get("release_lowest_price")
     try:
         rns = int(ext.get("release_num_for_sale") or 0)
     except (TypeError, ValueError):
         rns = 0
 
     sp = stats_payload if isinstance(stats_payload, dict) else {}
-    stats_has_lowest = sp.get("lowest_price") is not None or sp.get("lowest") is not None
     stats_has_nfs = sp.get("num_for_sale") is not None or sp.get(
         "for_sale_count"
     ) is not None
-
-    if not stats_has_lowest and lp is not None:
-        norm["lowest_price"] = lp
-        if norm.get("median_price") is None:
-            norm["median_price"] = lp
 
     if not stats_has_nfs:
         norm["num_for_sale"] = rns
@@ -148,24 +141,10 @@ def normalize_marketplace_stats(payload: dict[str, Any]) -> dict[str, Any]:
     """
     Normalize Discogs marketplace stats JSON to scalars.
 
-    Field names vary; we map common keys. Full payload is still stored in
-    ``raw_json`` on upsert.
-
-    Note: Discogs often omits a true ``median``; ``median_price`` in the return
-    value may equal ``lowest_price`` after fallback (see ``median`` assignment
-    below). Prefer ``release_lowest_price`` from ``GET /releases`` when present.
+    Full payload is still stored in ``raw_json`` on upsert. Listing-floor data
+    lives in ``release_lowest_price`` (from ``GET /releases``); this helper
+    only extracts the non-dollar fields kept on the table.
     """
-    lowest = _parse_price_field(
-        payload.get("lowest_price") or payload.get("lowest")
-    )
-    median = _parse_price_field(
-        payload.get("median_price")
-        or payload.get("median")
-        or payload.get("blocked_lowest_price")
-    )
-    if median is None:
-        median = lowest
-    highest = _parse_price_field(payload.get("highest_price"))
     nfs = payload.get("num_for_sale")
     if nfs is None:
         nfs = payload.get("for_sale_count")
@@ -175,16 +154,12 @@ def normalize_marketplace_stats(payload: dict[str, Any]) -> dict[str, Any]:
         num_for_sale = 0
     blocked = _blocked_from_sale_int(payload.get("blocked_from_sale"))
     return {
-        "lowest_price": lowest,
-        "median_price": median,
-        "highest_price": highest,
         "num_for_sale": num_for_sale,
         "blocked_from_sale": blocked,
     }
 
 
 _MARKETPLACE_MIGRATIONS: list[tuple[str, str]] = [
-    ("highest_price", "REAL"),
     ("blocked_from_sale", "INTEGER"),
     ("release_raw_json", "TEXT"),
     ("price_suggestions_json", "TEXT"),
@@ -221,8 +196,6 @@ class MarketplaceStatsDB:
                 CREATE TABLE IF NOT EXISTS marketplace_stats (
                     release_id TEXT PRIMARY KEY,
                     fetched_at TEXT NOT NULL,
-                    lowest_price REAL,
-                    median_price REAL,
                     num_for_sale INTEGER,
                     raw_json TEXT NOT NULL
                 )
@@ -234,7 +207,35 @@ class MarketplaceStatsDB:
                     conn.execute(
                         f"ALTER TABLE marketplace_stats ADD COLUMN {col} {sql_type}"
                     )
+            self._migrate_drop_legacy_price_columns(conn)
             conn.commit()
+
+    def _migrate_drop_legacy_price_columns(self, conn: sqlite3.Connection) -> None:
+        """Drop retired ``median_price`` / ``highest_price`` / ``lowest_price``.
+
+        One-time backfill: ``release_lowest_price`` inherits the COALESCE of
+        legacy lowest/median when previously missing, so no listing floor
+        is lost by the drop. Idempotent on subsequent opens.
+        """
+        existing = self._existing_columns(conn)
+        legacy = [
+            c for c in ("median_price", "highest_price", "lowest_price") if c in existing
+        ]
+        if not legacy:
+            return
+        if "lowest_price" in existing or "median_price" in existing:
+            cols_for_backfill = ", ".join(
+                c for c in ("lowest_price", "median_price") if c in existing
+            )
+            conn.execute(
+                f"""
+                UPDATE marketplace_stats
+                   SET release_lowest_price = COALESCE(release_lowest_price, {cols_for_backfill})
+                 WHERE release_lowest_price IS NULL
+                """
+            )
+        for col in legacy:
+            conn.execute(f"ALTER TABLE marketplace_stats DROP COLUMN {col}")
 
     def _row_to_dict(self, row: sqlite3.Row) -> dict[str, Any]:
         d = {k: row[k] for k in row.keys()}
@@ -257,9 +258,9 @@ class MarketplaceStatsDB:
         ``price_suggestions_payload`` fill extended columns; omitted parts keep
         previous values when updating an existing row.
 
-        When the stats payload omits listing fields, ``release_payload`` is used
-        to fill ``lowest_price`` / ``median_price`` / ``num_for_sale`` (same as
-        ``full`` collector: ``upsert(rid, {}, release_payload=...)``).
+        When the stats payload omits ``num_for_sale``, ``release_payload`` fills
+        it. Listing-floor data flows via ``release_lowest_price`` from
+        ``extract_release_listing_fields`` (no legacy lowest/median columns).
 
         When ``price_suggestions_payload`` is ``{}`` but the row already has a
         non-empty ``price_suggestions_json``, the previous JSON is kept so the
@@ -337,17 +338,13 @@ class MarketplaceStatsDB:
             conn.execute(
                 """
                 INSERT INTO marketplace_stats (
-                    release_id, fetched_at, lowest_price, median_price,
-                    highest_price, num_for_sale, blocked_from_sale, raw_json,
-                    release_raw_json, price_suggestions_json,
+                    release_id, fetched_at, num_for_sale, blocked_from_sale,
+                    raw_json, release_raw_json, price_suggestions_json,
                     release_lowest_price, release_num_for_sale,
                     community_want, community_have
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(release_id) DO UPDATE SET
                     fetched_at = excluded.fetched_at,
-                    lowest_price = excluded.lowest_price,
-                    median_price = excluded.median_price,
-                    highest_price = excluded.highest_price,
                     num_for_sale = excluded.num_for_sale,
                     blocked_from_sale = excluded.blocked_from_sale,
                     raw_json = excluded.raw_json,
@@ -361,9 +358,6 @@ class MarketplaceStatsDB:
                 (
                     rid,
                     now,
-                    norm["lowest_price"],
-                    norm["median_price"],
-                    norm["highest_price"],
                     norm["num_for_sale"],
                     norm["blocked_from_sale"],
                     stats_body,
@@ -391,14 +385,10 @@ class MarketplaceStatsDB:
         out = {
             "release_id": row["release_id"],
             "fetched_at": row["fetched_at"],
-            "lowest_price": row["lowest_price"],
-            "median_price": row["median_price"],
             "num_for_sale": row["num_for_sale"],
             "raw_json": row["raw_json"],
         }
         keys = row.keys()
-        if "highest_price" in keys:
-            out["highest_price"] = row["highest_price"]
         if "blocked_from_sale" in keys:
             out["blocked_from_sale"] = row["blocked_from_sale"]
         for k in (

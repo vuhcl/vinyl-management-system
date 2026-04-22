@@ -50,12 +50,12 @@ def main() -> int:
         mdb.upsert(
             rid,
             {
-                "lowest_price": {"value": median * 0.9},
-                "median_price": {"value": median},
                 "num_for_sale": max(1, wants // 40),
             },
             release_payload={
                 "community": {"want": wants, "have": haves},
+                "lowest_price": median,
+                "num_for_sale": max(1, wants // 40),
             },
         )
         genres_j = json.dumps([genre], separators=(",", ":"))

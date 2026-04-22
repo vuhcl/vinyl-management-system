@@ -70,7 +70,7 @@ def load_marketplace_by_release(path: Path) -> dict[str, dict[str, Any]]:
     try:
         cur = conn.execute(
             """
-            SELECT release_id, median_price, lowest_price, release_lowest_price,
+            SELECT release_id, release_lowest_price,
                    price_suggestions_json
             FROM marketplace_stats
             """
