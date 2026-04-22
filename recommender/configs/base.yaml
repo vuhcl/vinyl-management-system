@@ -38,10 +38,10 @@ discogs:
 # factors/regularization/iterations are overridden after the tuning sweep;
 # alpha is held fixed at 10 (tuning sweep does not vary it).
 als:
-  factors: 128
-  regularization: 0.01
-  iterations: 15
-  alpha: 10.0
+  factors: 64
+  regularization: 5.0
+  iterations: 30
+  alpha: 20.0
 
 evaluation:
   k: 10
@@ -55,15 +55,17 @@ content:
 
 # Optional second-stage learned reranker over ALS top-N candidates.
 # Set enabled: true and run recommender.pipeline to train + save the bundle.
-# candidate_top_n: recalibrate from artifacts/als_hit_rate.json
-# (target hit_rate@N >= 0.8) via scripts/measure_als_hit_rate.py.
+# candidate_top_n: calibrate from artifacts/als_hit_rate.json (target
+# hit_rate@N >= 0.8) via scripts/measure_als_hit_rate.py.
+# model_type / candidate_top_n / hard_negative_ratio are tuned by
+# scripts/sweep_reranker.py; winner is written back to this block.
 reranker:
   enabled: false
-  model_type: pointwise   # linear | pointwise
-  candidate_top_n: 500
+  model_type: linear      # linear | pointwise
+  candidate_top_n: 5000
   train_sample_n: 250000
   negative_sampling: 200
   class_weight: balanced
   hard_negative_ratio: 0.7
-  user_chunk_size: 10000
+  hard_negative_skip_top_frac: 0.1
   random_state: 42

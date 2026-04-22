@@ -173,15 +173,8 @@ def run_pipeline(
 
     if not albums.empty:
         retrieval_meta = build_retrieval_metadata(albums, interactions)
-        item_train_counts: dict[str, int] = {
-            str(a): int(v)
-            for a, v in interactions.groupby("album_id", sort=False).size().items()
-        }
         with open(artifacts_dir / "retrieval_serving.pkl", "wb") as f:
-            pickle.dump(
-                {"meta": retrieval_meta, "item_train_counts": item_train_counts},
-                f,
-            )
+            pickle.dump({"meta": retrieval_meta}, f)
 
         if rr_cfg_obj.enabled and retrieval_meta.valid_album_ids:
             rr_df, rr_stats = build_reranker_training_frame(
@@ -289,14 +282,12 @@ def load_pipeline_artifacts(artifacts_dir: Path) -> dict | None:
         if hasattr(content_sim, "item"):
             content_sim = content_sim.item()
     retrieval_meta = None
-    item_train_counts = None
     rs_path = artifacts_dir / "retrieval_serving.pkl"
     if rs_path.exists():
         try:
             with open(rs_path, "rb") as f:
                 rs = pickle.load(f)
             retrieval_meta = rs.get("meta")
-            item_train_counts = rs.get("item_train_counts")
         except (AttributeError, ModuleNotFoundError, pickle.UnpicklingError):
             print(
                 "retrieval_serving.pkl is from a pre-ALS-full-catalog run; "
@@ -315,8 +306,6 @@ def load_pipeline_artifacts(artifacts_dir: Path) -> dict | None:
     }
     if retrieval_meta is not None:
         out["retrieval_meta"] = retrieval_meta
-    if item_train_counts is not None:
-        out["item_train_counts"] = item_train_counts
     rr_path = artifacts_dir / "reranker.pkl"
     rr_bundle = load_reranker_bundle(rr_path)
     if rr_bundle is not None:
@@ -350,7 +339,6 @@ def recommend(
     content_sim = pipeline_artifacts.get("content_sim")
     retrieval_meta = pipeline_artifacts.get("retrieval_meta")
     reranker_bundle = pipeline_artifacts.get("reranker_bundle")
-    item_train_counts = pipeline_artifacts.get("item_train_counts")
     n_items = len(item_ids)
 
     if user_id not in user_id2idx:
@@ -378,11 +366,7 @@ def recommend(
         rank_idx, scores = rank_hybrid(
             cf_scores, content_scores, alpha, exclude_mask, top_k
         )
-    elif (
-        reranker_bundle is not None
-        and retrieval_meta is not None
-        and item_train_counts is not None
-    ):
+    elif reranker_bundle is not None and retrieval_meta is not None:
         train_albums = {str(idx2item_id[int(i)]) for i in matrix[user_idx].indices}
         cand = np.arange(n_items, dtype=np.int64)
         rank_idx, scores = rerank_candidates_for_user(
@@ -394,7 +378,6 @@ def recommend(
             exclude_idxs=exclude_idxs,
             item_ids=item_ids,
             meta=retrieval_meta,
-            item_train_counts=item_train_counts,
             top_k=top_k,
         )
     else:
