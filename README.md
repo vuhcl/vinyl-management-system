@@ -30,7 +30,7 @@ uv sync --extra test
 uv run uvicorn web.app.main:app --reload
 ```
 
-Open **http://127.0.0.1:8000** → [Log in with Discogs](http://127.0.0.1:8000/auth/login) (paste a [personal token](https://www.discogs.com/settings/developers)) → [Sync / Ingest](http://127.0.0.1:8000/ingest) to pull your collection and wantlist into `data/raw/`.
+Open **http://127.0.0.1:8000** → [Log in with Discogs](http://127.0.0.1:8000/auth/login) (paste a [personal token](https://www.discogs.com/settings/developers)) → [Sync / Ingest](http://127.0.0.1:8000/ingest) to pull your collection and wantlist into `data/raw/` (repo root).
 
 ---
 
@@ -47,7 +47,7 @@ vinyl_management_system/
 ├── grader/                   # ML: sleeve/media condition grader from notes
 ├── price_estimator/       # ML: price estimation
 ├── web/                    # Web UI and API
-├── data/raw, data/processed
+├── data/raw (Discogs CSVs), recommender/data/processed
 └── artifacts/
 ```
 
@@ -83,7 +83,7 @@ That installs `vinyl-shared`, `vinyl-core`, `vinyl-grader[serve]`, `vinyl-recomm
 Edit **`configs/base.yaml`** for shared paths and tokens. For the **recommender** pipeline, edit **`recommender/configs/base.yaml`** (it **inherits** the root file via `inherits: configs/base.yaml`) and set:
 
 - **Discogs**: `discogs.use_api`, `discogs.usernames`, token via env or YAML.
-- **AOTY**: `aoty_scraped.dir` (e.g. `data/aoty_scraped`) or CSVs in `data/raw/`.
+- **AOTY**: `aoty_scraped.dir` (e.g. `recommender/data/aoty_scraped`) or CSVs in `data/raw/`.
 
 ---
 
@@ -112,7 +112,7 @@ After logging in and running ingest, you can call:
 2. Train and save artifacts:
 
 ```bash
-python -m recommender.pipeline --config recommender/configs/base.yaml --data-dir data/raw --processed-dir data/processed --artifacts-dir artifacts
+python -m recommender.pipeline --config recommender/configs/base.yaml --data-dir data/raw --processed-dir recommender/data/processed --artifacts-dir artifacts
 ```
 
 3. Use in code or via web: `GET /api/recommendations` (when logged in).

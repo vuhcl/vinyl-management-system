@@ -40,7 +40,7 @@ vinyl_management_system/
 │   ├── __init__.py
 │   ├── config.py                  # Load/merge YAML; resolve paths
 │   ├── auth.py                    # Discogs token storage (web sessions)
-│   └── jobs.py                    # Ingest jobs: Discogs → data/raw
+│   └── jobs.py                    # Ingest jobs: Discogs → data/raw (repo root)
 │
 ├── shared/discogs_api/           # Shared Discogs API client
 │   ├── __init__.py
@@ -112,7 +112,7 @@ vinyl_management_system/
 | **Config** | `configs/base.yaml`, `recommender/configs/base.yaml`, `price_estimator/configs/base.yaml` + `core/config.py` | `core.config.load_config()` supports `inherits` and resolves paths under the **repo root**. Recommender training uses **`recommender/configs/base.yaml`**. VinylIQ uses `price_estimator/configs/`. |
 | **Discogs** | `shared/discogs_api/` | Recommender ingest, web ingest, and (future) price_estimator use the same client. Token comes from env or from web login (stored in `core.auth`). |
 | **AOTY data** | `shared/aoty/` | Recommender reads ratings/albums from a scraped directory or CSV fallback. |
-| **Ingest** | `core/jobs.py` | Web app calls `run_discogs_ingest(username, token)` or `run_full_ingest(...)` after login; writes to `data/raw/`. |
+| **Ingest** | `core/jobs.py` | Web app calls `run_discogs_ingest(username, token)` or `run_full_ingest(...)` after login; writes to `data/raw/` (repo root). |
 | **Auth** | `core/auth.py` + `web/.../auth.py` | User pastes Discogs token → app verifies with Discogs, stores token per username, sets cookie. Ingest and API use stored token. |
 
 ---
@@ -121,7 +121,7 @@ vinyl_management_system/
 
 1. **User logs in** (web): submits Discogs token → `/auth/token` → token stored, cookie set.
 2. **User triggers ingest** (web): POST `/ingest/sync` or `/ingest/full` → `core.jobs` fetches collection/wantlist (and optionally AOTY) → writes CSVs to `data/raw/`.
-3. **Recommender**: Run `python -m recommender.pipeline` (reads `data/raw/`, writes `data/processed/` and `artifacts/`). Web API `/api/recommendations` loads artifacts and returns recommendations for the logged-in user.
+3. **Recommender**: Run `python -m recommender.pipeline` (reads `data/raw/`, writes `recommender/data/processed/` and `artifacts/`). Web API `/api/recommendations` loads artifacts and returns recommendations for the logged-in user.
 4. **Vinyl condition grader**: Run from project root (see `grader/README.md`). Web API `/api/condition` calls it for seller-notes → condition.
 5. **VinylIQ / price estimator**: FastAPI in `price_estimator/src/api`; web `/api/price/...` proxies when `PRICE_SERVICE_URL` is set, else in-process `estimate()`. Chrome: `vinyliq-extension/`.
 

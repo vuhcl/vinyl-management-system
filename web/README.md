@@ -5,7 +5,7 @@ FastAPI app for the Vinyl Management System: **Discogs login**, **data ingest**,
 ## Features
 
 - **Auth**: Submit Discogs personal token → app verifies with Discogs and stores session (username).
-- **Ingest**: Trigger sync of collection and wantlist from Discogs; data is written to `data/raw/` for the recommender and other pipelines.
+- **Ingest**: Trigger sync of collection and wantlist from Discogs; data is written to `data/raw/` (repo root) so the web image can mount that path without the recommender package tree.
 - **API**: Recommendations, condition prediction, price estimate (delegate to ML subprojects).
 
 ## Run
