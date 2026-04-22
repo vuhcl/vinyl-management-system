@@ -25,6 +25,12 @@ if you need the old "bypass inside every get" behavior (may hang on normal Disco
 restricted. Review Discogs' current terms and developer policies and obtain
 appropriate permission before running this collector at scale.
 
+**``--db`` paths:** Same rule as ``collect_marketplace_stats.py``: relative values
+are resolved from the **monorepo root** (parent of ``price_estimator/``), not from
+inside ``price_estimator/``. Example:
+``--db price_estimator/data/cache/sale_history.sqlite`` when invoking from the repo
+root.
+
 **Pagination:** v1 scrapes the history table as rendered on the first loaded page
 only; extend the driver loop if Discogs exposes additional pages (e.g. “next”).
 """
@@ -49,8 +55,9 @@ class _Output:
 out = _Output()
 
 
-def _root() -> Path:
-    return Path(__file__).resolve().parents[1]
+def _repo_root() -> Path:
+    """Monorepo root (parent of the ``price_estimator`` package)."""
+    return Path(__file__).resolve().parents[2]
 
 
 def iter_release_ids_from_file(path: Path):
@@ -431,7 +438,10 @@ def main() -> int:
         "--db",
         type=Path,
         default=None,
-        help="SQLite path (default: price_estimator/data/cache/sale_history.sqlite)",
+        help=(
+            "Path to sale_history.sqlite. If relative, resolved from the **monorepo root** "
+            "(parent of ``price_estimator/``). Example: ``price_estimator/data/cache/sale_history.sqlite``"
+        ),
     )
     parser.add_argument(
         "--profile",
@@ -561,10 +571,10 @@ def main() -> int:
 
     load_project_dotenv()
 
-    root = _root()
-    db_path = args.db or (root / "data" / "cache" / "sale_history.sqlite")
+    repo = _repo_root()
+    db_path = args.db or (repo / "price_estimator" / "data" / "cache" / "sale_history.sqlite")
     if not db_path.is_absolute():
-        db_path = root / db_path
+        db_path = (repo / db_path).resolve()
 
     profile = args.profile
     if profile is None:
