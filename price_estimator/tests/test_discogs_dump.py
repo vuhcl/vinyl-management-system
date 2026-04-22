@@ -142,8 +142,7 @@ def test_row_dict_for_inference_catalog_indices_and_counts():
         "is_promo": 0,
     }
     stats = {
-        "median_price": 0.0,
-        "lowest_price": 0.0,
+        "release_lowest_price": 0.0,
         "num_for_sale": 0,
         "community_want": 10,
         "community_have": 5,

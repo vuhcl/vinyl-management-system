@@ -958,21 +958,15 @@ def test_marketplace_normalize_extra_fields() -> None:
 
     n = normalize_marketplace_stats(
         {
-            "lowest_price": {"value": 1.0, "currency": "USD"},
-            "median_price": 2.0,
-            "highest_price": 5.0,
             "num_for_sale": 3,
             "blocked_from_sale": True,
         }
     )
-    assert n["lowest_price"] == 1.0
-    assert n["median_price"] == 2.0
-    assert n["highest_price"] == 5.0
     assert n["num_for_sale"] == 3
     assert n["blocked_from_sale"] == 1
 
 
-def test_merge_release_listing_into_norm_fills_from_release() -> None:
+def test_merge_release_listing_into_norm_fills_num_for_sale_from_release() -> None:
     from price_estimator.src.storage.marketplace_db import (
         merge_release_listing_into_norm,
         normalize_marketplace_stats,
@@ -985,22 +979,19 @@ def test_merge_release_listing_into_norm_fills_from_release() -> None:
         "community": {"want": 10, "have": 20},
     }
     out = merge_release_listing_into_norm(norm, {}, rel)
-    assert out["lowest_price"] == 12.5
-    assert out["median_price"] == 12.5
     assert out["num_for_sale"] == 7
 
 
-def test_merge_release_listing_respects_stats_payload() -> None:
+def test_merge_release_listing_respects_stats_nfs() -> None:
     from price_estimator.src.storage.marketplace_db import (
         merge_release_listing_into_norm,
         normalize_marketplace_stats,
     )
 
-    payload = {"lowest_price": 9.0, "num_for_sale": 2}
+    payload = {"num_for_sale": 2}
     norm = normalize_marketplace_stats(payload)
-    rel = {"lowest_price": {"value": 99.0}, "num_for_sale": 50}
+    rel = {"num_for_sale": 50}
     out = merge_release_listing_into_norm(norm, payload, rel)
-    assert out["lowest_price"] == 9.0
     assert out["num_for_sale"] == 2
 
 

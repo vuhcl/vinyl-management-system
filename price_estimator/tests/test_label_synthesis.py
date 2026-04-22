@@ -45,11 +45,9 @@ def test_parse_price_suggestion_value():
     )
 
 
-def test_dollar_target_release_lowest_prefers_release_column():
+def test_dollar_target_release_lowest_uses_release_lowest_price():
     row = {
         "release_lowest_price": 18.0,
-        "lowest_price": 10.0,
-        "median_price": 10.0,
         "num_for_sale": 1,
     }
     tl = {"mode": "release_lowest", "price_suggestion_grade": "Near Mint (NM or M-)"}
@@ -64,8 +62,6 @@ def test_dollar_target_price_suggestion():
             '{"Near Mint (NM or M-)": {"currency": "USD", "value": 30.0}}'
         ),
         "release_lowest_price": 20.0,
-        "lowest_price": 15.0,
-        "median_price": 15.0,
         "num_for_sale": 2,
     }
     tl = {
@@ -79,14 +75,14 @@ def test_dollar_target_price_suggestion():
 
 
 def test_dollar_target_retired_median_mode_raises():
-    row = {"median_price": 10.0, "lowest_price": 5.0}
+    row = {"release_lowest_price": 10.0}
     tl = {"mode": "median"}
     with pytest.raises(ValueError, match="retired"):
         dollar_target_and_residual_anchor_from_marketplace_row(row, tl)
 
 
 def test_dollar_target_sale_floor_mode_raises():
-    row = {"median_price": 10.0}
+    row = {"release_lowest_price": 10.0}
     tl = {"mode": "sale_floor_blend"}
     with pytest.raises(ValueError, match="load_training_frame"):
         dollar_target_and_residual_anchor_from_marketplace_row(row, tl)
