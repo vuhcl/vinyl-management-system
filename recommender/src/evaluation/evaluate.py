@@ -117,7 +117,6 @@ def evaluate_pretrained_als(
                 exclude_idxs=exclude_idxs,
                 item_ids=item_ids,
                 meta=meta,
-                item_train_counts=item_train_counts,
                 top_k=k,
             )
         else:
@@ -229,6 +228,18 @@ def run_evaluation(
             for key in (f"ndcg@{k}", f"map@{k}", f"recall@{k}"):
                 out[f"als_only_{key}"] = float(base_out.get(key, 0.0))
                 out[key] = float(reranked.get(key, 0.0))
+            # Preserve ALS-only stratified tail/head metrics so the sweep
+            # winner rule can compare reranked vs ALS-only pop_head/pop_tail
+            # in a single run (the overwrite loop below replaces the non-
+            # als_only_* versions with reranker values).
+            for strat_key in (
+                f"ndcg@{k}_pop_head",
+                f"ndcg@{k}_pop_tail",
+                f"n_users_pop_head",
+                f"n_users_pop_tail",
+            ):
+                if strat_key in base_out:
+                    out[f"als_only_{strat_key}"] = float(base_out[strat_key])
             out["reranker_enabled"] = 1.0
             out["reranker_model_type"] = 1.0 if rr_bundle.model_type == "linear" else 2.0
             out["reranker_train_rows"] = float(rr_bundle.train_rows)

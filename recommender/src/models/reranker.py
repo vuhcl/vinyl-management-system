@@ -11,8 +11,16 @@ import numpy as np
 import pandas as pd
 from sklearn.ensemble import HistGradientBoostingClassifier
 from sklearn.linear_model import LogisticRegression
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import StandardScaler
 
 from ..retrieval.candidates import RetrievalMetadata
+
+
+# Features whose presence in a pickled bundle signals a pre-cleanup schema.
+_LEGACY_RERANKER_FEATURES: frozenset[str] = frozenset(
+    {"als_score", "item_popularity", "item_distinct_users", "item_priority"}
+)
 
 
 @dataclass
@@ -24,7 +32,9 @@ class ReRankerConfig:
     negative_sampling: int = 200
     class_weight: str | None = "balanced"
     hard_negative_ratio: float = 0.7
-    user_chunk_size: int = 10000
+    # Fraction at the very top of ALS non-positives to skip when mining hard
+    # negatives; those are the likeliest false negatives under leave-one-out.
+    hard_negative_skip_top_frac: float = 0.1
     random_state: int = 42
 
 
@@ -49,7 +59,9 @@ def reranker_config_from_dict(d: dict | None) -> ReRankerConfig:
         negative_sampling=int(d.get("negative_sampling", 200)),
         class_weight=d.get("class_weight", "balanced"),
         hard_negative_ratio=float(d.get("hard_negative_ratio", 0.7)),
-        user_chunk_size=int(d.get("user_chunk_size", 10000)),
+        hard_negative_skip_top_frac=float(
+            d.get("hard_negative_skip_top_frac", 0.1)
+        ),
         random_state=int(d.get("random_state", 42)),
     )
 
@@ -95,6 +107,9 @@ def topn_als_from_candidates(
     )
 
 
+_USER_TOP_GENRES_K = 10
+
+
 def _feature_rows(
     *,
     top_idx: np.ndarray,
@@ -102,22 +117,51 @@ def _feature_rows(
     item_ids: np.ndarray,
     train_albums: set[str],
     meta: RetrievalMetadata,
-    item_train_counts: dict[str, int],
 ) -> list[dict[str, float]]:
-    user_genres: set[str] = set()
+    # User genre + artist profile. We compute counts once per user and reuse
+    # them across the full candidate pool: the cost is O(|train_albums|),
+    # dominated by the per-candidate feature loop.
+    user_genre_counts: dict[str, int] = {}
+    user_artist_counts: dict[str, int] = {}
+    years: list[int] = []
+    user_ratings: list[float] = []
     for a in train_albums:
-        user_genres |= meta.album_genres.get(str(a), set())
-    user_artist_set = {
-        meta.album_id_to_artist.get(str(a), "")
-        for a in train_albums
-        if meta.album_id_to_artist.get(str(a), "")
-    }
-    years = [
-        meta.album_year.get(str(a), 0)
-        for a in train_albums
-        if meta.album_year.get(str(a), 0) > 0
-    ]
+        aid = str(a)
+        for g in meta.album_genres.get(aid, set()):
+            user_genre_counts[g] = user_genre_counts.get(g, 0) + 1
+        art = meta.album_id_to_artist.get(aid, "")
+        if art:
+            user_artist_counts[art] = user_artist_counts.get(art, 0) + 1
+        y = meta.album_year.get(aid, 0)
+        if y > 0:
+            years.append(int(y))
+        r = meta.album_avg_rating.get(aid, 0.0)
+        if r > 0:
+            user_ratings.append(float(r))
+
+    user_genres: set[str] = set(user_genre_counts.keys())
+    user_top_genres: set[str] = set(
+        sorted(user_genre_counts, key=user_genre_counts.get, reverse=True)[
+            :_USER_TOP_GENRES_K
+        ]
+    )
+    total_genre_mass = sum(user_genre_counts.values()) or 1
+    user_artist_set = set(user_artist_counts.keys())
     user_year = float(np.mean(years)) if years else 0.0
+    # np.std over <2 samples returns 0; treat that as "single-era user" and
+    # let the zdist feature fall back to the raw year distance.
+    user_year_std = float(np.std(years)) if len(years) >= 2 else 0.0
+    user_rating_mean = float(np.mean(user_ratings)) if user_ratings else 0.0
+    user_n_train = len(train_albums)
+    user_activity_log = float(np.log1p(user_n_train))
+
+    # Per-user z-score of ALS scores over the candidate pool. Removes the
+    # ||user_factor|| scale leak that raw als_score had across users.
+    if top_scores.size > 0:
+        mu = float(np.mean(top_scores))
+        sd = float(np.std(top_scores)) or 1.0
+    else:
+        mu, sd = 0.0, 1.0
 
     rows: list[dict[str, float]] = []
     for rank0, (idx, als_s) in enumerate(zip(top_idx, top_scores)):
@@ -125,25 +169,41 @@ def _feature_rows(
         cg = meta.album_genres.get(aid, set())
         c_artist = meta.album_id_to_artist.get(aid, "")
         c_year = float(meta.album_year.get(aid, 0))
+        c_rating = float(meta.album_avg_rating.get(aid, 0.0))
+        genre_mass_matched = sum(user_genre_counts.get(g, 0) for g in cg)
+        year_valid = user_year > 0 and c_year > 0
         rows.append(
             {
-                "als_score": float(als_s),
+                "als_score_z": (float(als_s) - mu) / sd,
                 "als_rank_inv": float(1.0 / (1.0 + rank0)),
                 "genre_jaccard": _genre_jaccard(user_genres, cg),
                 "artist_match": (
                     1.0 if c_artist and c_artist in user_artist_set else 0.0
                 ),
-                "item_popularity": float(item_train_counts.get(aid, 0)),
                 "year_distance": (
-                    abs(c_year - user_year)
-                    if user_year > 0 and c_year > 0
+                    abs(c_year - user_year) if year_valid else 0.0
+                ),
+                "item_avg_rating": c_rating,
+                "user_top_genre_jaccard": _genre_jaccard(user_top_genres, cg),
+                "user_genre_affinity": (
+                    float(genre_mass_matched) / float(total_genre_mass)
+                ),
+                "user_artist_affinity": float(
+                    np.log1p(user_artist_counts.get(c_artist, 0))
+                    if c_artist
                     else 0.0
                 ),
-                "item_avg_rating": float(meta.album_avg_rating.get(aid, 0.0)),
-                "item_priority": float(meta.album_priority.get(aid, 0.0)),
-                "item_distinct_users": float(
-                    meta.album_distinct_users.get(aid, 0)
+                "user_year_zdist": (
+                    abs(c_year - user_year) / max(1.0, user_year_std)
+                    if year_valid
+                    else 0.0
                 ),
+                "item_rating_vs_user_mean": (
+                    c_rating - user_rating_mean
+                    if user_rating_mean > 0 and c_rating > 0
+                    else 0.0
+                ),
+                "user_activity_log": user_activity_log,
             }
         )
     return rows
@@ -170,12 +230,6 @@ def build_reranker_training_frame(
         album_id=train_interactions["album_id"].astype(str),
     )
     train_by_user = _ti.groupby("user_id")["album_id"].apply(set).to_dict()
-    item_train_counts: dict[str, int] = {
-        str(a): int(v)
-        for a, v in train_interactions.groupby("album_id", sort=False)
-        .size()
-        .items()
-    }
 
     users = [u for u in test_by_user.keys() if u in user_id2idx]
     if rr_cfg.train_sample_n > 0 and len(users) > rr_cfg.train_sample_n:
@@ -219,7 +273,6 @@ def build_reranker_training_frame(
             item_ids=item_ids,
             train_albums=train_items,
             meta=meta,
-            item_train_counts=item_train_counts,
         )
         u_rows: list[dict[str, float | int | str]] = []
         for i, fr in enumerate(feat_rows):
@@ -229,17 +282,36 @@ def build_reranker_training_frame(
                 {"user_id": uid, "item_idx": idx, "label": label, **fr}
             )
         pos_rows = [r for r in u_rows if int(r["label"]) == 1]
+        # neg_rows preserves ALS rank order (desc) from topn_als_from_candidates.
         neg_rows = [r for r in u_rows if int(r["label"]) == 0]
         if not pos_rows:
             users_no_pos += 1
         keep_neg = min(len(neg_rows), rr_cfg.negative_sampling)
         if keep_neg > 0:
+            n_neg = len(neg_rows)
+            # Skip the very top of ALS non-positives: under leave-one-out those
+            # are the likeliest false negatives. Mine hard negatives from a
+            # mid-rank band so the model does not learn "high ALS -> negative".
+            skip = int(rr_cfg.hard_negative_skip_top_frac * n_neg)
+            mid_end = int(0.5 * n_neg)
+            hard_band = neg_rows[skip:mid_end] if mid_end > skip else []
             hard_n = int(round(keep_neg * rr_cfg.hard_negative_ratio))
-            hard = neg_rows[:hard_n]
-            tail = neg_rows[hard_n:]
-            random_keep = []
-            if keep_neg > hard_n and tail:
-                kk = min(keep_neg - hard_n, len(tail))
+            if hard_band and hard_n > 0:
+                ix = rng.choice(
+                    len(hard_band),
+                    size=min(hard_n, len(hard_band)),
+                    replace=False,
+                )
+                hard = [
+                    hard_band[int(j)] for j in np.asarray(ix).ravel().tolist()
+                ]
+            else:
+                hard = []
+            tail = neg_rows[mid_end:]  # random tail (easy negatives)
+            random_keep: list[dict[str, float | int | str]] = []
+            remaining = keep_neg - len(hard)
+            if remaining > 0 and tail:
+                kk = min(remaining, len(tail))
                 ix = rng.choice(len(tail), size=kk, replace=False)
                 random_keep = [
                     tail[int(j)] for j in np.asarray(ix).ravel().tolist()
@@ -272,15 +344,18 @@ def train_reranker(
     if train_df.empty:
         return None
     feature_names = [
-        "als_score",
+        "als_score_z",
         "als_rank_inv",
         "genre_jaccard",
         "artist_match",
-        "item_popularity",
         "year_distance",
         "item_avg_rating",
-        "item_priority",
-        "item_distinct_users",
+        "user_top_genre_jaccard",
+        "user_genre_affinity",
+        "user_artist_affinity",
+        "user_year_zdist",
+        "item_rating_vs_user_mean",
+        "user_activity_log",
     ]
     X = train_df[feature_names].astype(float).values
     y = train_df["label"].astype(int).values
@@ -288,10 +363,21 @@ def train_reranker(
         return None
 
     if rr_cfg.model_type == "linear":
-        model = LogisticRegression(
-            max_iter=250,
-            class_weight=rr_cfg.class_weight,
-            random_state=rr_cfg.random_state,
+        # Wrap LogisticRegression in a StandardScaler Pipeline so features on
+        # different natural scales (als_score_z, item_avg_rating, year_distance)
+        # all contribute comparably to the linear decision boundary.
+        model = Pipeline(
+            [
+                ("scaler", StandardScaler()),
+                (
+                    "lr",
+                    LogisticRegression(
+                        max_iter=250,
+                        class_weight=rr_cfg.class_weight,
+                        random_state=rr_cfg.random_state,
+                    ),
+                ),
+            ]
         )
         model.fit(X, y)
     elif rr_cfg.model_type == "pointwise":
@@ -345,7 +431,6 @@ def rerank_candidates_for_user(
     exclude_idxs: np.ndarray,
     item_ids: np.ndarray,
     meta: RetrievalMetadata,
-    item_train_counts: dict[str, int],
     top_k: int,
 ) -> tuple[np.ndarray, np.ndarray]:
     top_idx, top_scores = topn_als_from_candidates(
@@ -363,7 +448,6 @@ def rerank_candidates_for_user(
         item_ids=item_ids,
         train_albums=train_albums,
         meta=meta,
-        item_train_counts=item_train_counts,
     )
     feat_df = pd.DataFrame(rows)
     rr_scores = predict_reranker_scores(bundle, feat_df)
@@ -391,5 +475,16 @@ def load_reranker_bundle(path: Path) -> ReRankerBundle | None:
     with open(p, "rb") as f:
         obj = pickle.load(f)
     if not isinstance(obj, ReRankerBundle):
+        return None
+    # Backward-compat: a bundle pickled before the feature cleanup carries
+    # names that _feature_rows no longer emits. Refuse to load so serving
+    # cleanly falls back to ALS-only instead of KeyError-ing at predict time.
+    legacy = _LEGACY_RERANKER_FEATURES.intersection(obj.feature_names)
+    if legacy:
+        print(
+            "reranker.pkl predates the feature cleanup "
+            f"(legacy features: {sorted(legacy)}); "
+            "re-run recommender.pipeline to regenerate."
+        )
         return None
     return obj

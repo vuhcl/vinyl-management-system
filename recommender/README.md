@@ -55,17 +55,23 @@ Stage-1 recall is always **ALS over the full item matrix** — no metadata-gated
 An optional learned reranker (second stage) takes the ALS top-N candidates and reorders
 them using content-based features derived from `RetrievalMetadata`:
 
-- **Features**: genre Jaccard, artist match, year distance, item popularity, item avg rating,
-  item priority score, item distinct users.
-- **Models**: `linear` (logistic regression) or `pointwise` (gradient-boosted tree).
+- **Features** (6, all personalized or bounded): `als_score_z` (per-user z-scored ALS),
+  `als_rank_inv` (1 / (1 + rank)), `genre_jaccard`, `artist_match`, `year_distance`,
+  `item_avg_rating`. Raw popularity and distinct-users counts are deliberately
+  excluded — they fed a "popular ⇒ irrelevant" feedback loop with ALS-top hard negatives.
+- **Models**: `linear` (StandardScaler + logistic regression, safer baseline) or
+  `pointwise` (histogram gradient-boosted tree).
+- **Hard negatives**: mined from a mid-rank ALS band, not the top, controlled by
+  `reranker.hard_negative_skip_top_frac` (default 0.1). Skipping the very top prevents
+  teaching the model that high-ALS items are negatives.
 
 Enable in **`recommender/configs/base.yaml`** under `reranker.enabled: true`, then run the
 full pipeline to train and save the reranker bundle (`artifacts/reranker.pkl`).
 
-**Serving:** `artifacts/retrieval_serving.pkl` stores `RetrievalMetadata` + per-item train
-counts needed by the reranker at serving time. If this file was produced by a pre-ALS-full-
-catalog run, `load_pipeline_artifacts` logs a clear rebuild message and falls back gracefully
-to full-catalog ALS without the reranker.
+**Serving:** `artifacts/retrieval_serving.pkl` stores `RetrievalMetadata` needed by the
+reranker at serving time. If this file or `reranker.pkl` was produced by a pre-cleanup run
+(legacy feature names), `load_pipeline_artifacts` / `load_reranker_bundle` logs a clear
+rebuild message and falls back gracefully to full-catalog ALS without the reranker.
 
 Hybrid blending (`content_sim` + `alpha` < 1) also uses full-catalog ALS for stage-1.
 
@@ -103,7 +109,8 @@ Run from project root in this order:
 1. **Tune ALS hyperparameters** — pick best `als.*` by NDCG@10 on leave-one-out.
 2. **Train final ALS** on full processed data (reranker disabled).
 3. **Measure ALS hit rate** at candidate cutoffs to calibrate `reranker.candidate_top_n`.
-4. **Re-run final training with reranker enabled** once `hit_rate@candidate_top_n >= 0.8`.
+4. **Sweep reranker hyperparameters** — pick `model_type` / `candidate_top_n` / `hard_negative_ratio`; write winner to `base.yaml`.
+5. **Re-run final training with reranker enabled** once `hit_rate@candidate_top_n >= 0.8` and a sweep winner exists.
 
 ### 1) ALS tuning
 
@@ -166,7 +173,43 @@ Inspect `artifacts/als_hit_rate.json`. Pick the smallest N where
 `hit_rate@N >= 0.8`, then set `reranker.candidate_top_n: <N>` in
 `recommender/configs/base.yaml`.
 
-### 4) Final training with reranker
+### 4) Reranker sweep (pick `model_type` / `candidate_top_n` / `hard_negative_ratio`)
+
+ALS is trained once and shared across all grid points, so this is cheap
+relative to the ALS tuning sweep. Defaults are a 2 x 3 x 3 = 18-run grid.
+If step 3 gave you a calibrated `N` very different from 200/500/1000, widen
+the `--candidate-top-n` grid to straddle it.
+
+```bash
+uv run python -u scripts/sweep_reranker.py \
+  --config recommender/configs/base.yaml \
+  --processed-dir data/processed \
+  --sample-n 3000000 \
+  --k 10 \
+  --model-types "linear,pointwise" \
+  --candidate-top-n "200,500,1000" \
+  --hard-negative-ratio "0.0,0.3,0.7" \
+  --hard-negative-skip-top-frac 0.1 \
+  --random-state 42 \
+  --artifacts-dir artifacts 2>&1 | tee artifacts/sweep_reranker.log
+```
+
+Results land in `artifacts/sweep_reranker.json`. Each run records both the
+reranked `ndcg@10`, `ndcg@10_pop_head`, `ndcg@10_pop_tail` **and** the
+ALS-only baselines (`als_only_*`) from the same fitted ALS, so you can
+compare them apples-to-apples.
+
+**Winner rule:** lowest `|als_only_ndcg@10_pop_head - ndcg@10_pop_head|`
+among runs that satisfy both `ndcg@10 > als_only_ndcg@10` and
+`ndcg@10_pop_tail > als_only_ndcg@10_pop_tail`. If no config passes, keep
+`reranker.enabled: false` — the reranker is not yet helping. Otherwise,
+copy the winner's `rr_cfg` fields into the `reranker:` block in
+`recommender/configs/base.yaml` before step 5.
+
+Note: at `hard_negative_ratio=0.0` the `skip_top_frac` knob is a no-op; that
+row is the intentional "easy negatives only" baseline.
+
+### 5) Final training with reranker
 
 Flip `reranker.enabled: true` in `recommender/configs/base.yaml` and re-run
 the step 2 command. The pipeline trains and saves the reranker bundle
