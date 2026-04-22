@@ -34,9 +34,9 @@ price_estimator/data/processed/*
 
 data/raw/*
 !data/raw/.gitkeep
-data/processed/*
-!data/processed/.gitkeep
-data/aoty_scraped/
+recommender/data/processed/*
+!recommender/data/processed/.gitkeep
+recommender/data/aoty_scraped/
 grader/data/*
 # Discogs ↔ AOTY matching HTTP cache (release→master, search JSON)
 **/.discogs_cache/

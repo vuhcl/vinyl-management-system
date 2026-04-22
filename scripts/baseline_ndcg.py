@@ -33,7 +33,7 @@ def main() -> int:
     parser.add_argument(
         "--processed-dir",
         type=Path,
-        default=Path("data/processed"),
+        default=Path("recommender/data/processed"),
         help="Directory containing interactions.parquet",
     )
     parser.add_argument(

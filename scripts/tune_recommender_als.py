@@ -3,7 +3,7 @@
 Hyperparameter tuning for recommender ALS (implicit).
 
 This script tunes ALS parameters using your already-processed
-`data/processed/interactions.parquet`, so it is fast enough to iterate and
+`recommender/data/processed/interactions.parquet`, so it is fast enough to iterate and
 does not re-run Discogs/Mongo ingestion.
 
 It runs:
@@ -36,7 +36,7 @@ def main() -> int:
     parser.add_argument(
         "--processed-dir",
         type=Path,
-        default=Path("data/processed"),
+        default=Path("recommender/data/processed"),
         help="Directory containing interactions.parquet",
     )
     parser.add_argument(

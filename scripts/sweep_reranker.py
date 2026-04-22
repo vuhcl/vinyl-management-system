@@ -66,8 +66,11 @@ def main() -> int:
     parser.add_argument(
         "--processed-dir",
         type=Path,
-        default=Path("data/processed"),
-        help="Directory containing interactions.parquet + albums.parquet.",
+        default=Path("recommender/data/processed"),
+        help=(
+            "Directory with interactions.parquet + albums.parquet "
+            "(default: recommender/data/processed; not repo-root data/processed)."
+        ),
     )
     parser.add_argument(
         "--sample-n",
@@ -141,7 +144,10 @@ def main() -> int:
         build_reranker_training_frame,
         train_reranker,
     )
-    from recommender.src.retrieval.candidates import build_retrieval_metadata
+    from recommender.src.retrieval.candidates import (
+        build_retrieval_metadata,
+        load_discogs_stats_for_reranker_cfg,
+    )
 
     project_cfg: dict = {}
     if args.config is not None:
@@ -164,7 +170,25 @@ def main() -> int:
     candidate_top_ns = _parse_int_list(args.candidate_top_n)
     hnr_values = _parse_float_list(args.hard_negative_ratio)
 
-    interactions, albums = load_processed(Path(args.processed_dir))
+    proc_dir = Path(args.processed_dir).expanduser()
+    if not proc_dir.is_absolute():
+        proc_dir = (_REPO_ROOT / proc_dir).resolve()
+    int_path = proc_dir / "interactions.parquet"
+    if not int_path.is_file():
+        canonical = _REPO_ROOT / "recommender" / "data" / "processed" / "interactions.parquet"
+        if canonical.is_file():
+            raise SystemExit(
+                f"Missing {int_path}.\nProcessed outputs are under "
+                f"recommender/data/processed/ — rerun with:\n"
+                f"  --processed-dir recommender/data/processed\n"
+                f"(found {canonical})."
+            )
+        raise SystemExit(
+            f"Missing interactions.parquet under {proc_dir}. "
+            "Run recommender preprocess or fix --processed-dir."
+        )
+
+    interactions, albums = load_processed(proc_dir)
     if interactions.empty:
         raise SystemExit("No interactions found in processed_dir.")
     if albums is None or albums.empty:
@@ -244,7 +268,13 @@ def main() -> int:
     )
 
     t0 = time.time()
-    meta = build_retrieval_metadata(albums, train_int)
+    rr_yaml = project_cfg.get("reranker") or {}
+    ds_stats = load_discogs_stats_for_reranker_cfg(rr_yaml)
+    meta = build_retrieval_metadata(
+        albums,
+        train_int,
+        discogs_master_stats=ds_stats,
+    )
     print(f"RetrievalMetadata build time: {time.time() - t0:.1f}s")
     if not meta.valid_album_ids:
         raise SystemExit(

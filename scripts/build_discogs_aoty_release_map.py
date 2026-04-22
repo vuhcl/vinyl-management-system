@@ -24,7 +24,7 @@ Examples (repo root, venv active):
   .venv/bin/python scripts/build_discogs_aoty_release_map.py \\
       --username nowaki027 --output artifacts/discogs_release_to_aoty.json
 
-  # Use collection.csv / wantlist.csv under data/raw instead of API:
+  # Use collection.csv / wantlist.csv under data/raw (repo root) instead of API:
   .venv/bin/python scripts/build_discogs_aoty_release_map.py \\
       --from-csv --data-dir data/raw --output artifacts/discogs_release_to_aoty.json
 

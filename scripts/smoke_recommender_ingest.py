@@ -14,7 +14,7 @@ Examples (from repo root, venv active):
 
   # AOTY from CSV only (no Mongo)
   python scripts/smoke_recommender_ingest.py --username me \\
-      --aoty-dir data/aoty_scraped --no-mongo
+      --aoty-dir recommender/data/aoty_scraped --no-mongo
 
   # Mongo only (no Discogs)
   python scripts/smoke_recommender_ingest.py --no-discogs

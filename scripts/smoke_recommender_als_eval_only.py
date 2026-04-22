@@ -6,7 +6,7 @@ This avoids the full `recommender.pipeline` (which can be slow on very
 large datasets due to final ALS training + optional content similarity).
 
 Steps:
-  1) Load `data/processed/interactions.parquet`
+  1) Load `recommender/data/processed/interactions.parquet`
   2) Sample interactions from real data
   3) Run leave-one-out split + `run_evaluation()` with tiny ALS params
   4) Print metrics and basic shapes
@@ -33,7 +33,7 @@ def main() -> int:
     parser.add_argument(
         "--processed-dir",
         type=Path,
-        default=Path("data/processed"),
+        default=Path("recommender/data/processed"),
         help="Directory containing interactions.parquet",
     )
     parser.add_argument(
