@@ -110,6 +110,47 @@ def topn_als_from_candidates(
 _USER_TOP_GENRES_K = 10
 
 
+def _discogs_rerank_features(aid: str, meta: RetrievalMetadata) -> dict[str, float]:
+    """Tier A + Tier B Discogs-side scalars for one candidate album_id."""
+    rc = int(getattr(meta, "album_release_count", {}).get(aid, 0) or 0)
+    vr = int(getattr(meta, "album_vinyl_release_count", {}).get(aid, 0) or 0)
+    uc = int(getattr(meta, "album_unique_country_count", {}).get(aid, 0) or 0)
+    ul = int(getattr(meta, "album_unique_label_count", {}).get(aid, 0) or 0)
+    span = int(getattr(meta, "album_era_span", {}).get(aid, 0) or 0)
+    span = max(0, min(80, span))
+    has_dm = (
+        1.0 if getattr(meta, "album_has_discogs_master", {}).get(aid, False) else 0.0
+    )
+
+    cw = int(getattr(meta, "album_community_want", {}).get(aid, 0) or 0)
+    ch = int(getattr(meta, "album_community_have", {}).get(aid, 0) or 0)
+    nfs = int(getattr(meta, "album_num_for_sale", {}).get(aid, 0) or 0)
+    lp = float(getattr(meta, "album_lowest_price", {}).get(aid, 0.0) or 0.0)
+    has_cs = (
+        1.0
+        if getattr(meta, "album_has_community_stats", {}).get(aid, False)
+        else 0.0
+    )
+
+    ratio = float(cw) / float(max(1, ch))
+    ratio = max(0.0, min(10.0, ratio))
+
+    return {
+        "release_count_log": float(np.log1p(rc)),
+        "vinyl_release_count_log": float(np.log1p(vr)),
+        "unique_country_count": float(uc),
+        "unique_label_count_log": float(np.log1p(ul)),
+        "era_span": float(span),
+        "has_discogs_master": has_dm,
+        "discogs_community_want_log": float(np.log1p(cw)),
+        "discogs_community_have_log": float(np.log1p(ch)),
+        "discogs_want_have_ratio": ratio,
+        "discogs_num_for_sale_log": float(np.log1p(nfs)),
+        "discogs_lowest_price_log": float(np.log1p(max(0.0, lp))),
+        "has_community_stats": has_cs,
+    }
+
+
 def _feature_rows(
     *,
     top_idx: np.ndarray,
@@ -204,6 +245,7 @@ def _feature_rows(
                     else 0.0
                 ),
                 "user_activity_log": user_activity_log,
+                **_discogs_rerank_features(aid, meta),
             }
         )
     return rows
@@ -356,6 +398,18 @@ def train_reranker(
         "user_year_zdist",
         "item_rating_vs_user_mean",
         "user_activity_log",
+        "release_count_log",
+        "vinyl_release_count_log",
+        "unique_country_count",
+        "unique_label_count_log",
+        "era_span",
+        "has_discogs_master",
+        "discogs_community_want_log",
+        "discogs_community_have_log",
+        "discogs_want_have_ratio",
+        "discogs_num_for_sale_log",
+        "discogs_lowest_price_log",
+        "has_community_stats",
     ]
     X = train_df[feature_names].astype(float).values
     y = train_df["label"].astype(int).values
@@ -410,7 +464,13 @@ def train_reranker(
 def predict_reranker_scores(
     bundle: ReRankerBundle, feat_df: pd.DataFrame
 ) -> np.ndarray:
-    X = feat_df[bundle.feature_names].astype(float).values
+    need = list(bundle.feature_names)
+    missing = [c for c in need if c not in feat_df.columns]
+    if missing:
+        feat_df = feat_df.copy()
+        for c in missing:
+            feat_df[c] = 0.0
+    X = feat_df[need].astype(float).values
     m = bundle.model
     if hasattr(m, "predict_proba"):
         p = m.predict_proba(X)

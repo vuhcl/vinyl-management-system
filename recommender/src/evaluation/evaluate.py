@@ -22,6 +22,7 @@ from ..models.reranker import (
 from ..retrieval.candidates import (
     RetrievalMetadata,
     build_retrieval_metadata,
+    load_discogs_stats_for_reranker_cfg,
 )
 from .metrics import ap_at_k, ndcg_at_k, recall_at_k
 
@@ -201,7 +202,12 @@ def run_evaluation(
     rr_cfg = reranker_config_from_dict(reranker)
     meta: RetrievalMetadata | None = None
     if rr_cfg.enabled and albums is not None and not albums.empty:
-        meta = build_retrieval_metadata(albums, train_interactions)
+        ds_stats = load_discogs_stats_for_reranker_cfg(reranker)
+        meta = build_retrieval_metadata(
+            albums,
+            train_interactions,
+            discogs_master_stats=ds_stats,
+        )
         if not meta.valid_album_ids:
             meta = None
 

@@ -28,6 +28,7 @@ from recommender.src.models.reranker import (
 from recommender.src.retrieval.candidates import (
     RetrievalMetadata,
     build_retrieval_metadata,
+    load_discogs_stats_for_reranker_cfg,
 )
 from recommender.src.models.content_model import build_content_similarity, content_scores_vector
 from recommender.src.models.hybrid import rank_hybrid
@@ -96,7 +97,9 @@ def run_pipeline(
         interactions, albums = load_processed(processed_dir)
 
     if interactions.empty:
-        raise ValueError("No interactions after preprocess. Add data in data/raw/.")
+        raise ValueError(
+            "No interactions after preprocess. Add data under data/raw/ (repo root)."
+        )
 
     # Feature matrix and mappers
     matrix, user_ids, item_ids = build_user_item_matrix(interactions, weight_col="strength")
@@ -172,7 +175,12 @@ def run_pipeline(
     rr_cfg_obj = reranker_config_from_dict(reranker_cfg)
 
     if not albums.empty:
-        retrieval_meta = build_retrieval_metadata(albums, interactions)
+        ds_stats = load_discogs_stats_for_reranker_cfg(reranker_cfg)
+        retrieval_meta = build_retrieval_metadata(
+            albums,
+            interactions,
+            discogs_master_stats=ds_stats,
+        )
         with open(artifacts_dir / "retrieval_serving.pkl", "wb") as f:
             pickle.dump({"meta": retrieval_meta}, f)
 
@@ -411,7 +419,7 @@ if __name__ == "__main__":
         help="YAML (may use inherits: configs/base.yaml)",
     )
     parser.add_argument("--data-dir", default="data/raw")
-    parser.add_argument("--processed-dir", default="data/processed")
+    parser.add_argument("--processed-dir", default="recommender/data/processed")
     parser.add_argument("--artifacts-dir", default="artifacts")
     parser.add_argument("--skip-ingest", action="store_true")
     parser.add_argument("--no-mlflow", action="store_true", dest="no_mlflow")
