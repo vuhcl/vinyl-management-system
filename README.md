@@ -9,11 +9,12 @@ A monorepo for vinyl collection tooling: **Discogs integration**, **data ingest*
 | Component | Description |
 |-----------|-------------|
 | **Web app** | Log in with your Discogs token, sync collection & wantlist to the app, and call ML APIs (recommendations, condition, price). |
-| **Recommender** | Hybrid (ALS + content-based) recommendations using your Discogs collection/wantlist and optional AOTY ratings. |
+| **Recommender** | Hybrid (ALS + content-based) recommendations using your Discogs collection/wantlist and optional AOTY ratings; optional learned reranker. |
 | **Vinyl condition grader** | Predicts sleeve and media condition from seller notes (e.g. Discogs listings). |
-| **Price estimator (VinylIQ)** | XGBoost + Discogs stats; FastAPI microservice, optional Chrome extension. |
+| **Price estimator (VinylIQ)** | Marketplace stats, feature store, gradient-boosting stack; FastAPI microservice. |
+| **VinylIQ Chrome extension** | Thin client for the price API on Discogs release pages. |
 
-Shared infrastructure: **Discogs API** client and **AOTY** scraped-data loader used across components.
+Shared infrastructure: **`shared.discogs_api`** for Discogs HTTP and **`shared.aoty`** for loading scraped Album of the Year CSVs when present.
 
 ---
 
@@ -30,7 +31,7 @@ uv sync --extra test
 uv run uvicorn web.app.main:app --reload
 ```
 
-Open **http://127.0.0.1:8000** → [Log in with Discogs](http://127.0.0.1:8000/auth/login) (paste a [personal token](https://www.discogs.com/settings/developers)) → [Sync / Ingest](http://127.0.0.1:8000/ingest) to pull your collection and wantlist into `data/raw/` (repo root).
+Open **http://127.0.0.1:8000** → [Log in with Discogs](http://127.0.0.1:8000/auth/login) (paste a [personal token](https://www.discogs.com/settings/developers)) → [Sync / Ingest](http://127.0.0.1:8000/ingest/) to pull your collection and wantlist into `data/raw/` (repo root).
 
 ---
 
@@ -38,17 +39,20 @@ Open **http://127.0.0.1:8000** → [Log in with Discogs](http://127.0.0.1:8000/a
 
 ```
 vinyl_management_system/
-├── configs/base.yaml       # Shared repo config (paths, Discogs, MLflow)
-├── recommender/configs/base.yaml  # Recommender pipeline (inherits root; ALS, retrieval)
-├── core/                   # Config loader, auth, ingest jobs
-├── shared/discogs_api/    # Shared Discogs API client
-├── shared/aoty/           # AOTY scraped data loader
-├── recommender/            # ML: hybrid recommendations
-├── grader/                   # ML: sleeve/media condition grader from notes
-├── price_estimator/       # ML: price estimation
-├── web/                    # Web UI and API
-├── data/raw (Discogs CSVs), recommender/data/processed
-└── artifacts/
+├── configs/base.yaml              # Shared repo config (paths, Discogs, MLflow)
+├── recommender/configs/base.yaml  # Recommender (inherits root; ALS, reranker, ingest)
+├── core/                          # Config loader, auth, ingest jobs
+├── shared/discogs_api/            # Shared Discogs API client
+├── shared/aoty/                   # AOTY scraped CSV loader
+├── recommender/                   # ML: hybrid recommendations
+├── grader/                        # ML: sleeve/media condition from notes
+├── price_estimator/               # ML: VinylIQ price API + training
+├── web/                           # Web UI and API
+├── scrapers/aoty/                 # Placeholder for personal AOTY scrapers (see README there)
+├── vinyliq-extension/             # Chrome MV3 → price API
+├── data/raw/                      # Discogs CSVs (web-friendly mount)
+├── recommender/data/processed/    # Recommender parquet artifacts
+└── artifacts/                     # Models, maps, tuning outputs
 ```
 
 Full layout and how components coordinate: **[PROJECT_STRUCTURE.md](PROJECT_STRUCTURE.md)**.
@@ -94,109 +98,47 @@ Edit **`configs/base.yaml`** for shared paths and tokens. For the **recommender*
 From the project root:
 
 ```bash
-uvicorn web.app.main:app --reload
+uv run uvicorn web.app.main:app --reload
 ```
 
 - **Home**: http://127.0.0.1:8000  
 - **Login**: http://127.0.0.1:8000/auth/login (paste Discogs token)  
-- **Ingest**: http://127.0.0.1:8000/ingest (sync collection & wantlist; requires login)  
+- **Ingest**: http://127.0.0.1:8000/ingest/ (sync collection & wantlist; requires login)  
 - **API docs**: http://127.0.0.1:8000/docs  
 
-After logging in and running ingest, you can call:
+Routes and env vars: **[web/README.md](web/README.md)**.
 
-- `GET /api/recommendations` — recommendations for the logged-in user (requires recommender pipeline to have been run once).
+After logging in and running ingest, you can call `GET /api/recommendations` once the recommender pipeline has produced artifacts (see below).
 
 ### Recommender
 
-1. Ingest data (via web or CSV in `data/raw/`: `collection.csv`, `wantlist.csv`, optional `ratings.csv`, `albums.csv`).
-2. Train and save artifacts:
+Stage-1 recall is **ALS over the full item catalog**; an optional **learned reranker** reorders ALS top-N candidates using content and optional Discogs-side features. Ingest data via the web or place CSVs under `data/raw/` (`collection.csv`, `wantlist.csv`, optional `ratings.csv`, `albums.csv`), then train:
 
 ```bash
-python -m recommender.pipeline --config recommender/configs/base.yaml --data-dir data/raw --processed-dir recommender/data/processed --artifacts-dir artifacts
+uv run python -m recommender.pipeline \
+  --config recommender/configs/base.yaml \
+  --data-dir data/raw \
+  --processed-dir recommender/data/processed \
+  --artifacts-dir artifacts
 ```
 
-3. Use in code or via web: `GET /api/recommendations` (when logged in).
+The full workflow—ALS tuning, hit-rate calibration for `candidate_top_n`, reranker sweep, Discogs↔AOTY artifact scripts—is documented in **[recommender/README.md](recommender/README.md)**.
 
-See **`recommender/README.md`** for details.
+### Grader
 
-### Grader API
+Two surfaces:
 
-Standalone **FastAPI** service for the vinyl condition grader: loads the **MLflow-registered** DistilBERT pyfunc, runs the same **preprocessor + rule engine** as pipeline inference, and serves **`POST /predict`** (JSON in/out). Docker build uses image tag **`vinyl-grader-api:latest`** (see `grader/Dockerfile`).
-
-**Run locally, Docker build/run, GCS credentials, environment variables, `/predict` request/response format, and example curls**: **[grader/serving/README.md](grader/serving/README.md)**.
-
-The monolith web app’s **`POST /api/condition`** uses the **baseline** (TF‑IDF) pipeline instead—see *Vinyl condition grader* below.
-
-### Vinyl condition grader (personal use)
-
-This component (and the `/api/condition` endpoint) is intended for **personal use**. It loads the **baseline** model on the server and applies the rule engine, but it is not hardened for public traffic yet.
-
-#### Run the grader locally (baseline)
-
-```bash
-export PYTHONPATH=/path/to/vinyl_management_system
-python -m grader.src.pipeline train --baseline-only
-```
-
-For inference from the CLI, use:
-
-```bash
-python -m grader.src.pipeline predict --text "factory sealed, never opened" --model baseline
-```
-
-For mobile/React Native use, call the existing FastAPI endpoint: `POST /api/condition` with JSON `{ "seller_notes": "..." }`.
-
-**Quick synthetic eval (resume / portfolio):** run `python scripts/grader_eval_resume.py` → writes `artifacts/grader_eval_resume.json` (macro-F1, accuracy, ECE on a benchmark aligned with the grader test suite; see file `disclaimer`).
-
-API contract (baseline + rule engine applied):
-
-Request:
-```json
-{
-  "seller_notes": "raw seller notes text",
-  "item_id": "optional id echoed back",
-  "metadata": { "optional": "free-form metadata for rule signals" }
-}
-```
-
-Response:
-```json
-{
-  "item_id": "optional id echoed back",
-  "predicted_sleeve_condition": "Mint|Near Mint|Excellent|Very Good Plus|Very Good|Good|Poor|Generic",
-  "predicted_media_condition":  "Mint|Near Mint|Excellent|Very Good Plus|Very Good|Good|Poor",
-  "confidence_scores": {
-    "sleeve": { "Mint": 0.1, "Near Mint": 0.4, "...": 0.5 },
-    "media":  { "Mint": 0.2, "Near Mint": 0.3, "...": 0.5 }
-  },
-  "metadata": {
-    "source": "unknown|discogs|ebay_jp|user_input",
-    "media_verifiable": true,
-    "rule_override_applied": true,
-    "rule_override_target": "Mint|Poor|Generic|...",
-    "contradiction_detected": false
-  }
-}
-```
-
-#### Changes required for a wider release
-
-Before turning this into a public-facing product, I recommend addressing:
-- **Auth & rate limiting** on `POST /api/condition` (currently option A / no per-user auth).
-- **CORS + mobile-friendly deployment config** (base URL handling, HTTPS, allowed origins).
-- **Model lifecycle management** (clear artifact versioning, warmup, and safe concurrent loading).
-- **Operational monitoring** (request latency/failures, calibration drift, and rule override frequency).
-- **Dataset and label governance** (document label mappings/contradictions; add regression tests for harmonization).
-- **CI/CD and reproducible training** (locked dependencies, deterministic splits, artifact checks).
+- **Web `POST /api/condition`** — baseline (TF‑IDF) + rule engine for personal use; not hardened for public traffic. Train baseline, Discogs ingest, synthetic eval, and API details: **[grader/README.md](grader/README.md)**.
+- **Standalone FastAPI (`grader.serving`)** — loads an **MLflow-registered** DistilBERT pyfunc, same preprocessor + rule engine, **`POST /predict`**. Docker image **`vinyl-grader-api:latest`**: **[grader/serving/README.md](grader/serving/README.md)**.
 
 ### Price estimator (VinylIQ)
 
-1. Seed demo data and train (see **`price_estimator/README.md`**) or collect real `marketplace/stats` + feature store.
-2. Run API: `PYTHONPATH=. uvicorn price_estimator.src.api.main:app --port 8801`
-3. Web: set `PRICE_SERVICE_URL` to proxy `GET /api/price/{release_id}` to the microservice, or use in-process `estimate()` without it.
-4. Chrome: load unpacked **`vinyliq-extension/`**.
+Dedicated package: **SQLite** marketplace + feature store, **Discogs dump ingest**, tuning/training (`sale_floor_blend` / `sale_floor` labels, residual vs median target), **`POST /estimate`** FastAPI app, and optional **Chrome extension**. Botasaurus-based **Discogs** collectors live under **`price_estimator/scripts/`** (not shared with other packages).
 
-See **`price_estimator/README.md`** and **`vinyliq-extension/README.md`**.
+1. Follow **[price_estimator/README.md](price_estimator/README.md)** for collectors, feature store, and training.  
+2. Run the API: `PYTHONPATH=. uv run uvicorn price_estimator.src.api.main:app --port 8801`  
+3. Web: set **`PRICE_SERVICE_URL`** to proxy `GET /api/price/{release_id}` to the microservice, or omit for in-process `estimate()`.  
+4. Extension: load unpacked **`vinyliq-extension/`** — **[vinyliq-extension/README.md](vinyliq-extension/README.md)**.
 
 ---
 
@@ -224,21 +166,7 @@ df = client.collection_to_dataframe("username")
 
 ## AOTY scraped data
 
-The recommender can use **Album of the Year** scraped data for ratings and album metadata.
-
-- **Expected files** (in the dir set by `aoty_scraped.dir` in config):
-  - `ratings.csv`: `user_id`, `album_id`, `rating`
-  - `albums.csv`: `album_id`, `artist`, `genre`, `year`, `avg_rating`
-- If `aoty_scraped.dir` is not set, the recommender falls back to CSVs in `data/raw/`.
-
-Loader API:
-
-```python
-from shared.aoty import load_ratings_from_scraped, load_album_metadata_from_scraped
-from pathlib import Path
-ratings = load_ratings_from_scraped(Path("path/to/scraped"))
-albums = load_album_metadata_from_scraped(Path("path/to/scraped"))
-```
+The recommender can use **Album of the Year** user ratings and album metadata for content features. Scrapers are **not committed** here; the canonical place to keep personal Botasaurus (or other) scripts is **`scrapers/aoty/`**. Write `ratings.csv` and `albums.csv` into the directory configured as `aoty_scraped.dir` (often `recommender/data/aoty_scraped/`). Column contract and wiring: **[scrapers/aoty/README.md](scrapers/aoty/README.md)** and **[recommender/README.md](recommender/README.md)** (*Data sources*).
 
 ---
 
@@ -248,8 +176,11 @@ albums = load_album_metadata_from_scraped(Path("path/to/scraped"))
 |------------|--------|
 | Recommender | [recommender/README.md](recommender/README.md) |
 | Vinyl condition grader | [grader/README.md](grader/README.md) |
-| Price estimator | [price_estimator/README.md](price_estimator/README.md) |
+| Grader MLflow API | [grader/serving/README.md](grader/serving/README.md) |
+| Price estimator (VinylIQ) | [price_estimator/README.md](price_estimator/README.md) |
+| VinylIQ Chrome extension | [vinyliq-extension/README.md](vinyliq-extension/README.md) |
 | Web app | [web/README.md](web/README.md) |
+| AOTY scrapers (personal) | [scrapers/aoty/README.md](scrapers/aoty/README.md) |
 | Structure & coordination | [PROJECT_STRUCTURE.md](PROJECT_STRUCTURE.md) |
 
 ---
