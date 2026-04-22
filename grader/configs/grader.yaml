@@ -326,7 +326,8 @@ evaluation:
 # If unset, tracking_uri_fallback is used (local SQLite metadata DB).
 # Production: point the MLflow server at gs://… for --default-artifact-root and use
 # GOOGLE_APPLICATION_CREDENTIALS (or ADC) on training and serving so artifacts use GCS.
-# Retention (GCS lifecycle, mlflow gc, registry prune): scripts/mlflow_retention/
+# Retention (GCS lifecycle, mlflow gc, registry prune): optional ops bundle at
+# scripts/mlflow_retention/ (not tracked; keep a local copy if you use it).
 #
 # Cost control (same idea as price_estimator train_vinyliq):
 #   enabled: false        — no MLflow runs at all; models still written to paths.artifacts

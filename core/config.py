@@ -66,7 +66,7 @@ def load_config(
 
     # Resolve relative paths under paths.* and aoty_scraped.dir
     paths_cfg = cfg.get("paths") or {}
-    for key in ("raw_data", "processed_data", "artifacts"):
+    for key in ("raw_data", "processed_data", "artifacts", "raw", "processed"):
         if key in paths_cfg and paths_cfg[key]:
             p = Path(paths_cfg[key])
             if not p.is_absolute():

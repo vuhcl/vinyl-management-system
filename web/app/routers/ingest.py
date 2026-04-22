@@ -33,7 +33,7 @@ def _get_username_and_token(request: Request) -> tuple[str, str]:
 @router.post("/sync")
 async def sync_discogs(request: Request):
     """
-    Fetch collection and wantlist from Discogs for the logged-in user and write to data/raw.
+    Fetch collection and wantlist from Discogs for the logged-in user and write to data/raw (repo root).
     """
     username, token = _get_username_and_token(request)
     try:

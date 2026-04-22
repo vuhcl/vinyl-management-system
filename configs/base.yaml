@@ -8,11 +8,19 @@ project:
   version: "0.1.0"
   random_seed: 42
 
+# ``data/raw/`` (repo root): Discogs collection/wantlist CSVs and ``.discogs_cache/``.
+# Mount only this path in the **web** (or extension) image so it never needs
+# ``recommender/``, ``grader/``, or ``price_estimator/``. Recommender + VinylIQ
+# read the same root for dev fixtures or post-login sync. Processed parquets and
+# optional AOTY scrape mirror stay under ``recommender/data/``. Grader and VinylIQ
+# bulk trees remain ``grader/data/`` and ``price_estimator/data/``.
 paths:
   root: .                          # monorepo root
-  shared_data: data/
   raw: data/raw/
-  processed: data/processed/
+  processed: recommender/data/processed/
+  # Canonical keys for core.config.load_config resolution + core.jobs
+  raw_data: data/raw/
+  processed_data: recommender/data/processed/
   artifacts: artifacts/
 
 discogs:

@@ -3,7 +3,7 @@ seed: 42
 
 paths:
   raw_data: "data/raw"
-  processed_data: "data/processed"
+  processed_data: "recommender/data/processed"
   artifacts: "artifacts"
 
 vinyliq:

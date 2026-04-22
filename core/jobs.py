@@ -21,7 +21,7 @@ def run_discogs_ingest(
     """
     Fetch collection and wantlist from Discogs for one user and write CSVs.
 
-    If per_user_dir is True, writes to data/raw/{username}/ (so multiple users
+    If per_user_dir is True, writes to data/raw/{username}/ (repo root; so multiple users
     can coexist). Otherwise writes to data/raw/ (single-user mode).
 
     Returns paths to written files: collection_csv, wantlist_csv.

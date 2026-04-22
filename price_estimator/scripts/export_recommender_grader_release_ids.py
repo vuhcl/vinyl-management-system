@@ -305,7 +305,7 @@ def main() -> int:
         print(
             "No release IDs found. Set DISCOGS_USER_TOKEN or DISCOGS_TOKEN, "
             "ensure recommender config lists discogs.usernames, "
-            "and/or add data/raw CSVs or grader inventory cache.",
+            "and/or add data/raw CSVs (repo root) or grader inventory cache.",
             file=sys.stderr,
         )
         return 1

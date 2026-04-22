@@ -12,6 +12,7 @@ from recommender.src.features.build_matrix import (
 from recommender.src.models.als import train_als
 from recommender.src.models.reranker import (
     ReRankerConfig,
+    _feature_rows,
     build_reranker_training_frame,
     rerank_candidates_for_user,
     train_reranker,
@@ -144,9 +145,8 @@ def test_build_train_and_rerank_smoke() -> None:
 
 
 def test_feature_set_includes_user_side_features() -> None:
-    """The feature list must contain the 6 base features plus the 6
-    user-side features added in Phase 1, and must not contain the dropped
-    pre-cleanup ones."""
+    """The training frame must expose 24 reranker columns (6 base + 6 user-side
+    + 12 Discogs-side), and must not contain dropped pre-cleanup names."""
     interactions, albums = _toy_data()
     train_i, test_i = leave_one_out_split(interactions, random_state=42)
     all_item_ids = np.unique(
@@ -204,6 +204,18 @@ def test_feature_set_includes_user_side_features() -> None:
         "user_year_zdist",
         "item_rating_vs_user_mean",
         "user_activity_log",
+        "release_count_log",
+        "vinyl_release_count_log",
+        "unique_country_count",
+        "unique_label_count_log",
+        "era_span",
+        "has_discogs_master",
+        "discogs_community_want_log",
+        "discogs_community_have_log",
+        "discogs_want_have_ratio",
+        "discogs_num_for_sale_log",
+        "discogs_lowest_price_log",
+        "has_community_stats",
     }
     forbidden = {
         "als_score",
@@ -294,6 +306,69 @@ def test_user_side_features_are_finite_and_non_constant() -> None:
         "user-side features were constant for every user; feature "
         "computation likely dropped per-candidate variation"
     )
+
+
+def test_discogs_features_zero_imputed_when_no_stats() -> None:
+    """Without a discogs_master_stats parquet, Discogs slots are zeros and
+    has_* flags are false."""
+    interactions, albums = _toy_data()
+    train_i, _ = leave_one_out_split(interactions, random_state=42)
+    meta = build_retrieval_metadata(albums, train_i)
+    item_ids = np.array(["a1", "a2", "a3", "a4", "a5"], dtype=object)
+    top_idx = np.array([1, 2], dtype=np.int64)
+    top_scores = np.array([1.0, 0.5], dtype=np.float64)
+    rows = _feature_rows(
+        top_idx=top_idx,
+        top_scores=top_scores,
+        item_ids=item_ids,
+        train_albums={"a1"},
+        meta=meta,
+    )
+    for row in rows:
+        assert row["has_discogs_master"] == 0.0
+        assert row["has_community_stats"] == 0.0
+        assert row["release_count_log"] == 0.0
+        assert row["vinyl_release_count_log"] == 0.0
+
+
+def test_discogs_features_flow_when_stats_provided() -> None:
+    interactions, albums = _toy_data()
+    train_i, _ = leave_one_out_split(interactions, random_state=42)
+    stats = pd.DataFrame(
+        [
+            {
+                "album_id": "a2",
+                "master_id": "999",
+                "release_count": 40,
+                "vinyl_release_count": 5,
+                "unique_country_count": 3,
+                "unique_label_count": 2,
+                "era_span": 8,
+                "community_want": 100,
+                "community_have": 50,
+                "num_for_sale": 12,
+                "lowest_price": 15.5,
+                "has_community_stats": 1,
+            }
+        ]
+    )
+    meta = build_retrieval_metadata(albums, train_i, discogs_master_stats=stats)
+    item_ids = np.array(["a1", "a2", "a3", "a4", "a5"], dtype=object)
+    top_idx = np.array([1], dtype=np.int64)
+    top_scores = np.array([1.0], dtype=np.float64)
+    rows = _feature_rows(
+        top_idx=top_idx,
+        top_scores=top_scores,
+        item_ids=item_ids,
+        train_albums={"a1"},
+        meta=meta,
+    )
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["has_discogs_master"] == 1.0
+    assert row["release_count_log"] == float(np.log1p(40))
+    assert row["has_community_stats"] == 1.0
+    assert row["discogs_community_want_log"] == float(np.log1p(100))
 
 
 def test_hard_negative_skip_top_frac_removes_top_als_negatives() -> None:

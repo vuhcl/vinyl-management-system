@@ -14,8 +14,10 @@ inherits: configs/base.yaml
 seed: 42
 
 # Discogs + optional precomputed release → AOTY map.
-# Preferred: scripts/build_discogs_master_to_aoty_artifact.py then
-#            scripts/build_discogs_release_to_aoty_artifact.py (Mongo incremental).
+# Broad master→AOTY map: scripts/build_discogs_master_to_aoty_dump_join.py
+#   (masters_features + releases_features + albums.parquet; no API search).
+# Collection path: scripts/build_discogs_master_to_aoty_artifact.py then
+#   scripts/build_discogs_release_to_aoty_artifact.py (Mongo incremental).
 discogs:
   use_api: true
   usernames: ["nowaki027"]
@@ -69,3 +71,6 @@ reranker:
   hard_negative_ratio: 0.7
   hard_negative_skip_top_frac: 0.1
   random_state: 42
+  # Optional: Discogs Tier A + Tier B per AOTY album (see README). If the
+  # file is missing, reranker uses zero-imputed Discogs slots + has_* flags.
+  discogs_master_stats_path: artifacts/discogs_master_stats.parquet

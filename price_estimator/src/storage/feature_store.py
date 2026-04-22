@@ -37,6 +37,21 @@ _RELEASES_FEATURES_MIGRATIONS: list[tuple[str, str]] = [
     ("formats_json", "TEXT"),
 ]
 
+MASTERS_FEATURES_COLUMNS: list[str] = [
+    "master_id",
+    "main_release_id",
+    "title",
+    "year",
+    "primary_artist_id",
+    "primary_artist_name",
+    "primary_genre",
+    "primary_style",
+    "artists_json",
+    "genres_json",
+    "styles_json",
+    "data_quality",
+]
+
 
 class FeatureStoreDB:
     def __init__(self, path: Path | str):
@@ -91,6 +106,30 @@ class FeatureStoreDB:
                         f"ALTER TABLE releases_features ADD COLUMN {col} {sql_type}"
                     )
             self._migrate_drop_fs_community_columns(conn)
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS masters_features (
+                    master_id TEXT PRIMARY KEY,
+                    main_release_id TEXT,
+                    title TEXT,
+                    year INTEGER,
+                    primary_artist_id TEXT,
+                    primary_artist_name TEXT,
+                    primary_genre TEXT,
+                    primary_style TEXT,
+                    artists_json TEXT,
+                    genres_json TEXT,
+                    styles_json TEXT,
+                    data_quality TEXT
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS ix_masters_features_artist_title_year
+                ON masters_features(primary_artist_name, title, year)
+                """
+            )
             conn.commit()
 
     def _migrate_drop_fs_community_columns(self, conn: sqlite3.Connection) -> None:
@@ -183,6 +222,28 @@ class FeatureStoreDB:
             for row in rows:
                 rid = str(row.get("release_id", "")).strip()
                 if not rid:
+                    continue
+                values = [row.get(c) for c in cols]
+                conn.execute(sql, values)
+                n += 1
+            conn.commit()
+        return n
+
+    def upsert_many_masters(self, rows: Iterable[dict[str, Any]]) -> int:
+        """Insert or update many master rows (Discogs masters dump ingest)."""
+        cols = MASTERS_FEATURES_COLUMNS
+        placeholders = ",".join("?" * len(cols))
+        updates = ", ".join(f"{c} = excluded.{c}" for c in cols if c != "master_id")
+        sql = f"""
+                INSERT INTO masters_features ({",".join(cols)})
+                VALUES ({placeholders})
+                ON CONFLICT(master_id) DO UPDATE SET {updates}
+                """
+        n = 0
+        with self._connect() as conn:
+            for row in rows:
+                mid = str(row.get("master_id", "")).strip()
+                if not mid:
                     continue
                 values = [row.get(c) for c in cols]
                 conn.execute(sql, values)

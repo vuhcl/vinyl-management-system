@@ -6,7 +6,7 @@ This subproject is part of **vinyl_management_system**. It uses:
 
 - **Shared Discogs API** (`shared.discogs_api`) for collection and wantlist when **`recommender/configs/base.yaml`** (or merged root config) has `discogs.use_api` and usernames/token.
 - **AOTY scraped data** (`shared.aoty`) when `aoty_scraped.dir` points to your scraped data directory.
-- **CSV fallback** in `data/raw/` when Discogs or AOTY is not configured.
+- **CSV fallback** in `data/raw/` (repo root) when Discogs or AOTY is not configured.
 
 ---
 
@@ -26,7 +26,7 @@ recommender/
 └── README.md
 ```
 
-**Config:** `recommender/configs/base.yaml` holds ALS, evaluation, reranker, and Discogs ingest settings; it merges with **`configs/base.yaml`** (paths, tokens). Data dirs: `data/raw`, `data/processed`, `artifacts`.
+**Config:** `recommender/configs/base.yaml` holds ALS, evaluation, reranker, and Discogs ingest settings; it merges with **`configs/base.yaml`** (paths, tokens). Raw CSVs: `data/raw/` (repo root, web-friendly mount); processed: `recommender/data/processed`, `artifacts`.
 
 ---
 
@@ -45,9 +45,10 @@ Set in **`recommender/configs/base.yaml`** (or override `--config`):
 - **Discogs → AOTY (recommended)**: incremental Mongo-backed pipeline (candidate masters from your collection ∪ wantlist only — **no** full AOTY catalog Discogs search):
   1. `scripts/build_discogs_master_to_aoty_artifact.py` — release→master + master→AOTY (Mongo upserts + `artifacts/discogs_master_to_aoty.json`).
   2. `scripts/build_discogs_release_to_aoty_artifact.py` — compose `artifacts/discogs_release_to_aoty.json` + Mongo `discogs_release_aoty`.
+  3. **Refresh after master-map edits** (e.g. Phase 2a dump-join): from repo root, run **Phase B** then **`build_discogs_master_stats_artifact.py`** — same two commands as in *Phase 2a → Refresh downstream artifacts* below. Phase B needs Mongo with `discogs_release_master`; use `--help` on each script for paths and `MONGO_URI` / `MONGO_DB`.
   Then set `discogs.release_to_aoty_map_path` / `skip_live_discogs_aoty_mapping` in **`recommender/configs/base.yaml`**.
 - **Legacy monolithic script**: `scripts/build_discogs_aoty_release_map.py` (full old flow; avoid for large catalogs).
-- **AOTY**: `aoty_scraped.dir: "data/aoty_scraped"` (or path to your scraped output).
+- **AOTY**: `aoty_scraped.dir: "recommender/data/aoty_scraped"` (or path to your scraped output).
 
 ### Reranker (optional second stage)
 
@@ -55,10 +56,27 @@ Stage-1 recall is always **ALS over the full item matrix** — no metadata-gated
 An optional learned reranker (second stage) takes the ALS top-N candidates and reorders
 them using content-based features derived from `RetrievalMetadata`:
 
-- **Features** (6, all personalized or bounded): `als_score_z` (per-user z-scored ALS),
-  `als_rank_inv` (1 / (1 + rank)), `genre_jaccard`, `artist_match`, `year_distance`,
-  `item_avg_rating`. Raw popularity and distinct-users counts are deliberately
-  excluded — they fed a "popular ⇒ irrelevant" feedback loop with ALS-top hard negatives.
+- **Features** (24 columns; optional Discogs signal): six ALS / AOTY
+  content scalars (`als_score_z`, `als_rank_inv`, `genre_jaccard`, `artist_match`,
+  `year_distance`, `item_avg_rating`), six user-side signals (genre mass / top-genre
+  Jaccard, artist affinity, year z-distance, rating vs user mean, activity log), and
+  twelve Discogs-side columns from `artifacts/discogs_master_stats.parquet` when
+  `reranker.discogs_master_stats_path` points at a real file: `release_count_log`,
+  `vinyl_release_count_log`, `unique_country_count`, `unique_label_count_log`,
+  `era_span`, `has_discogs_master`, `discogs_community_want_log`,
+  `discogs_community_have_log`, `discogs_want_have_ratio`, `discogs_num_for_sale_log`,
+  `discogs_lowest_price_log`, `has_community_stats`. If the parquet is missing,
+  Discogs slots are zero-imputed and the `has_*` flags are off. Build it with
+  `scripts/build_discogs_master_stats_artifact.py` (see `--help`). Example:
+
+  ```bash
+  PYTHONPATH=. uv run python scripts/build_discogs_master_stats_artifact.py \
+    --master-json artifacts/discogs_master_to_aoty.json \
+    --feature-db price_estimator/data/feature_store.sqlite \
+    --output artifacts/discogs_master_stats.parquet
+  ```
+
+  Add `--marketplace-db path/to/marketplace_stats.sqlite` if not using the default under `price_estimator/data/cache/`.
 - **Models**: `linear` (StandardScaler + logistic regression, safer baseline) or
   `pointwise` (histogram gradient-boosted tree).
 - **Hard negatives**: mined from a mid-rank ALS band, not the top, controlled by
@@ -74,6 +92,51 @@ reranker at serving time. If this file or `reranker.pkl` was produced by a pre-c
 rebuild message and falls back gracefully to full-catalog ALS without the reranker.
 
 Hybrid blending (`content_sim` + `alpha` < 1) also uses full-catalog ALS for stage-1.
+
+### Phase 2a — dump-join `discogs_master_to_aoty.json` (broad coverage)
+
+After ingesting the Discogs **masters** dump into `masters_features` and the
+**releases** dump into `releases_features`, you can build a large
+`master_id → aoty_album_id` map without Discogs search API calls:
+
+```bash
+PYTHONPATH=. uv run python scripts/build_discogs_master_to_aoty_dump_join.py \
+  --albums recommender/data/processed/albums.parquet \
+  --feature-db price_estimator/data/feature_store.sqlite \
+  --existing-json artifacts/discogs_master_to_aoty.json \
+  --output artifacts/discogs_master_to_aoty.json
+```
+
+Masters are restricted to those with at least one **album-ish** release row
+(`Album` / `LP` in `format_desc` or format descriptions). Matching uses the
+same text normalization as the API matcher (`_normalize_text`), exact
+normalized title when unique, else fuzzy title similarity (default ≥ 0.88) and
+`|year|` within 1. The script prints **coverage** (share of `albums.parquet`
+IDs that appear as values in the merged map). Use `--dry-run` to print stats
+only; `--no-merge-existing` for a dump-only map.
+
+**Refresh downstream artifacts** (release map ingest uses + reranker stats). From repo root:
+
+Phase B — `discogs_release_to_aoty.json` (+ Mongo `discogs_release_aoty` upserts):
+
+```bash
+PYTHONPATH=. uv run python scripts/build_discogs_release_to_aoty_artifact.py \
+  --master-json artifacts/discogs_master_to_aoty.json \
+  --output artifacts/discogs_release_to_aoty.json
+```
+
+Reranker stats — `discogs_master_stats.parquet`:
+
+```bash
+PYTHONPATH=. uv run python scripts/build_discogs_master_stats_artifact.py \
+  --master-json artifacts/discogs_master_to_aoty.json \
+  --feature-db price_estimator/data/feature_store.sqlite \
+  --output artifacts/discogs_master_stats.parquet
+```
+
+Optional Tier B community/marketplace columns: add `--marketplace-db price_estimator/data/cache/marketplace_stats.sqlite` (or your path) to the stats command.
+
+Re-run **ingest + preprocess** afterward if `recommender/data/processed/interactions.parquet` should reflect the new `discogs_release_to_aoty.json`. For `MASTER_JSON`, `MONGO_URI`, and `--no-mongo-master-map`, see `--help` on each script.
 
 ### Discogs ↔ AOTY ID matching (API limits)
 
@@ -95,7 +158,7 @@ From **project root** (vinyl_management_system):
 
 ```bash
 uv sync --extra test   # or: pip install -e . from repo root (workspace)
-python -m recommender.pipeline --config recommender/configs/base.yaml --data-dir data/raw --processed-dir data/processed --artifacts-dir artifacts
+python -m recommender.pipeline --config recommender/configs/base.yaml --data-dir data/raw --processed-dir recommender/data/processed --artifacts-dir artifacts
 ```
 
 Use `--skip-ingest` to reuse existing processed data.
@@ -143,7 +206,7 @@ hit-rate diagnostic in step 3 can be run on a clean ALS-only build.
 uv run python -m recommender.pipeline \
   --config recommender/configs/base.yaml \
   --data-dir data/raw \
-  --processed-dir data/processed \
+  --processed-dir recommender/data/processed \
   --artifacts-dir artifacts \
   --skip-ingest
 ```
@@ -162,7 +225,7 @@ during fit), so the measurement is unbiased.
 ```bash
 uv run python -u scripts/measure_als_hit_rate.py \
   --config recommender/configs/base.yaml \
-  --processed-dir data/processed \
+  --processed-dir recommender/data/processed \
   --sample-n 3000000 \
   --cutoffs "50,100,200,500,1000,2000,5000" \
   --random-state 42 \
@@ -183,7 +246,7 @@ the `--candidate-top-n` grid to straddle it.
 ```bash
 uv run python -u scripts/sweep_reranker.py \
   --config recommender/configs/base.yaml \
-  --processed-dir data/processed \
+  --processed-dir recommender/data/processed \
   --sample-n 3000000 \
   --k 10 \
   --model-types "linear,pointwise" \
