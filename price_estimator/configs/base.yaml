@@ -8,7 +8,7 @@ paths:
 
 vinyliq:
   paths:
-    marketplace_db: "price_estimator/data/cache/marketplace_stats.sqlite"
+    marketplace_db: "data/cache/marketplace_stats.sqlite"
     feature_store_db: "data/feature_store.sqlite"
     sale_history_db: "data/cache/sale_history.sqlite"
     model_dir: "artifacts/vinyliq"
