@@ -38,7 +38,8 @@ def main() -> int:
         "--training-rows",
         action="store_true",
         help=(
-            "Only rows with median_price NOT NULL AND >0 (same filter as training labels)"
+            "Only rows with release_lowest_price NOT NULL AND >0 "
+            "(same filter as training labels)"
         ),
     )
     args = ap.parse_args()
@@ -50,7 +51,7 @@ def main() -> int:
     conn = sqlite3.connect(str(db))
     where = "1=1"
     if args.training_rows:
-        where = "median_price IS NOT NULL AND median_price > 0"
+        where = "release_lowest_price IS NOT NULL AND release_lowest_price > 0"
     sql = f"SELECT num_for_sale FROM marketplace_stats WHERE {where}"
     cur = conn.execute(sql)
     raw = [r[0] for r in cur.fetchall()]
@@ -64,7 +65,7 @@ def main() -> int:
     x = np.array([int(v or 0) for v in raw], dtype=np.int64)
     zeros = int(np.sum(x == 0))
     print(f"database: {db}")
-    flt = "training (median>0)" if args.training_rows else "all rows"
+    flt = "training (release_lowest_price>0)" if args.training_rows else "all rows"
     print(f"filter: {flt}")
     print(f"n={n}")
     print(f"num_for_sale == 0: {zeros} ({100.0 * zeros / n:.2f}%)")

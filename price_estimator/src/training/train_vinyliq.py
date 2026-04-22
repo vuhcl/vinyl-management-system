@@ -262,7 +262,7 @@ def _load_sale_history_sidecars(
 
 
 def _default_cold_start_flags(mx: dict[str, Any]) -> dict[str, float]:
-    lo = mx.get("release_lowest_price") or mx.get("lowest_price") or mx.get("median_price")
+    lo = mx.get("release_lowest_price")
     try:
         has_lf = 1.0 if lo is not None and float(lo) > 0 else 0.0
     except (TypeError, ValueError):
@@ -539,13 +539,12 @@ def load_training_frame(
     conn_m.row_factory = sqlite3.Row
     cur = conn_m.execute(
         """
-        SELECT release_id, fetched_at, median_price, lowest_price, num_for_sale,
+        SELECT release_id, fetched_at, num_for_sale,
                price_suggestions_json, release_lowest_price, release_num_for_sale,
                community_want, community_have, blocked_from_sale
         FROM marketplace_stats
         WHERE (
-            COALESCE(release_lowest_price, lowest_price, median_price) IS NOT NULL
-            AND COALESCE(release_lowest_price, lowest_price, median_price) > 0
+            release_lowest_price IS NOT NULL AND release_lowest_price > 0
         ) OR (
             price_suggestions_json IS NOT NULL
             AND TRIM(price_suggestions_json) != ''
@@ -646,8 +645,6 @@ def load_training_frame(
                 "community_want": rd.get("community_want"),
                 "community_have": rd.get("community_have"),
                 "release_num_for_sale": rd.get("release_num_for_sale"),
-                "lowest_price": rd.get("lowest_price"),
-                "median_price": rd.get("median_price"),
                 "release_lowest_price": rd.get("release_lowest_price"),
                 "num_for_sale": rd.get("num_for_sale"),
                 "blocked_from_sale": rd.get("blocked_from_sale"),
@@ -737,8 +734,6 @@ def load_training_frame(
         lbidx = l2i.get(first_label_id(r), 0.0)
         mx = marketplace_extra.get(rid, {})
         stats = {
-            "median_price": mx.get("median_price"),
-            "lowest_price": mx.get("lowest_price"),
             "release_lowest_price": mx.get("release_lowest_price"),
             "num_for_sale": mx.get("num_for_sale"),
             "community_want": mx.get("community_want"),

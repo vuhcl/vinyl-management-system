@@ -152,8 +152,6 @@ class InferenceService:
             row = self.marketplace.get(rid)
             if row:
                 return {
-                    "lowest_price": row["lowest_price"],
-                    "median_price": row["median_price"],
                     "release_lowest_price": row.get("release_lowest_price"),
                     "num_for_sale": row["num_for_sale"],
                     "source": "cache",
@@ -163,15 +161,11 @@ class InferenceService:
             row = self.marketplace.get(rid)
             if row:
                 return {
-                    "lowest_price": row["lowest_price"],
-                    "median_price": row["median_price"],
                     "release_lowest_price": row.get("release_lowest_price"),
                     "num_for_sale": row["num_for_sale"],
                     "source": "cache",
                 }
             return {
-                "lowest_price": None,
-                "median_price": None,
                 "release_lowest_price": None,
                 "num_for_sale": 0,
                 "source": "none",
@@ -192,8 +186,6 @@ class InferenceService:
         )
         row = self.marketplace.get(rid) or {}
         return {
-            "lowest_price": row.get("lowest_price"),
-            "median_price": row.get("median_price"),
             "release_lowest_price": row.get("release_lowest_price"),
             "num_for_sale": row.get("num_for_sale"),
             "release_num_for_sale": row.get("release_num_for_sale"),
@@ -212,11 +204,7 @@ class InferenceService:
         refresh_stats: bool = False,
     ) -> dict[str, Any]:
         stats = self.fetch_stats(release_id, refresh=refresh_stats)
-        baseline = (
-            stats.get("release_lowest_price")
-            or stats.get("lowest_price")
-            or stats.get("median_price")
-        )
+        baseline = stats.get("release_lowest_price")
         cat = self.features.get(str(release_id).strip())
         enc = self._catalog_encoders
         genre = (cat or {}).get("genre") or ""
@@ -269,22 +257,14 @@ class InferenceService:
         logp_raw = float(model.predict_log1p(x)[0])
         anchor = 0.0
         if model.target_kind == TARGET_KIND_RESIDUAL_LOG_MEDIAN:
-            mp = (
-                stats.get("release_lowest_price")
-                or stats.get("lowest_price")
-                or stats.get("median_price")
-            )
+            mp = stats.get("release_lowest_price")
             anchor = float(mp) if mp is not None and float(mp) > 0 else 0.0
             if anchor <= 0.0 and baseline is not None:
                 anchor = float(baseline)
             logp = logp_raw + float(np.log1p(max(anchor, 0.0)))
         else:
             logp = logp_raw
-            mp2 = (
-                stats.get("median_price")
-                or stats.get("release_lowest_price")
-                or stats.get("lowest_price")
-            )
+            mp2 = stats.get("release_lowest_price")
             if mp2 is not None and float(mp2) > 0:
                 anchor = float(mp2)
         yr_raw = (cat or {}).get("year")

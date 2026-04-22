@@ -26,6 +26,12 @@ Collect Discogs marketplace data for a list of release IDs (labels + cache).
 
 Loads repo-root ``.env`` automatically (``DISCOGS_TOKEN``, OAuth vars, etc.).
 
+**``--db`` paths:** Relative values are resolved from the **monorepo root** (the
+parent of ``price_estimator/``), not from inside ``price_estimator/``. Use e.g.
+``--db price_estimator/data/cache/marketplace_stats.sqlite`` when invoking from
+the repo root so the file lands next to training, not under
+``price_estimator/price_estimator/...``.
+
 Parallel mode (default): multiple worker threads, **global** sliding-window
 rate limit (Discogs ~60 req/min per token), retries on 429/5xx/timeouts.
 IDs are read **streaming** from the file (safe for multi-million line lists).
@@ -64,8 +70,14 @@ from functools import partial
 from typing import Callable, Iterator
 
 
-def _root() -> Path:
+def _package_root() -> Path:
+    """``.../price_estimator`` (directory containing ``scripts/``)."""
     return Path(__file__).resolve().parents[1]
+
+
+def _repo_root() -> Path:
+    """Monorepo root (parent of the ``price_estimator`` package)."""
+    return Path(__file__).resolve().parents[2]
 
 
 def _normalize_personal_token(raw: str) -> str:
@@ -361,7 +373,11 @@ def main() -> int:
         "--db",
         type=Path,
         default=None,
-        help="Path to marketplace_stats.sqlite",
+        help=(
+            "Path to marketplace_stats.sqlite. If relative, resolved from the "
+            "**monorepo root** (parent of ``price_estimator/``), not from inside "
+            "``price_estimator/``. Example: ``price_estimator/data/cache/marketplace_stats.sqlite``"
+        ),
     )
     parser.add_argument(
         "--workers",
@@ -570,10 +586,10 @@ def main() -> int:
         )
         return 1
 
-    root = _root()
-    db_path = args.db or (root / "data" / "cache" / "marketplace_stats.sqlite")
+    repo = _repo_root()
+    db_path = args.db or (repo / "price_estimator" / "data" / "cache" / "marketplace_stats.sqlite")
     if not db_path.is_absolute():
-        db_path = root / db_path
+        db_path = (repo / db_path).resolve()
 
     from price_estimator.src.storage.marketplace_db import MarketplaceStatsDB
 

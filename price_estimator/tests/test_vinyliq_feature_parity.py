@@ -25,10 +25,7 @@ def test_residual_row_dict_ignores_listing_dollar_scalars() -> None:
         "formats_json": '["Vinyl", "LP"]',
         "format_desc": "",
     }
-    # Same non-dollar marketplace snapshot; only dollar fields differ (zeroed in residual).
     zeros = {
-        "median_price": 0.0,
-        "lowest_price": 0.0,
         "release_lowest_price": 40.0,
         "num_for_sale": 7,
         "community_want": 10,
@@ -37,8 +34,6 @@ def test_residual_row_dict_ignores_listing_dollar_scalars() -> None:
         "blocked_from_sale": 0,
     }
     live = {
-        "median_price": 99.0,
-        "lowest_price": 40.0,
         "release_lowest_price": 40.0,
         "num_for_sale": 7,
         "community_want": 10,

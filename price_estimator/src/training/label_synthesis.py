@@ -53,21 +53,13 @@ def dollar_target_and_residual_anchor_from_marketplace_row(
     grade = str(tl.get("price_suggestion_grade") or "Near Mint (NM or M-)").strip()
     fallback_ps = bool(tl.get("price_suggestion_fallback_lowest", True))
 
-    anchor = (
-        _positive(row.get("release_lowest_price"))
-        or _positive(row.get("lowest_price"))
-        or _positive(row.get("median_price"))
-    )
+    anchor = _positive(row.get("release_lowest_price"))
 
     if mode in ("price_suggestion", "price_suggestion_nm"):
         psj = row.get("price_suggestions_json")
         y = parse_price_suggestion_value(psj, grade)
         if y is None and fallback_ps:
-            y = (
-                _positive(row.get("release_lowest_price"))
-                or _positive(row.get("lowest_price"))
-                or _positive(row.get("median_price"))
-            )
+            y = _positive(row.get("release_lowest_price"))
         if y is None:
             return None, None
         m = anchor if anchor is not None else y
@@ -82,11 +74,7 @@ def dollar_target_and_residual_anchor_from_marketplace_row(
         return float(y), float(m)
 
     if mode in ("release_lowest", "lowest"):
-        y = (
-            _positive(row.get("release_lowest_price"))
-            or _positive(row.get("lowest_price"))
-            or _positive(row.get("median_price"))
-        )
+        y = _positive(row.get("release_lowest_price"))
         if y is None:
             return None, None
         yy = float(y)

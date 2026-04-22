@@ -86,7 +86,7 @@ def test_cascade_relaxes_to_vg_plus_when_nm_sparse() -> None:
         _row(order_date="2020-04-01", price=100.0, media="Near Mint (NM or M-)", sleeve="Near Mint (NM or M-)"),
     ]
     t_ref = datetime(2021, 1, 1)
-    mp = {"median_price": 50.0, "price_suggestions_json": "{}"}
+    mp = {"release_lowest_price": 50.0, "price_suggestions_json": "{}"}
     elig, tag = eligible_ordinal_cascade_sale_rows(
         rows,
         t_ref,
@@ -114,7 +114,7 @@ def test_cascade_strict_when_enough_nm() -> None:
         _row(order_date="2020-03-01", price=101.0, media="Near Mint (NM or M-)", sleeve="Near Mint (NM or M-)"),
     ]
     t_ref = datetime(2021, 1, 1)
-    mp = {"median_price": 100.0}
+    mp = {"release_lowest_price": 100.0}
     elig, tag = eligible_ordinal_cascade_sale_rows(
         rows,
         t_ref,
@@ -142,7 +142,6 @@ def test_listing_lo_clip_vs_p_max_applied() -> None:
     }
     mp = {
         "fetched_at": "2021-01-01T00:00:00",
-        "median_price": 90.0,
         "release_lowest_price": 50_000.0,
     }
     sales = [
@@ -182,7 +181,6 @@ def test_listing_lo_clip_not_applied_when_lo_within_multiple() -> None:
     }
     mp = {
         "fetched_at": "2021-01-01T00:00:00",
-        "median_price": 200.0,
         "release_lowest_price": 150.0,
     }
     sales = [
@@ -219,7 +217,6 @@ def test_listing_lo_clip_disabled_when_k_nonpositive() -> None:
     }
     mp = {
         "fetched_at": "2021-01-01T00:00:00",
-        "median_price": 90.0,
         "release_lowest_price": 10_000.0,
     }
     sales = [
@@ -249,7 +246,6 @@ def test_label_cap_clamps_absurd_listing_vs_modest_sales() -> None:
     sf = {"sale_condition_policy": "nm_substrings_only", "nm_substrings": ["near mint"]}
     mp = {
         "fetched_at": "2021-01-01T00:00:00",
-        "median_price": 90.0,
         "release_lowest_price": 117_820.87,
     }
     sales = [
@@ -279,7 +275,6 @@ def test_sale_floor_blend_bundle_legacy_policy_flag() -> None:
     sf = {"sale_condition_policy": "nm_substrings_only", "nm_substrings": ["near mint"]}
     mp = {
         "fetched_at": "2021-01-01T00:00:00",
-        "median_price": 80.0,
         "release_lowest_price": 75.0,
     }
     sales = [
