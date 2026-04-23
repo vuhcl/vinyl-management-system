@@ -168,6 +168,7 @@ class BaselineModel:
         self.class_weight: str = lr_cfg["class_weight"]
         self.solver: str = lr_cfg["solver"]
         self.random_state: int = lr_cfg.get("random_state", 42)
+        self.tol: float = float(lr_cfg.get("tol", 1e-4))
         tuning_cfg = self.config["models"]["baseline"].get("tuning", {})
         self.tuning_enabled: bool = bool(tuning_cfg.get("enabled", False))
         self.tuning_c_values: list[float] = [
@@ -330,6 +331,7 @@ class BaselineModel:
         return LogisticRegression(
             C=self.C if C is None else C,
             max_iter=self.max_iter,
+            tol=self.tol,
             class_weight=self.class_weight,
             solver=self.solver,
             random_state=self.random_state,
@@ -434,6 +436,7 @@ class BaselineModel:
             bmodel = LogisticRegression(
                 C=self.selected_c.get(target, self.C),
                 max_iter=self.max_iter,
+                tol=self.tol,
                 class_weight=self.class_weight,
                 solver=self.solver,
                 random_state=self.random_state,
@@ -473,6 +476,7 @@ class BaselineModel:
         model = LogisticRegression(
             C=self.C,
             max_iter=self.max_iter,
+            tol=self.tol,
             class_weight="balanced",
             solver=self.solver,
             random_state=self.random_state,
@@ -995,6 +999,7 @@ class BaselineModel:
                 "model_type": "logistic_regression",
                 "lr_C": self.C,
                 "lr_max_iter": self.max_iter,
+                "lr_tol": self.tol,
                 "lr_class_weight": self.class_weight,
                 "lr_solver": self.solver,
                 "calibration_method": self.calibration_method,

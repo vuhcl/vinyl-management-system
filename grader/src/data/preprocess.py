@@ -34,8 +34,6 @@ import mlflow
 import yaml
 
 from grader.src.mlflow_tracking import (
-    configure_mlflow_from_config,
-    mlflow_enabled,
     mlflow_pipeline_step_run_ctx,
 )
 from sklearn.model_selection import StratifiedShuffleSplit
@@ -71,9 +69,13 @@ class Preprocessor:
 
     Config keys read from grading_guidelines.yaml:
         grades.Mint.hard_signals          — for unverified media detection
-        grades.Generic.hard_signals       — for Generic sleeve detection
-        grades[*].hard_signals
-            — protected terms derived from all signals
+        grades.Generic.hard_signals*      — for Generic sleeve detection
+            (aggregated across legacy ``hard_signals`` plus the
+            strict/cosignal variants introduced in §13/§13b; see
+            :func:`_collect_hard_signals`)
+        grades[*].hard_signals*
+            — protected terms derived from all hard-signal variants
+              (strict, cosignal, per-target)
     """
 
     def __init__(
@@ -137,22 +139,20 @@ class Preprocessor:
             ],
         )
 
-        # Generic sleeve hard signals — from guidelines
-        self.generic_signals: list[str] = [
-            s.lower()
-            for s in self.guidelines["grades"]["Generic"]["hard_signals"]
-        ]
+        # Generic sleeve hard signals — aggregated from every hard-signal
+        # variant (legacy ``hard_signals`` plus the strict / cosignal /
+        # per-target keys introduced in §13/§13b). Detection here uses
+        # substring match, so tier distinctions are irrelevant; callers
+        # only care whether *any* Generic hard phrase appears.
+        generic_def = self.guidelines.get("grades", {}).get("Generic", {})
+        self.generic_signals: list[str] = self._collect_hard_signals(generic_def)
 
         # Media verifiability cues — used to mark media as unverified when the
         # comment does not include any playback-related language.
         # This is intentionally conservative: we only treat "playback" cues
         # as verifiable, not cosmetic cover wording.
         mint_def = self.guidelines.get("grades", {}).get("Mint", {})
-        self.mint_hard_signals: list[str] = [
-            s.lower()
-            for s in mint_def.get("hard_signals", [])
-            if isinstance(s, str)
-        ]
+        self.mint_hard_signals: list[str] = self._collect_hard_signals(mint_def)
 
         media_cue_substrings = (
             "play",
@@ -172,21 +172,29 @@ class Preprocessor:
         )
 
         self.media_verifiable_cues: list[str] = []
+        # Legacy signal keys (strict/cosignal hard variants are harvested
+        # via ``_collect_hard_signals`` below so the §13b migration does
+        # not drop Poor's playback cues from the verifiable set).
+        _legacy_signal_keys = (
+            "supporting_signals",
+            "forbidden_signals",
+            "supporting_signals_media",
+            "forbidden_signals_media",
+        )
         for grade_def in self.guidelines.get("grades", {}).values():
             applies_to = grade_def.get("applies_to", [])
             if "media" not in applies_to:
                 continue
-            for signal_list_key in [
-                "hard_signals",
-                "supporting_signals",
-                "forbidden_signals",
-            ]:
-                for signal in grade_def.get(signal_list_key, []):
-                    if not isinstance(signal, str):
-                        continue
-                    s = signal.lower()
-                    if any(sub in s for sub in media_cue_substrings):
-                        self.media_verifiable_cues.append(s)
+            candidate_signals: list[str] = list(
+                self._collect_hard_signals(grade_def)
+            )
+            for signal_list_key in _legacy_signal_keys:
+                for signal in grade_def.get(signal_list_key, []) or []:
+                    if isinstance(signal, str):
+                        candidate_signals.append(signal.lower())
+            for s in candidate_signals:
+                if any(sub in s for sub in media_cue_substrings):
+                    self.media_verifiable_cues.append(s)
 
         # De-duplicate while preserving order
         seen: set[str] = set()
@@ -239,6 +247,12 @@ class Preprocessor:
         self.val_ratio: float = split_cfg["val"]
         self.test_ratio: float = split_cfg["test"]
         self.random_seed: int = split_cfg.get("random_seed", 42)
+
+        self._harmonization_min_samples: int = int(
+            self.config.get("data", {})
+            .get("harmonization", {})
+            .get("min_samples_per_class", 50)
+        )
 
         # Description adequacy (thin notes — training filter + inference hints)
         da_cfg = pp_cfg.get("description_adequacy") or {}
@@ -318,8 +332,8 @@ class Preprocessor:
         splits_dir.mkdir(parents=True, exist_ok=True)
         self.reports_dir.mkdir(parents=True, exist_ok=True)
 
-        if mlflow_enabled(self.config):
-            configure_mlflow_from_config(self.config)
+        # MLflow: ``run()`` uses ``mlflow_pipeline_step_run_ctx`` — configure only
+        # when a nested step run is actually opened (``log_pipeline_step_runs``).
 
         # Stats
         self._stats: dict = {}
@@ -335,6 +349,44 @@ class Preprocessor:
     # -----------------------------------------------------------------------
     # Protected terms
     # -----------------------------------------------------------------------
+    @staticmethod
+    def _collect_hard_signals(grade_def: dict[str, Any]) -> list[str]:
+        """
+        Aggregate every hard-signal phrase declared on a grade, across the
+        legacy ``hard_signals`` list and the §13/§13b strict/cosignal
+        variants (untargeted and per-target ``_sleeve`` / ``_media``
+        keys). Deduplicated while preserving first-seen order.
+
+        Used by preprocess-time detectors that care about "is any Generic
+        / Mint hard phrase present?" and do not distinguish tiers.
+        """
+        if not isinstance(grade_def, dict):
+            return []
+        keys = (
+            "hard_signals",
+            "hard_signals_strict",
+            "hard_signals_cosignal",
+            "hard_signals_strict_sleeve",
+            "hard_signals_strict_media",
+            "hard_signals_cosignal_sleeve",
+            "hard_signals_cosignal_media",
+        )
+        seen: set[str] = set()
+        out: list[str] = []
+        for key in keys:
+            values = grade_def.get(key)
+            if not isinstance(values, list):
+                continue
+            for signal in values:
+                if not isinstance(signal, str):
+                    continue
+                s = signal.lower()
+                if s in seen:
+                    continue
+                seen.add(s)
+                out.append(s)
+        return out
+
     def _build_protected_terms(self) -> set[str]:
         """
         Derive protected terms from all grade signal lists in guidelines.
@@ -882,6 +934,161 @@ class Preprocessor:
             )
 
     # -----------------------------------------------------------------------
+    # Class distribution report (post-preprocess, by split)
+    # -----------------------------------------------------------------------
+    @staticmethod
+    def _label_distribution(
+        records: list[dict],
+    ) -> dict[str, dict[str, int]]:
+        sleeve: Counter[str] = Counter()
+        media: Counter[str] = Counter()
+        for record in records:
+            sleeve[str(record["sleeve_label"])] += 1
+            media[str(record["media_label"])] += 1
+        return {"sleeve": dict(sleeve), "media": dict(media)}
+
+    def _rare_class_warnings_for_dist(
+        self,
+        distribution: dict[str, dict[str, int]],
+        *,
+        scope: str,
+    ) -> list[str]:
+        warnings: list[str] = []
+        threshold = self._harmonization_min_samples
+        for target, grade_counts in distribution.items():
+            for grade, count in grade_counts.items():
+                if count < threshold:
+                    warnings.append(
+                        f"RARE CLASS — scope: {scope}, target: {target}, "
+                        f"grade: {grade}, count: {count} "
+                        f"(threshold: {threshold})"
+                    )
+        return warnings
+
+    def _format_grade_table_lines(
+        self,
+        distribution: dict[str, dict[str, int]],
+    ) -> list[str]:
+        sleeve_order = self.guidelines["sleeve_grades"]
+        sleeve_dist = distribution["sleeve"]
+        media_dist = distribution["media"]
+        lines = [
+            "-" * 60,
+            f"{'Grade':<20} {'Sleeve':>8} {'Media':>8}",
+            "-" * 60,
+        ]
+        for grade in sleeve_order:
+            sleeve_count = sleeve_dist.get(grade, 0)
+            media_count = (
+                "-" if grade == "Generic" else media_dist.get(grade, 0)
+            )
+            lines.append(
+                f"{grade:<20} {sleeve_count:>8} {str(media_count):>8}"
+            )
+        sleeve_total = sum(sleeve_dist.values())
+        media_total = sum(media_dist.values())
+        lines += [
+            "-" * 60,
+            f"{'Total':<20} {sleeve_total:>8} {media_total:>8}",
+            "",
+        ]
+        return lines
+
+    def _format_class_distribution_splits_report(
+        self,
+        processed: list[dict],
+        out_splits: dict[str, list[dict]],
+    ) -> str:
+        lines: list[str] = [
+            "=" * 60,
+            "VINYL GRADER — CLASS DISTRIBUTION BY SPLIT (AFTER PREPROCESS)",
+            "=" * 60,
+            "",
+            f"Total preprocessed rows (full pool): {len(processed):>10}",
+        ]
+        if (
+            self.description_adequacy_enabled
+            and self.drop_insufficient_from_training
+        ):
+            eligible = self._stats.get("n_adequate_for_training", 0)
+            excl = self._stats.get("n_excluded_from_splits", 0)
+            lines += [
+                f"Eligible for train/val/test:       {eligible:>10}",
+                f"Excluded from splits (thin):     {excl:>10}",
+                "",
+            ]
+
+        by_source: Counter[str] = Counter(
+            str(r.get("source") or "?") for r in processed
+        )
+        lines.append("By source (full pool):")
+        for src in sorted(by_source.keys()):
+            lines.append(f"  {src + ':':<40} {by_source[src]:>10}")
+        lines.append("")
+        lines.append("Split sizes:")
+        for name in ("train", "val", "test", "test_thin"):
+            if name not in out_splits:
+                continue
+            lines.append(f"  {name + ':':<40} {len(out_splits[name]):>10}")
+        lines.append("")
+
+        lines.append("-" * 60)
+        lines.append("Full pool (all rows written to preprocessed.jsonl)")
+        lines.append("-" * 60)
+        full_dist = self._label_distribution(processed)
+        lines.extend(self._format_grade_table_lines(full_dist))
+        all_warnings = self._rare_class_warnings_for_dist(
+            full_dist, scope="full_pool"
+        )
+
+        for split_name in ("train", "val", "test", "test_thin"):
+            if split_name not in out_splits:
+                continue
+            rows = out_splits[split_name]
+            lines.append("-" * 60)
+            lines.append(f"Split: {split_name} ({len(rows)} rows)")
+            lines.append("-" * 60)
+            dist = self._label_distribution(rows)
+            lines.extend(self._format_grade_table_lines(dist))
+            all_warnings.extend(
+                self._rare_class_warnings_for_dist(
+                    dist, scope=f"split:{split_name}"
+                )
+            )
+
+        if all_warnings:
+            lines += [
+                "=" * 60,
+                "RARE CLASS WARNINGS",
+                "=" * 60,
+            ]
+            for w in all_warnings:
+                lines.append(f"  {w}")
+            lines.append("")
+
+        lines += [
+            "=" * 60,
+            "Note: Poor and Generic are expected to be rare.",
+            "Rule engine owns these grades — low sample count",
+            "does not prevent grading of these conditions.",
+            "=" * 60,
+        ]
+        return "\n".join(lines)
+
+    def _save_class_distribution_splits_report(
+        self,
+        processed: list[dict],
+        out_splits: dict[str, list[dict]],
+    ) -> None:
+        path = self.reports_dir / "class_distribution_splits.txt"
+        text = self._format_class_distribution_splits_report(
+            processed, out_splits
+        )
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(text)
+        logger.info("Saved class distribution (splits) to %s", path)
+
+    # -----------------------------------------------------------------------
     # MLflow logging
     # -----------------------------------------------------------------------
     def _log_mlflow(self, splits: dict[str, list[dict]]) -> None:
@@ -955,7 +1162,8 @@ class Preprocessor:
           2. Process each record (detect + clean)
           3. Adaptive stratified split (adequate rows only when thin filter on)
           4. Save preprocessed.jsonl, train/val/test, and optional test_thin.jsonl
-          5. Log metrics to MLflow
+          5. Save ``class_distribution_splits.txt`` under ``paths.reports``
+          6. Log metrics to MLflow
 
         Args:
             dry_run: process and split but do not write files
@@ -1056,6 +1264,7 @@ class Preprocessor:
             self.save_preprocessed(processed)
             self.save_splits(splits)
             self._write_test_thin_jsonl(thin_records)
+            self._save_class_distribution_splits_report(processed, out_splits)
             if mlf:
                 self._log_mlflow(splits)
 

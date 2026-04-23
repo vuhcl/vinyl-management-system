@@ -368,3 +368,49 @@ class TestFormatFilter:
         assert not ingester._listing_matches_format_filter(
             {"release": {"format": "(CD, Album)", "description": "Artist - Title"}}
         )
+
+
+class TestOfflineParseOnly:
+    def test_no_discogs_token_required(
+        self, test_config, guidelines_path, monkeypatch
+    ):
+        monkeypatch.delenv("DISCOGS_TOKEN", raising=False)
+        g = DiscogsIngester(
+            test_config,
+            guidelines_path,
+            offline_parse_only=True,
+        )
+        assert g.session is None
+        assert g.offline_parse_only is True
+
+    def test_parse_release_marketplace_listing_dict(
+        self, test_config, guidelines_path, monkeypatch
+    ):
+        monkeypatch.delenv("DISCOGS_TOKEN", raising=False)
+        g = DiscogsIngester(
+            test_config,
+            guidelines_path,
+            offline_parse_only=True,
+        )
+        listing = {
+            "id": 888001,
+            "sleeve_condition": "Very Good (VG)",
+            "condition": "Near Mint (NM or M-)",
+            "comments": (
+                "Light ring wear on the cover corners; vinyl plays cleanly "
+                "with only faint surface noise on the run-in groove."
+            ),
+            "release": {
+                "artist": "Test Artist",
+                "title": "Test Title",
+                "year": 1975,
+                "country": "US",
+                "format": "LP",
+                "description": "",
+            },
+        }
+        row = g.parse_listing(listing)
+        assert row is not None
+        assert row["item_id"] == "888001"
+        assert row["sleeve_label"] == "Very Good"
+        assert row["media_label"] == "Near Mint"
