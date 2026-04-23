@@ -1,0 +1,34 @@
+name: Price Estimator Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - name: Install Python 3.12
+        run: uv python install 3.12
+
+      - name: Install dependencies
+        run: uv sync --extra test
+
+      - name: Run price estimator tests
+        run: |
+          uv run pytest \
+            price_estimator/tests/test_discogs_sale_history_parse.py \
+            price_estimator/tests/test_discogs_dump.py \
+            price_estimator/tests/test_vinyliq_pyfunc.py \
+            --no-cov \
+            -v
