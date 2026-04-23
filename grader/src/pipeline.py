@@ -19,6 +19,7 @@ Usage:
     # Training
     python -m grader.src.pipeline train
     python -m grader.src.pipeline train --skip-ingest
+    python -m grader.src.pipeline train --skip-sale-history  # omit sale_history → JSONL
     python -m grader.src.pipeline train --baseline-only
 
     # Inference
@@ -45,6 +46,7 @@ from grader.src.data.harmonize_labels import LabelHarmonizer
 from grader.src.data.ingest_discogs import DiscogsIngester
 from grader.src.data.ingest_ebay import EbayIngester
 from grader.src.data.label_patches import apply_label_patches_after_ingest
+from grader.src.data.ingest_sale_history import run_sale_history_ingest_from_config
 from grader.src.data.vinyl_format import run_post_patch_vinyl_filter_from_config
 from grader.src.data.preprocess import Preprocessor
 from grader.src.evaluation.calibration import CalibrationEvaluator
@@ -238,6 +240,7 @@ class Pipeline:
         registry_model_name_override: str | None = None,
         no_mlflow: bool = False,
         mlflow_no_artifacts: bool = False,
+        skip_sale_history_ingest: bool = False,
     ) -> dict:
         """
         Run the full training pipeline end to end.
@@ -263,6 +266,9 @@ class Pipeline:
             baseline_only:    alias for skip_transformer=True
             skip_baseline:     skip step 5 training; load baseline pickles from
                                paths.artifacts and evaluate on disk (Workflow A)
+            skip_sale_history_ingest: if True, do not run sale-history
+                               SQLite → discogs_sale_history.jsonl. Default is False;
+                               use ``--skip-sale-history`` on ``pipeline train`` to opt out.
             register_after_pipeline: if None, use config ``mlflow.register_after_pipeline``
             registry_model_name_override: if set, overrides ``mlflow.registry_model_name``
             no_mlflow: if True, same as ``mlflow.enabled: false`` (no tracking).
@@ -358,7 +364,10 @@ class Pipeline:
                             patch_stats["updated_total"],
                         )
 
-                vinyl_post = run_post_patch_vinyl_filter_from_config(self.config)
+                vinyl_post = run_post_patch_vinyl_filter_from_config(
+                    self.config,
+                    filter_sale_jsonl=bool(skip_sale_history_ingest),
+                )
                 if vinyl_post.get("ran"):
                     results["discogs_vinyl_post_filter"] = vinyl_post
                     logger.info(
@@ -366,6 +375,27 @@ class Pipeline:
                         vinyl_post.get("dropped"),
                         vinyl_post.get("kept"),
                     )
+                if not skip_sale_history_ingest:
+                    repo_root = Path(__file__).resolve().parents[2]
+                    sh = run_sale_history_ingest_from_config(
+                        self.config,
+                        Path(self.config_path),
+                        Path(self.guidelines_path),
+                        repo_root,
+                    )
+                    if sh.get("ok"):
+                        results["sale_history_ingest"] = sh
+                        logger.info(
+                            "Sale history → %s (%d line(s), vinyl drop in post: %s)",
+                            sh.get("out"),
+                            sh.get("written", 0),
+                            (sh.get("post") or {}).get("vinyl_dropped", 0),
+                        )
+                    else:
+                        logger.warning(
+                            "Sale history ingest not run: %s",
+                            sh.get("error", sh),
+                        )
             else:
                 logger.info("Skipping ingestion — using existing raw data.")
             # Step 2 — Label harmonization
@@ -1426,6 +1456,15 @@ def main() -> None:
         default=None,
         help="Override mlflow.registry_model_name for this run",
     )
+    train_parser.add_argument(
+        "--skip-sale-history",
+        action="store_true",
+        help=(
+            "After Discogs ingest, do not export sale_history SQLite to "
+            "discogs_sale_history.jsonl (that export runs by default: feature-store enrich + "
+            "vinyl filter)."
+        ),
+    )
 
     # --- predict subcommand ---
     predict_parser = subparsers.add_parser(
@@ -1492,6 +1531,7 @@ def main() -> None:
             skip_baseline=args.skip_baseline,
             no_mlflow=args.no_mlflow,
             mlflow_no_artifacts=args.mlflow_no_artifacts,
+            skip_sale_history_ingest=args.skip_sale_history,
             **train_kw,
         )
 

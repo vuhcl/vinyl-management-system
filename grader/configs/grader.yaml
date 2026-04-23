@@ -72,6 +72,17 @@ data:
   sale_history:
     sqlite_path: price_estimator/data/cache/sale_history.sqlite
     processed_jsonl: grader/data/processed/discogs_sale_history.jsonl
+    # Join release_id → price_estimator feature store (format_desc / formats_json).
+    feature_store_path: price_estimator/data/feature_store.sqlite
+    enrich_from_feature_store: true
+    enrich_missing_from_discogs: false
+    # keep: unknown format (no FS row / empty) passes through; drop: remove those rows.
+    on_missing_release: keep
+    apply_vinyl_filter: true
+    # When ``vinyl_format_filter_stage: post_patch``, re-filter the sale JSONL on
+    # disk; set false if you always run ``ingest_sale_history`` in the same session
+    # (e.g. ``pipeline train`` with sale history on disk) to avoid redundant I/O.
+    run_sale_vinyl_in_post_hook: true
 
   # Optional JSONL of {item_id, source, …} merges after ingest (see label_patches.py).
   # Uncomment and create the file to persist manual relabels across re-ingestion.
@@ -95,7 +106,7 @@ data:
     inventory_sort_order: desc
     # Send format=Vinyl (etc.) on inventory GET — not in official docs; if 400, we retry without.
     inventory_format_api_param: true
-    target_per_grade:   800000        # max listings to fetch per canonical grade
+    target_per_grade:   30000        # max listings to fetch per canonical grade
                                    # grades: Mint, Near Mint, VG+, VG, Good, Poor
                                    # Excellent excluded — Discogs has no EX grade
                                    # Generic excluded — not a searchable condition
