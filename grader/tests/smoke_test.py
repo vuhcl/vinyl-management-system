@@ -122,8 +122,14 @@ class TestSmokeBaseline:
 
 class TestSmokeRuleEngine:
     SEALED_TEXT = "factory sealed, never opened, still in shrink"
-    SKIPPING_TEXT = "skipping badly on both sides, unplayable"
-    GENERIC_TEXT = "generic white sleeve, die-cut inner only"
+    # ``skipping`` is a strict Poor hard signal on media per user
+    # guidance: Good's rubric baselines on "plays through", so any
+    # skip is Poor territory. No corroboration is required.
+    SKIPPING_TEXT = "skipping badly on both sides"
+    # ``generic sleeve`` is a strict Generic signal — single match fires
+    # the hard override. Ambiguous "white sleeve" / "die-cut sleeve"
+    # phrases are cosignal-only and covered by dedicated tests.
+    GENERIC_TEXT = "generic sleeve — no original cover"
 
     @pytest.fixture
     def engine(self, guidelines_path):

@@ -114,7 +114,12 @@ def main() -> None:
 
     raw = trainer.predict(texts=texts, item_ids=item_ids, records=records)
     Pipeline._merge_description_metadata(raw, records)
-    engine = RuleEngine(guidelines_path=args.guidelines)
+    rules_cfg = cfg.get("rules") or {}
+    allow_ex = bool(rules_cfg.get("allow_excellent_soft_override", False))
+    engine = RuleEngine(
+        guidelines_path=args.guidelines,
+        allow_excellent_soft_override=allow_ex,
+    )
     adjusted = engine.apply_batch(raw, texts)
 
     features_dir = str(Path(cfg["paths"]["artifacts"]) / "features")

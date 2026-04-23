@@ -198,6 +198,13 @@ grades:
       Mint since media condition cannot be assessed without
       opening the record. This is a known, documented design
       decision for this system.
+    # NOTE: Mint is model-owned — these entries are NOT evaluated by
+    # ``RuleEngine.check_hard_override`` (which iterates Generic, Poor
+    # only). They are retained here as a curated signal lexicon for
+    # future TF-IDF / feature-builder work that wants to reference
+    # "sealed-ish" phrases without duplicating the list. If you want
+    # Mint to fire hard overrides again, re-enable Mint in the loop at
+    # the top of ``check_hard_override`` and add fixtures first.
     hard_signals:
       - sealed
       - factory sealed
@@ -321,9 +328,31 @@ grades:
     min_supporting_sleeve: 1
     min_supporting_media: 1
     rule_confidence_threshold: 0.85
+    # §14b: real listings often say "no tape", "no stickers". Strip those
+    # phrases before the forbidden check so they do not block the NM
+    # soft override just because the seller explicitly disclaimed the
+    # defect. ``sticker residue`` (sticker removed) is also non-blocking.
+    forbidden_exceptions_sleeve:
+      - sticker residue
+      - no tape
+      - no stickers
+      - no sticker
+      - without tape
+      - without stickers
+      - without sticker
+    forbidden_exceptions_media:
+      - sticker residue
+      - no tape
+      - no stickers
+      - no sticker
+      - without tape
+      - without stickers
+      - without sticker
 
   Excellent:
     applies_to: [sleeve, media]
+    # Runtime: soft override to Excellent is off unless grader.yaml sets
+    # rules.allow_excellent_soft_override: true (default is false; Discogs eval has no gold EX).
     description: >
       Collector EX (between Near Mint and Very Good Plus). Media:
       bright and shiny; may show visible surface wear, very minor
@@ -424,10 +453,24 @@ grades:
     # Exception phrases: stripped from text before the forbidden check so they
     # cannot activate a forbidden signal (e.g. "sticker residue" should not
     # trigger the "sticker" forbidden — residue only means the sticker is gone).
+    # Negated mentions ("no tape", "no stickers") are added so listings that
+    # explicitly disclaim these defects do not get their NM override blocked.
     forbidden_exceptions_sleeve:
       - sticker residue
+      - no tape
+      - no stickers
+      - no sticker
+      - without tape
+      - without stickers
+      - without sticker
     forbidden_exceptions_media:
       - sticker residue
+      - no tape
+      - no stickers
+      - no sticker
+      - without tape
+      - without stickers
+      - without sticker
 
   Very Good Plus:
     applies_to: [sleeve, media]
@@ -747,51 +790,131 @@ grades:
       Catastrophic condition. Cracked, badly warped, skipping,
       or otherwise unplayable. Cover may be water damaged,
       heavily marred, or fully split. Includes Fair (F) grade.
-      Rule engine owns this grade entirely — any single hard
-      signal is sufficient. Sleeve and media graded
-      independently. Poor sleeve does not imply Poor media.
-    hard_signals:
-      - skipping
-      - skip
-      - won't play
-      - does not play
+      Rule engine owns this grade entirely — hard signals are
+      split into ``strict`` (any single match fires) and
+      ``cosignal`` (requires another distinct signal from the
+      same grade's strict or cosignal list as corroboration).
+      Policy on skips: Good's rubric explicitly says the disc
+      "plays through", so any skip (``skip``, ``skipping``,
+      ``skips throughout``, plural skip phrasings, etc.) is by
+      definition below Good. They are therefore strict Poor
+      hard signals. The only legitimate non-Poor skip is a
+      setup-dependent / inconsistent one ("only skips on one
+      turntable", "skip depending on the turntable and tonearm
+      weight"), which is handled by entries in
+      ``forbidden_signals``. Sleeve and media are graded
+      independently via per-target ``hard_signals_*_sleeve`` /
+      ``hard_signals_*_media`` lists so that playback wording
+      (``skipping``) never cascades from a media defect onto
+      the sleeve grade. Poor sleeve does not imply Poor media.
+    # Media-only hard signals (playback / disc defects). ``skip`` /
+    # ``skipping`` are strict per the Good-grade rubric: "plays
+    # through" is the explicit Good baseline, so any skip — even a
+    # single one — is below Good territory, i.e. Poor. Inconsistent
+    # / setup-dependent skip phrasings are captured in
+    # ``forbidden_signals`` (``depending on the turntable``) so they
+    # still block the override without requiring corroboration.
+    hard_signals_strict_media:
       - unplayable
       - cracked
       - badly warped
-      # Plain "water damage" appears on VG+ jacket notes — reserve Poor for severe cases
+      - severely warped
+      - won't play
+      - will not play
+      - does not play
+      - skipping
+      - skip
+      - skips
+      - skipped
+      - skips throughout
+      - deep gouges
+      - groove damage
+      - label peeling
+      - heavily scratched
+    # Cosignal: ambiguous catastrophic phrases that must corroborate
+    # with another strict or cosignal signal in the same grade before
+    # firing. ``heavy water damage`` etc. live here because the phrase
+    # sometimes describes a sleeve-side water blob when the text is
+    # applied to the media target. ``cannot play`` / ``unable to play``
+    # are demoted because they occasionally describe speed-specific
+    # or equipment-specific limitations rather than a disc defect.
+    hard_signals_cosignal_media:
       - heavy water damage
       - severe water damage
       - major water damage
       - heavily water damaged
-      - heavily scratched
-      - deep gouges
-      - groove damage
-      - label peeling
-      - fully split
+      - cannot play
+      - unable to play
+      - label missing
+    # Sleeve-only hard signals (structural jacket damage)
+    hard_signals_strict_sleeve:
       - completely split
-      # "broken" removed: in seller notes it almost always describes OBI/sticker/seal
-      # packaging rather than the disc itself. Disc breakage is reliably caught by
-      # "cracked". Keeping "broken" caused false Poor overrides on OBI-broken listings.
+      - fully split
+      - falling apart
+      - in pieces
+      - disintegrated
+    hard_signals_cosignal_sleeve:
+      - heavy water damage
+      - severe water damage
+      - major water damage
+      - heavily water damaged
     supporting_signals: []
     forbidden_signals:
-      # Negated playback issues — "skip"/"skipping" still matches inside these phrases
+      # Negated playback issues — the word-boundary regex "skip" /
+      # "skipping" still matches inside these phrases, so listing them
+      # as forbiddens is the only way to prevent a negated mention
+      # from firing Poor.
       - no skipping
       - without skipping
       - no skip
+      - no skips
+      - without skips
       - don't skip
       - doesnt skip
       - doesn't skip
       - never skips
       - not skipping
-      # Inconsistent / setup-dependent playback — not automatic Poor
+      - not skipped
+      # Inconsistent / setup-dependent playback — per user guidance,
+      # the only legitimate reason a stated skip should NOT fire Poor
+      # is when the seller tells us the skip is not reproducible on
+      # a well-maintained turntable. Everything else (minor / one /
+      # a few / two skips) is still Poor under the "plays through"
+      # Good baseline.
       - depending on the turntable
       - depending on turntable
+      - depending on the tonearm
+      - skip on one turntable
+      - skips on one turntable
+      - only skips on
+      - only skipped on
       # Softening qualifiers for cracked — a slightly cracked disc edge or hairline
       # stress crack is not catastrophic Poor.
       - slightly cracked
       - hairline crack
+      - not cracked
+      - no cracks
+      - no crack
       # Any "slightly X" qualifier means the defect isn't catastrophic enough for Poor
       - slightly
+      # Softeners for warped — slight warps don't reach catastrophic.
+      - not warped
+      - not badly warped
+      - slight warp
+      - minor warp
+      - slightly warped
+      - no warp
+      # NOTE: positive-playback assertions ("plays fine", "plays great",
+      # "plays perfectly", "plays well", "plays through") are intentionally
+      # NOT Poor forbiddens per user guidance: even one skip is Poor
+      # territory under the Good-grade "plays through" baseline. Genuinely
+      # contradictory descriptions are handled by the ``contradictions``
+      # list further down (which suppresses all overrides, letting the
+      # model decide), not by blocking Poor specifically.
+      # Negated split — "no splits", "not split" should not be Poor sleeve.
+      - no splits
+      - no split
+      - not split
       # Packaging / seal context — "broken seal", "seal is broken", "not been broken"
       # describes the shrink-wrap, not the disc.
       - broken seal
@@ -803,6 +926,10 @@ grades:
       # Parenthetical "(broken)" almost always describes an accessory (sticker, tab,
       # OBI flap), not the disc itself — disc breaks use "cracked" or "broken" plainly.
       - (broken)
+    # Empty stubs flag the gap so Track B iterations fill them from
+    # harmful / missed CSV exports.
+    forbidden_exceptions_sleeve: []
+    forbidden_exceptions_media: []
     min_supporting: 0
     rule_confidence_threshold: 1.0   # always overrides regardless of model confidence
 
@@ -814,32 +941,93 @@ grades:
       or a company/promo sleeve. Common for DJ copies, promos,
       and records where the original cover has been lost.
       Generic describes the sleeve type, not its condition.
-      Rule engine owns this grade — any single hard signal
-      is sufficient to override to Generic.
+      Rule engine owns this grade. As of §13b, hard signals
+      are split into ``strict`` (unambiguous — any single
+      match fires) and ``cosignal`` (ambiguous — requires
+      corroboration from another strict or cosignal signal).
+      The split targets false-positive drivers like bare
+      ``white sleeve`` / ``plain sleeve``, which the user
+      flagged as grammatically ambiguous (inner sleeves vs
+      housing sleeves) and should not fire Generic alone.
       Note: a Generic sleeve can still have a condition
       sub-note in the seller text (e.g. "generic sleeve, VG+")
       — in that case, Generic is the sleeve grade. The
       condition sub-note is preserved in seller notes only.
-    hard_signals:
+    # Strict: unambiguous "no original cover" wording — any one match fires.
+    hard_signals_strict:
       - generic sleeve
       - generic cover
+      - generic jacket
+      - no original cover
+      - no original sleeve
+      - no original jacket
+      - no cover
+      - no jacket
+      - without cover
+      - missing cover
+      - jacket missing
+      - blank sleeve
+      - company sleeve
+      - replacement sleeve
+      - replacement cover
+      - stock sleeve
+    # Cosignal: ambiguous phrases that must corroborate with another strict /
+    # cosignal signal. ``white sleeve`` often refers to a white *inner* sleeve
+    # paired with an original jacket; ``plain sleeve`` / ``die-cut sleeve``
+    # likewise. ``promo sleeve`` / ``promotional sleeve`` / ``inner sleeve
+    # only`` are demoted per plan §11 because promos can ship with original
+    # art and "inner sleeve only" is sometimes a condition sub-note on the
+    # inner paper rather than a housing statement. They only indicate Generic
+    # when another cue is present.
+    hard_signals_cosignal:
       - white sleeve
       - plain sleeve
+      - plain white
       - die-cut sleeve
       - die cut sleeve
       - promo sleeve
       - promotional sleeve
-      - company sleeve
       - inner sleeve only
-      - no original sleeve
-      - no original cover
-      - no cover
-      - without cover
-      - missing cover
-      - plain white
-      - blank sleeve
+      - cardboard sleeve
+      - paper sleeve
     supporting_signals: []
-    forbidden_signals: []
+    # Negations / mentions of an original cover — block Generic override when
+    # seller explicitly says the jacket is present. Word-boundary regex means
+    # "original cover" matches both "has original cover" and "original cover
+    # is worn". Pair with forbidden_exceptions_sleeve for negated forms like
+    # "no original cover" (which, confusingly, indicates Generic rather than
+    # an original cover).
+    forbidden_signals:
+      - original cover
+      - original sleeve
+      - original jacket
+      - original artwork
+      - picture sleeve
+      - outer sleeve
+      - inner sleeve included
+      - with sleeve
+      - with original
+      - obi
+      - gatefold
+      - with cover
+      - with original cover
+      - has cover
+    # Negated "original cover" phrases are strict Generic hints — strip them
+    # before the forbidden check so ``no original cover`` doesn't match
+    # ``original cover`` and block the Generic override. Also seed benign
+    # phrases that mention original cover but indicate a Generic-like housing
+    # (e.g. promo copies bundled with a real cover as a bonus).
+    forbidden_exceptions_sleeve:
+      - no original cover
+      - no original sleeve
+      - no original jacket
+      - without original cover
+      - without original sleeve
+      - missing original cover
+      - promo sleeve with cover
+      - promo copy with sleeve
+      - inner sleeve only minor wear
+      - inner sleeve only light wear
     min_supporting: 0
     rule_confidence_threshold: 1.0   # always overrides regardless of model confidence
 
@@ -874,29 +1062,41 @@ discogs_condition_map:
 # Generic contradictions are not checked — Generic is
 # always deterministic when a hard signal is present.
 # ------------------------------------------------------------
+# NOTE: Contradictions use plain substring matching (see
+# ``RuleEngine.detect_contradictions``) and have no negation-aware window.
+# Pairs that chronically fire on disclaimed defects ("near mint with NO
+# surface noise", "excellent condition - no foggy spots") were removed in
+# §14 — that suppression is delegated to per-grade ``forbidden_signals`` +
+# ``forbidden_exceptions_sleeve/_media``, which do strip negated phrases
+# before matching. Keep only pairs where both sides are *assertions* (not
+# commonly negated) and co-occurrence genuinely contradicts the grade.
 contradictions:
   - [sealed, surface noise]
   - [sealed, scratches]
   - [sealed, scratch]
+  # Sealed copies cannot be meaningfully defect-graded on playback
+  # — added in the contradictions-expansion pass to suppress spurious
+  # Poor overrides when the seller describes sealed inventory with a
+  # boilerplate "may be cracked / warped" disclaimer.
+  - [sealed, cracked]
+  - [sealed, skipping]
+  - [factory sealed, cracked]
   - [mint, surface noise]
   - [mint, scratches]
   - [never played, surface noise]
   - [never played, crackling]
+  - [never played, cracked]
   - [unplayed, surface noise]
+  - [unplayed, cracked]
   - [plays perfectly, skipping]
   - [plays perfectly, surface noise]
-  - [near mint, seam split]
-  - [near mint, writing]
-  - [near mint, surface noise]
-  - [near mint, foggy]
-  - [near mint, cloudy]
-  - [near mint, haze]
-  - [excellent condition, surface noise]
-  - [excellent condition, foggy]
-  - [excellent condition, cloudy]
-  - [excellent condition, groove wear]
   - [plays perfectly, persistent]
   - [plays perfectly, crackling]
+  - [plays perfectly, cracked]
+  - [plays perfectly, unplayable]
   - [plays great, crackling]
+  - [plays great, skipping]
+  - [plays fine, cracked]
+  - [plays fine, skipping]
   - [no marks, scratches]
   - [no defects, surface noise]

@@ -68,6 +68,11 @@ data:
     - discogs
     - ebay_jp
 
+  # Sale-history SQLite → discogs_sale_history.jsonl (see ingest_sale_history.py).
+  sale_history:
+    sqlite_path: price_estimator/data/cache/sale_history.sqlite
+    processed_jsonl: grader/data/processed/discogs_sale_history.jsonl
+
   # Optional JSONL of {item_id, source, …} merges after ingest (see label_patches.py).
   # Uncomment and create the file to persist manual relabels across re-ingestion.
   # label_patches_path: grader/data/label_patches.jsonl
@@ -90,7 +95,7 @@ data:
     inventory_sort_order: desc
     # Send format=Vinyl (etc.) on inventory GET — not in official docs; if 400, we retry without.
     inventory_format_api_param: true
-    target_per_grade:   15000        # max listings to fetch per canonical grade
+    target_per_grade:   800000        # max listings to fetch per canonical grade
                                    # grades: Mint, Near Mint, VG+, VG, Good, Poor
                                    # Excellent excluded — Discogs has no EX grade
                                    # Generic excluded — not a searchable condition
@@ -239,6 +244,8 @@ preprocessing:
 rules:
   guidelines_path:        grader/configs/grading_guidelines.yaml
   confidence_threshold:   0.85     # global fallback if not set per grade
+  # When false (default), soft overrides never assign Excellent (no gold EX in Discogs eval).
+  allow_excellent_soft_override: false
   flag_contradictions:    true
   contradiction_action:   return_model_prediction   # suppress override on contradiction
 
@@ -255,7 +262,14 @@ models:
       min_df:         2
     logistic_regression:
       C:              1.0
-      max_iter:       1000
+      # LBFGS + multinomial is often faster wall-clock here than SAGA on
+      # very large sparse TF-IDF (SAGA may need many epochs and still warn).
+      # If ConvergenceWarning persists, raise max_iter before loosening tol.
+      max_iter:       15000
+      # Slightly looser than sklearn default 1e-4 speeds LBFGS a bit on
+      # ill-conditioned sparse problems; tighten back to 1e-4 if you need
+      # stricter optimality.
+      tol:            5.0e-4
       class_weight:   balanced     # handles class imbalance
       solver:         lbfgs
       random_state:   42
