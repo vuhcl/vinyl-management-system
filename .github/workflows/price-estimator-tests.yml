@@ -28,6 +28,7 @@ jobs:
         run: |
           uv run pytest \
             price_estimator/tests/test_discogs_sale_history_parse.py \
+            price_estimator/tests/test_discogs_dump.py \
             price_estimator/tests/test_vinyliq_pyfunc.py \
             --no-cov \
             -v
