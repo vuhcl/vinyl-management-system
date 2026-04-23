@@ -132,9 +132,32 @@ class TestGradeDefinitions:
     REQUIRED_KEYS = [
         "applies_to",
         "description",
-        "hard_signals",
         "rule_confidence_threshold",
     ]
+
+    # Hard-signal schema allows three forms (any suffices):
+    #   1. Legacy ``hard_signals: [...]``
+    #   2. Untargeted ``hard_signals_strict`` / ``hard_signals_cosignal``
+    #   3. Per-target ``hard_signals_{strict,cosignal}_{sleeve,media}``
+    # Empty legacy ``hard_signals: []`` on non-rule-owned grades is still
+    # valid as a placeholder.
+    @staticmethod
+    def _has_hard_signal_schema(grade_def: dict) -> bool:
+        legacy = grade_def.get("hard_signals")
+        if isinstance(legacy, list):
+            return True
+        targeted = any(
+            isinstance(grade_def.get(k), list)
+            for k in (
+                "hard_signals_strict",
+                "hard_signals_cosignal",
+                "hard_signals_strict_sleeve",
+                "hard_signals_strict_media",
+                "hard_signals_cosignal_sleeve",
+                "hard_signals_cosignal_media",
+            )
+        )
+        return targeted
 
     @staticmethod
     def _has_supporting_schema(grade_def: dict) -> bool:
@@ -174,6 +197,11 @@ class TestGradeDefinitions:
                 assert key in grade_def, (
                     f"Grade '{grade}' missing required key: {key}"
                 )
+            assert self._has_hard_signal_schema(grade_def), (
+                f"Grade '{grade}' needs hard_signals or "
+                "hard_signals_strict[_sleeve|_media] / "
+                "hard_signals_cosignal[_sleeve|_media]"
+            )
             assert self._has_supporting_schema(grade_def), (
                 f"Grade '{grade}' needs supporting_signals or "
                 "supporting_signals_sleeve + supporting_signals_media"
@@ -222,13 +250,26 @@ class TestGradeDefinitions:
         assert guidelines["grades"]["Generic"]["applies_to"] == ["sleeve"]
 
     def test_mint_has_hard_signals(self, guidelines):
+        # Mint is model-owned; its ``hard_signals`` list is retained as
+        # curated lexicon for future feature-builder work (documented in
+        # the YAML). The rule engine's ``check_hard_override`` does not
+        # evaluate Mint.
         assert len(guidelines["grades"]["Mint"]["hard_signals"]) > 0
 
     def test_poor_has_hard_signals(self, guidelines):
-        assert len(guidelines["grades"]["Poor"]["hard_signals"]) > 0
+        # Poor uses per-target strict + cosignal keys after the §13b
+        # migration — the legacy ``hard_signals`` list is intentionally
+        # removed so there is a single source of truth per target.
+        poor = guidelines["grades"]["Poor"]
+        assert (
+            len(poor.get("hard_signals_strict_media", [])) > 0
+            or len(poor.get("hard_signals_strict_sleeve", [])) > 0
+        ), "Poor must declare at least one strict hard signal per target"
 
     def test_generic_has_hard_signals(self, guidelines):
-        assert len(guidelines["grades"]["Generic"]["hard_signals"]) > 0
+        # Generic is sleeve-only; uses untargeted strict/cosignal keys.
+        generic = guidelines["grades"]["Generic"]
+        assert len(generic.get("hard_signals_strict", [])) > 0
 
     def test_poor_rule_confidence_is_one(self, guidelines):
         assert guidelines["grades"]["Poor"]["rule_confidence_threshold"] == 1.0

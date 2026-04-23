@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 import pandas as pd
+import yaml
 
 from grader.src.data.preprocess import Preprocessor
 from grader.src.rules.rule_engine import RuleEngine
@@ -73,7 +74,14 @@ def init_rule_stack() -> None:
             "(set GRADER_GUIDELINES_PATH or mount grader/configs)"
         )
     _preprocessor = Preprocessor(config_path=cfg, guidelines_path=gl)
-    _rule_engine = RuleEngine(guidelines_path=gl)
+    with open(cfg, "r", encoding="utf-8") as handle:
+        _cfg = yaml.safe_load(handle) or {}
+    _rules = _cfg.get("rules") or {}
+    _allow_ex = bool(_rules.get("allow_excellent_soft_override", False))
+    _rule_engine = RuleEngine(
+        guidelines_path=gl,
+        allow_excellent_soft_override=_allow_ex,
+    )
     logger.info("RuleEngine + Preprocessor loaded for API post-processing")
 
 

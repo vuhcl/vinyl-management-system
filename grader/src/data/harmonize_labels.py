@@ -1,8 +1,8 @@
 """
 grader/src/data/harmonize_labels.py
 
-Merges processed Discogs and eBay JP JSONL files into a single
-unified dataset. Validates schema conformance, checks grade
+Merges processed Discogs, optional sale-history and release-marketplace JSONL,
+and eBay JP JSONL into a single unified dataset. Validates schema conformance, checks grade
 validity against the canonical schema, deduplicates within and
 across sources, reports class distribution, and flags rare classes.
 
@@ -27,8 +27,6 @@ import mlflow
 import yaml
 
 from grader.src.mlflow_tracking import (
-    configure_mlflow_from_config,
-    mlflow_enabled,
     mlflow_log_artifacts_enabled,
     mlflow_pipeline_step_run_ctx,
 )
@@ -110,6 +108,9 @@ class LabelHarmonizer:
         processed_dir = Path(self.config["paths"]["processed"])
         self.source_paths = {
             "discogs": processed_dir / "discogs_processed.jsonl",
+            "discogs_release_marketplace": processed_dir
+            / "discogs_release_marketplace.jsonl",
+            "sale_history": processed_dir / "discogs_sale_history.jsonl",
             "ebay_jp": processed_dir / "ebay_processed.jsonl",
         }
 
@@ -117,8 +118,8 @@ class LabelHarmonizer:
         self.output_path.parent.mkdir(parents=True, exist_ok=True)
         self.report_path.parent.mkdir(parents=True, exist_ok=True)
 
-        if mlflow_enabled(self.config):
-            configure_mlflow_from_config(self.config)
+        # MLflow: ``run()`` uses ``mlflow_pipeline_step_run_ctx`` — configure there
+        # when a step run is actually opened, not on every Harmonizer construction.
 
         # Stats — reset on each run()
         self._stats: dict = {}
@@ -134,6 +135,19 @@ class LabelHarmonizer:
     # -----------------------------------------------------------------------
     # Loading
     # -----------------------------------------------------------------------
+    def load_discogs_processed_sources(self) -> list[dict]:
+        """
+        Discogs training rows may come from seller inventory JSONL plus optional
+        ``discogs_release_marketplace.jsonl`` (website scrape per release).
+        Missing optional file is treated as empty (no warning).
+        """
+        main = self.load_jsonl(self.source_paths["discogs"])
+        extra_path = self.source_paths["discogs_release_marketplace"]
+        if not extra_path.exists():
+            return main
+        extra = self.load_jsonl(extra_path)
+        return main + extra
+
     def load_jsonl(self, path: Path) -> list[dict]:
         """
         Load all records from a JSONL file.
@@ -391,6 +405,7 @@ class LabelHarmonizer:
             "",
             f"Total records:          {stats['total_saved']:>6}",
             f"  Discogs:              {stats['per_source'].get('discogs', 0):>6}",
+            f"  Sale history:         {stats['per_source'].get('sale_history', 0):>6}",
             f"  eBay JP:              {stats['per_source'].get('ebay_jp', 0):>6}",
             "",
             f"Total dropped:          {stats['total_dropped']:>6}",
@@ -406,6 +421,8 @@ class LabelHarmonizer:
             "Duplicates removed (within source):",
             f"  Discogs:              "
             f"{stats['duplicates_removed'].get('discogs', 0):>6}",
+            f"  Sale history:         "
+            f"{stats['duplicates_removed'].get('sale_history', 0):>6}",
             f"  eBay JP:              "
             f"{stats['duplicates_removed'].get('ebay_jp', 0):>6}",
             f"Cross-source duplicates removed:      "
@@ -482,7 +499,14 @@ class LabelHarmonizer:
     ) -> None:
         mlflow.log_params(
             {
-                "sources": list(self.source_paths.keys()),
+                "sources": [
+                    k
+                    for k in self.source_paths
+                    if k
+                    not in (
+                        "discogs_release_marketplace",
+                    )
+                ],
                 "min_samples_per_class": self.min_samples,
                 "exclude_thin_notes": self.exclude_thin_notes,
             }
@@ -549,7 +573,12 @@ class LabelHarmonizer:
             all_records: list[dict] = []
 
             for source, path in self.source_paths.items():
-                raw_records = self.load_jsonl(path)
+                if source == "discogs_release_marketplace":
+                    continue
+                if source == "discogs":
+                    raw_records = self.load_discogs_processed_sources()
+                else:
+                    raw_records = self.load_jsonl(path)
                 self._stats["total_fetched"] += len(raw_records)
 
                 valid_records: list[dict] = []
@@ -629,8 +658,8 @@ def main() -> None:
     import argparse
 
     parser = argparse.ArgumentParser(
-        description="Harmonize Discogs and eBay JP processed data into "
-        "a single unified dataset"
+        description="Harmonize Discogs, optional sale-history / marketplace JSONL, "
+        "and eBay JP processed data into a single unified dataset"
     )
     parser.add_argument(
         "--config",

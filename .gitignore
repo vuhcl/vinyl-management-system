@@ -38,6 +38,8 @@ recommender/data/processed/*
 !recommender/data/processed/.gitkeep
 recommender/data/aoty_scraped/
 grader/data/*
+# Local-only workflow copy (tracked template optional elsewhere)
+grader/discogs_release_marketplace_workflow.md
 # Discogs ↔ AOTY matching HTTP cache (release→master, search JSON)
 **/.discogs_cache/
 artifacts/*

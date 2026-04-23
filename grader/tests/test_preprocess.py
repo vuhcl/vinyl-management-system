@@ -310,3 +310,21 @@ class TestDescriptionQuality:
         r = preprocessor.process_record(sample_unified_records[0])
         assert "sleeve_note_adequate" in r
         assert "description_quality_prompts" in r
+
+
+@pytest.mark.usefixtures("unified_jsonl_path")
+class TestClassDistributionSplitsReport:
+    def test_writes_class_distribution_splits_report(
+        self, test_config, guidelines_path, tmp_dirs
+    ):
+        preprocessor = Preprocessor(test_config, guidelines_path)
+        preprocessor.run()
+        path = tmp_dirs["reports"] / "class_distribution_splits.txt"
+        assert path.is_file()
+        text = path.read_text(encoding="utf-8")
+        assert "CLASS DISTRIBUTION BY SPLIT (AFTER PREPROCESS)" in text
+        assert "Full pool (all rows written to preprocessed.jsonl)" in text
+        assert "Split: train" in text
+        assert "Split: val" in text
+        assert "Split: test" in text
+        assert "Grade" in text and "Sleeve" in text and "Media" in text

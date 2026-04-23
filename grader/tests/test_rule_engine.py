@@ -12,6 +12,15 @@ def engine(guidelines_path):
     return RuleEngine(guidelines_path=guidelines_path)
 
 
+@pytest.fixture
+def engine_allow_excellent(guidelines_path):
+    """Match legacy soft-EX behavior; default :class:`RuleEngine` has EX soft off."""
+    return RuleEngine(
+        guidelines_path=guidelines_path,
+        allow_excellent_soft_override=True,
+    )
+
+
 class TestPatternCompilation:
     def test_patterns_compiled_for_all_grades(self, engine):
         assert len(engine._patterns) > 0
@@ -41,13 +50,10 @@ class TestContradictionDetection:
             is False
         )
 
-    def test_near_mint_and_seam_split_contradiction(self, engine):
-        assert (
-            engine.check_contradiction(
-                "near mint condition, seam split on bottom"
-            )
-            is True
-        )
+    # Note: the ``[near mint, seam split]`` contradiction pair was dropped
+    # in §14b (negation-blind — it fired on "near mint, no seam split").
+    # Suppression of NM overrides with explicit sleeve defects is now
+    # delegated to ``Near Mint.forbidden_signals_sleeve``.
 
 
 class TestHardOverrides:
@@ -56,8 +62,22 @@ class TestHardOverrides:
         assert engine.check_hard_override("factory sealed, still in shrink", "sleeve") is None
         assert engine.check_hard_override("sealed record", "media") is None
 
-    def test_skipping_triggers_poor_override(self, engine):
-        grade = engine.check_hard_override("skipping on side two", "media")
+    def test_skipping_alone_triggers_poor(self, engine):
+        """
+        Per user guidance: Good's rubric baselines on "plays through",
+        so any skip is by definition below Good — strict Poor on media.
+        No corroboration is required.
+        """
+        assert (
+            engine.check_hard_override("skipping on side two", "media")
+            == "Poor"
+        )
+
+    def test_skipping_with_other_strict_still_triggers_poor(self, engine):
+        """``skipping`` + any other strict hard signal → Poor (still)."""
+        grade = engine.check_hard_override(
+            "skipping on side two, completely unplayable", "media"
+        )
         assert grade == "Poor"
 
     def test_skipping_does_not_trigger_poor_for_sleeve(self, engine):
@@ -83,20 +103,51 @@ class TestHardOverrides:
             "solid very good plus sleeve has water damage", "sleeve"
         ) is None
 
-    def test_severe_water_damage_triggers_poor(self, engine):
+    def test_severe_water_damage_with_corroboration_triggers_poor(self, engine):
+        """
+        Water-damage phrasing is cosignal-only on Poor.sleeve — corroborate
+        with a strict sleeve signal (``fully split``) so the hard override
+        fires. A lone ``heavy water damage`` match without any second
+        signal must NOT fire Poor (see §13 — prevents small-blob FPs).
+        """
         assert (
             engine.check_hard_override(
-                "cover has heavy water damage throughout", "sleeve"
+                "cover has heavy water damage, fully split along the spine",
+                "sleeve",
             )
             == "Poor"
         )
 
+    def test_severe_water_damage_alone_does_not_trigger_poor(self, engine):
+        assert (
+            engine.check_hard_override(
+                "cover has heavy water damage throughout", "sleeve"
+            )
+            is None
+        )
+
     def test_generic_sleeve_triggers_generic(self, engine):
-        grade = engine.check_hard_override("generic white sleeve", "sleeve")
+        # ``generic sleeve`` (strict) matches directly — single hit suffices.
+        grade = engine.check_hard_override("this is a generic sleeve", "sleeve")
+        assert grade == "Generic"
+
+    def test_white_sleeve_alone_does_not_trigger_generic(self, engine):
+        """
+        ``white sleeve`` / ``plain sleeve`` are cosignal-only on Generic —
+        they are grammatically ambiguous (inner vs outer) so a single match
+        without a second Generic cue must NOT fire.
+        """
+        assert engine.check_hard_override("white sleeve", "sleeve") is None
+
+    def test_white_sleeve_with_corroboration_triggers_generic(self, engine):
+        """Cosignal ``white sleeve`` + strict ``no original cover`` → Generic."""
+        grade = engine.check_hard_override(
+            "white sleeve, no original cover", "sleeve"
+        )
         assert grade == "Generic"
 
     def test_generic_does_not_apply_to_media(self, engine):
-        grade = engine.check_hard_override("generic white sleeve", "media")
+        grade = engine.check_hard_override("this is a generic sleeve", "media")
         assert grade != "Generic"
 
     def test_no_hard_signal_returns_none(self, engine):
@@ -176,16 +227,38 @@ class TestSoftOverrides:
         )
         assert grade != "Excellent"
 
-    def test_fewer_excellent_cues_downgrade_nm_to_excellent(self, engine):
+    def test_fewer_excellent_cues_downgrade_nm_to_excellent(
+        self, engine_allow_excellent
+    ):
         """Excellent only fires as a downgrade from Near Mint."""
         text = "bright and shiny hairline faint corner"
-        grade = engine.check_soft_override(
+        grade = engine_allow_excellent.check_soft_override(
             text.lower(),
             "media",
             model_confidence=0.40,
             predicted_grade="Near Mint",
         )
         assert grade == "Excellent"
+
+    def test_excellent_soft_override_disabled_by_default(
+        self, engine, engine_allow_excellent, guidelines_path
+    ):
+        text = "bright and shiny hairline faint corner"
+        t = text.lower()
+        assert engine_allow_excellent.check_soft_override(
+            t, "media", 0.40, "Near Mint"
+        ) == "Excellent"
+        off = RuleEngine(
+            guidelines_path=guidelines_path, allow_excellent_soft_override=False
+        )
+        assert off.check_soft_override(
+            t, "media", 0.40, "Near Mint"
+        ) != "Excellent"
+        assert off.check_soft_override(
+            t, "media", 0.40, "Near Mint"
+        ) == engine.check_soft_override(
+            t, "media", 0.40, "Near Mint"
+        )
 
     def test_excellent_does_not_upgrade_vg_or_vgplus(self, engine):
         """Excellent must not upgrade VG or VG+ — only_downgrade: true."""
@@ -282,8 +355,15 @@ class TestApplyMethod:
         assert result["predicted_sleeve_condition"] == "Very Good Plus"
 
     def test_poor_hard_override_applied(self, engine, sample_prediction):
-        """Poor is still hard-owned — skipping text must override to Poor for media."""
-        result = engine.apply(sample_prediction, "skipping badly on both sides")
+        """
+        Poor is hard-owned — a strict hard signal (``cracked``) overrides
+        to Poor for media regardless of model confidence. ``skipping``
+        is also strict post user-guidance, but we keep ``cracked`` here
+        so the test doesn't depend on the skip-policy decision.
+        """
+        result = engine.apply(
+            sample_prediction, "disc is cracked along the label"
+        )
         assert result["predicted_media_condition"] == "Poor"
         assert result["metadata"]["rule_override_applied"] is True
 
@@ -336,13 +416,14 @@ class TestApplyMethod:
         assert result["predicted_sleeve_condition"] == "Very Good"
 
     def test_poor_override_on_media(self, engine, sample_prediction):
-        text = "skipping badly on both sides"
+        # Strict hard signal — fires on any single match.
+        text = "badly warped, won't play at all"
         result = engine.apply(sample_prediction, text)
         assert result["predicted_media_condition"] == "Poor"
 
     def test_original_prediction_not_mutated(self, engine, sample_prediction):
         original_sleeve = sample_prediction["predicted_sleeve_condition"]
-        engine.apply(sample_prediction, "skipping badly on both sides")
+        engine.apply(sample_prediction, "badly warped, won't play at all")
         assert (
             sample_prediction["predicted_sleeve_condition"] == original_sleeve
         )
@@ -375,7 +456,8 @@ class TestApplyMethod:
             pass
 
     def test_override_target_set_correctly(self, engine, sample_prediction):
-        text = "skipping on side b"
+        # Strict hard signal on media only — override_target must be "media".
+        text = "completely unplayable disc"
         result = engine.apply(sample_prediction, text)
         if result["metadata"]["rule_override_applied"]:
             assert result["metadata"]["rule_override_target"] in [
@@ -415,6 +497,6 @@ class TestCoverageReport:
     def test_override_rate_between_zero_and_one(
         self, engine, sample_predictions
     ):
-        texts = ["skipping on side b"] * len(sample_predictions)
+        texts = ["completely unplayable disc"] * len(sample_predictions)
         report = engine.coverage_report(sample_predictions, texts)
         assert 0.0 <= report["override_rate"] <= 1.0

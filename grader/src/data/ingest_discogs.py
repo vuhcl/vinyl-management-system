@@ -31,11 +31,7 @@ import mlflow
 import requests
 import yaml
 
-from grader.src.mlflow_tracking import (
-    configure_mlflow_from_config,
-    mlflow_enabled,
-    mlflow_pipeline_step_run_ctx,
-)
+from grader.src.mlflow_tracking import mlflow_pipeline_step_run_ctx
 from grader.src.data.vinyl_format import release_format_looks_like_physical_vinyl
 from grader.src.project_env import load_project_dotenv
 
@@ -224,6 +220,10 @@ class DiscogsIngester:
     Config keys read from grading_guidelines.yaml:
         discogs_condition_map       — raw condition string → canonical grade
         grades[*].hard_signals      — for unverified media detection
+
+    ``offline_parse_only`` (constructor flag): when True, ``DISCOGS_TOKEN`` is not
+    required and no HTTP session is created — use only ``parse_listing`` on
+    inventory-shaped dicts (e.g. website scrape normalization).
     """
 
     # Discogs condition strings that indicate unverified media.
@@ -247,6 +247,7 @@ class DiscogsIngester:
         format_filter: Optional[str] = None,
         cache_only: bool = False,
         config: Optional[dict[str, Any]] = None,
+        offline_parse_only: bool = False,
     ) -> None:
         if config is not None:
             self.config = copy.deepcopy(config)
@@ -256,13 +257,18 @@ class DiscogsIngester:
 
         load_project_dotenv()
 
+        self.offline_parse_only: bool = bool(offline_parse_only)
+
         # Auth token — read from environment variable or repo-root .env
         token = os.environ.get("DISCOGS_TOKEN")
-        if not token:
-            raise EnvironmentError(
-                "DISCOGS_TOKEN environment variable is not set. "
-                "Set it before running ingestion."
-            )
+        if not self.offline_parse_only:
+            if not token:
+                raise EnvironmentError(
+                    "DISCOGS_TOKEN environment variable is not set. "
+                    "Set it before running ingestion."
+                )
+        else:
+            token = token or "offline_parse_only"
 
         self.base_url: str = self.config["discogs"]["base_url"]
         discogs_data = self.config["data"]["discogs"]
@@ -333,16 +339,18 @@ class DiscogsIngester:
         # Build condition map from guidelines
         self.condition_map: dict[str, str] = self.guidelines["discogs_condition_map"]
 
-        # HTTP session with auth headers
-        self.session = requests.Session()
-        self.session.headers.update(
-            {
-                "Authorization": f"Discogs token={token}",
-                "User-Agent": "VinylCollectorAI/0.1 +https://github.com/user/vinyl_collector_ai",
-            }
-        )
+        # HTTP session with auth headers (not used when offline_parse_only)
+        self.session: Optional[requests.Session] = None
+        if not self.offline_parse_only:
+            self.session = requests.Session()
+            self.session.headers.update(
+                {
+                    "Authorization": f"Discogs token={token}",
+                    "User-Agent": "VinylCollectorAI/0.1 +https://github.com/user/vinyl_collector_ai",
+                }
+            )
 
-        # Rate limiter
+        # Rate limiter (only used by network fetches)
         self.rate_limiter = RateLimiter(
             calls_per_minute=self.config["discogs"]["rate_limit_per_minute"]
         )
@@ -355,8 +363,9 @@ class DiscogsIngester:
         self.raw_dir.mkdir(parents=True, exist_ok=True)
         self.processed_path.parent.mkdir(parents=True, exist_ok=True)
 
-        if mlflow_enabled(self.config):
-            configure_mlflow_from_config(self.config)
+        # MLflow: configure only inside ``mlflow_pipeline_step_run_ctx`` when a
+        # step run is opened — avoid global tracking setup for offline helpers
+        # (e.g. ``ingest_sale_history``) and redundant init when step runs are off.
 
         # Stats counters — reset on each run()
         self._stats: dict = {}
@@ -381,6 +390,10 @@ class DiscogsIngester:
         Rate-limited GET request with basic retry on transient errors.
         Raises on 4xx (except 429) after retries exhausted.
         """
+        if self.session is None:
+            raise RuntimeError(
+                "DiscogsIngester network calls are disabled (offline_parse_only=True)"
+            )
         max_retries = 3
         for attempt in range(max_retries):
             self.rate_limiter.wait()

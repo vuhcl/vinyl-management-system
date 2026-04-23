@@ -43,6 +43,20 @@ _SOFT_PATTERN_KEYS = (
     "forbidden_exceptions_media",
 )
 
+# Hard signal keys — split into strict (single match fires) and cosignal
+# (requires corroboration from another distinct signal in the same grade).
+# Per-target variants override the untargeted ones when present; all fall
+# back to the legacy ``hard_signals`` list for back-compat.
+_HARD_PATTERN_KEYS = (
+    "hard_signals",
+    "hard_signals_strict",
+    "hard_signals_cosignal",
+    "hard_signals_strict_sleeve",
+    "hard_signals_strict_media",
+    "hard_signals_cosignal_sleeve",
+    "hard_signals_cosignal_media",
+)
+
 import yaml
 
 # ---------------------------------------------------------------------------
@@ -63,29 +77,12 @@ MODEL_ONLY_GRADES = {"Mint"}
 SLEEVE = "sleeve"
 MEDIA = "media"
 
-# Poor hard_signals that describe playback / platter issues — apply to media only,
-# not sleeve (seller notes often describe disc and jacket in one blob).
-POOR_MEDIA_ONLY_HARD_SIGNALS = frozenset(
-    {
-        "skip",
-        "skipping",
-        "won't play",
-        "does not play",
-        "unplayable",
-        "badly warped",  # warping is a playback/disc issue — not sleeve
-        "broken",        # "broken" in seller notes usually describes packaging/OBI/seal;
-        "cracked",       # "cracked" similarly — only applies to media (cracked disc)
-    }
-)
-
-# Poor hard_signals that describe structural sleeve damage — apply to sleeve only,
-# not media ("completely split" in seller notes almost always refers to a seam split,
-# never a cracked record; disc splits are caught by "cracked"/"broken" above).
-POOR_SLEEVE_ONLY_HARD_SIGNALS = frozenset(
-    {
-        "completely split",
-    }
-)
+# Per-target hard-signal bifurcation is now driven entirely by YAML keys
+# (``hard_signals_strict_sleeve`` / ``hard_signals_strict_media`` and
+# ``hard_signals_cosignal_sleeve`` / ``hard_signals_cosignal_media``).
+# The engine falls back to ``hard_signals_strict`` / ``hard_signals_cosignal``
+# and finally to legacy ``hard_signals`` when the per-target keys are absent.
+# See :meth:`RuleEngine._resolve_hard_patterns`.
 
 
 # ---------------------------------------------------------------------------
@@ -105,15 +102,33 @@ class RuleEngine:
 
     Args:
         guidelines_path: path to grading_guidelines.yaml
+        allow_excellent_soft_override: when False (default), :meth:`check_soft_override`
+            never returns ``Excellent`` — use when eval/training have no gold ``Excellent``
+            and soft EX flips are noisy. Set True to restore prior soft-EX behavior
+            (see ``rules.allow_excellent_soft_override`` in grader.yaml).
     """
 
-    def __init__(self, guidelines_path: str) -> None:
+    def __init__(
+        self,
+        guidelines_path: str,
+        *,
+        allow_excellent_soft_override: bool = False,
+    ) -> None:
         self.guidelines = self._load_yaml(guidelines_path)
         self.grade_defs = self.guidelines["grades"]
+        self._allow_excellent_soft_override = allow_excellent_soft_override
 
         # Pre-compile all signal patterns for performance
         # Structure: {grade: {signal_type: [compiled_pattern, ...]}}
         self._patterns: dict[str, dict[str, list[re.Pattern]]] = {}
+        # Populated by _compile_patterns — hard-signal sources kept
+        # alongside compiled patterns for logging and diagnostics.
+        self._hard_sources: dict[str, dict[str, list[str]]] = {}
+        self._hard_patterns: dict[str, dict[str, list[re.Pattern]]] = {}
+        # Last hard-override decision cache used by ``apply`` to surface
+        # which tier (strict vs cosignal) triggered an override in metadata.
+        self._last_hard_tier: Optional[str] = None
+        self._last_hard_signal: Optional[str] = None
         self._compile_patterns()
 
         # Pre-compile contradiction pairs
@@ -199,20 +214,82 @@ class RuleEngine:
     def _compile_patterns(self) -> None:
         """
         Pre-compile all signal patterns for all grades.
-        Stored in self._patterns for reuse across all apply() calls.
+
+        For hard-signal keys we store both the source strings (for
+        logging / diagnostics) and compiled patterns side-by-side:
+
+        ``self._hard_sources[grade][key]  = ["skip", "skipping", ...]``
+        ``self._hard_patterns[grade][key] = [re.Pattern, ...]``
+
+        Soft / forbidden / exception keys live in ``self._patterns``
+        as before (compiled pattern lists).
         """
+        self._hard_sources: dict[str, dict[str, list[str]]] = {}
+        self._hard_patterns: dict[str, dict[str, list[re.Pattern]]] = {}
+
         for grade, grade_def in self.grade_defs.items():
             self._patterns[grade] = {}
-            hard = grade_def.get("hard_signals", [])
-            self._patterns[grade]["hard_signals"] = [
-                self._compile_signal(s) for s in hard
-            ]
+            self._hard_sources[grade] = {}
+            self._hard_patterns[grade] = {}
+
+            for hkey in _HARD_PATTERN_KEYS:
+                signals = grade_def.get(hkey)
+                if signals is None:
+                    continue
+                source_list = [str(s) for s in signals]
+                self._hard_sources[grade][hkey] = source_list
+                self._hard_patterns[grade][hkey] = [
+                    self._compile_signal(s) for s in source_list
+                ]
+            # Keep legacy ``hard_signals`` exposed on ``_patterns`` for any
+            # external callers (e.g. ``detect_signals``) that look it up
+            # through the old pattern map.
+            self._patterns[grade]["hard_signals"] = (
+                self._hard_patterns[grade].get("hard_signals", [])
+            )
+
             for signal_type in _SOFT_PATTERN_KEYS:
                 signals = grade_def.get(signal_type)
                 if signals is not None:
                     self._patterns[grade][signal_type] = [
                         self._compile_signal(s) for s in signals
                     ]
+
+    def _resolve_hard_patterns(
+        self,
+        grade: str,
+        target: str,
+    ) -> tuple[list[tuple[str, re.Pattern]], list[tuple[str, re.Pattern]]]:
+        """
+        Resolve the (strict, cosignal) hard-signal pairs for a grade on
+        a given target applying the fallback chain from the plan §13/§13b:
+
+        1. Per-target ``hard_signals_{strict,cosignal}_{sleeve,media}``.
+        2. Untargeted ``hard_signals_{strict,cosignal}``.
+        3. Legacy ``hard_signals`` (treated as strict).
+
+        Each list contains ``(source_string, compiled_pattern)`` tuples
+        so the caller can report which entry actually fired.
+        """
+        sources = self._hard_sources.get(grade, {})
+        patterns = self._hard_patterns.get(grade, {})
+
+        def _pair(key: str) -> list[tuple[str, re.Pattern]]:
+            srcs = sources.get(key, [])
+            pats = patterns.get(key, [])
+            return list(zip(srcs, pats))
+
+        strict_key = f"hard_signals_strict_{target}"
+        cosig_key = f"hard_signals_cosignal_{target}"
+
+        strict = _pair(strict_key) or _pair("hard_signals_strict")
+        cosignal = _pair(cosig_key) or _pair("hard_signals_cosignal")
+
+        if not strict and not cosignal:
+            # Back-compat: legacy ``hard_signals`` behaves as strict-only.
+            strict = _pair("hard_signals")
+
+        return strict, cosignal
 
     def _supporting_patterns(self, grade: str, target: str) -> list[re.Pattern]:
         pats = self._patterns.get(grade, {})
@@ -366,6 +443,49 @@ class RuleEngine:
     # -----------------------------------------------------------------------
     # Hard signal override (Mint, Poor, Generic)
     # -----------------------------------------------------------------------
+    def _matched_hard_signals(
+        self,
+        text: str,
+        pairs: list[tuple[str, re.Pattern]],
+    ) -> list[str]:
+        """Return source strings (not regex patterns) that match in text."""
+        return [src for src, pat in pairs if pat.search(text)]
+
+    def _evaluate_hard_match(
+        self,
+        text: str,
+        grade: str,
+        target: str,
+    ) -> Optional[tuple[str, str]]:
+        """
+        Return ``(tier, fired_source)`` for the first hard signal that
+        triggers, ignoring forbidden checks. ``tier`` is either
+        ``"strict"`` or ``"cosignal"``.
+
+        A strict signal fires on a single match. A cosignal fires only
+        when **at least one other distinct signal string** from the same
+        grade's strict *or* cosignal list also matches in the text
+        (distinctness is by the source string, not by match position).
+        Returns ``None`` if no hard signal fires.
+        """
+        strict, cosignal = self._resolve_hard_patterns(grade, target)
+        if not strict and not cosignal:
+            return None
+
+        strict_matches = self._matched_hard_signals(text, strict)
+        cosignal_matches = self._matched_hard_signals(text, cosignal)
+
+        if strict_matches:
+            return ("strict", strict_matches[0])
+
+        # Cosignal tier — require at least two distinct matched signals
+        # from the same grade's strict or cosignal lists combined.
+        distinct_all = set(strict_matches) | set(cosignal_matches)
+        if cosignal_matches and len(distinct_all) >= 2:
+            return ("cosignal", cosignal_matches[0])
+
+        return None
+
     def check_hard_override(
         self,
         text: str,
@@ -376,56 +496,49 @@ class RuleEngine:
         Returns the override grade string or None.
 
         Hard signal logic:
-          - Any single hard signal in the text triggers the override
-          - Forbidden signals block the override even if hard signal present
-          - Generic checks are skipped for media target
+          - **Strict** hard signals fire on any single match (legacy
+            ``hard_signals`` is treated as strict for back-compat).
+          - **Cosignal** hard signals fire only when another distinct
+            signal from the same grade's strict or cosignal list also
+            matches — the extra evidence guards against risky phrasings
+            (e.g. ``skipping`` qualified by "minor").
+          - Forbidden signals still block the override either way.
+          - Generic checks are skipped for media target.
 
-        Hard-owned grades: Generic and Poor only.
-        Mint is model-owned — the sealed/unplayed hard signal fires correctly
-        for a subset of listings but causes large-scale harm across the full
-        dataset because "sealed" appears in non-Mint descriptions.
+        Per-target bifurcation (e.g. sleeve-only vs media-only hard
+        signals) is driven entirely by YAML via
+        ``hard_signals_*_sleeve`` / ``hard_signals_*_media`` keys. The
+        Python frozensets that used to encode this split were removed in
+        favour of the single-source-of-truth contract documented at the
+        top of this module.
 
-        Poor + sleeve: playback hard signals (``skip``, ``skipping``, etc.) are
-        not evaluated — those apply to media only when both are in one note.
+        Hard-owned grades: Generic and Poor only. Mint is model-owned —
+        the sealed/unplayed hard signal fires correctly for a subset of
+        listings but causes large-scale harm across the full dataset
+        because "sealed" appears in non-Mint descriptions.
         """
         for grade in ["Generic", "Poor"]:
             grade_def = self.grade_defs.get(grade, {})
-
-            # Generic never applies to media
             applies_to = grade_def.get("applies_to", [SLEEVE, MEDIA])
             if target not in applies_to:
                 continue
 
-            hard_signal_sources = grade_def.get("hard_signals", [])
-            hard_patterns = self._patterns[grade]["hard_signals"]
-            if grade == "Poor" and target == SLEEVE:
-                hard_patterns = [
-                    pat
-                    for sig, pat in zip(hard_signal_sources, hard_patterns)
-                    if sig not in POOR_MEDIA_ONLY_HARD_SIGNALS
-                ]
-            if grade == "Poor" and target == MEDIA:
-                hard_patterns = [
-                    pat
-                    for sig, pat in zip(hard_signal_sources, hard_patterns)
-                    if sig not in POOR_SLEEVE_ONLY_HARD_SIGNALS
-                ]
-            forbidden_signals = self._forbidden_patterns(grade, target)
-
-            # Check for any hard signal match
-            hard_matches = self._match_signals(text, hard_patterns)
-            if not hard_matches:
+            match = self._evaluate_hard_match(text, grade, target)
+            if match is None:
                 continue
+            tier, fired = match
 
-            # Strip exception phrases before forbidden check
+            forbidden_signals = self._forbidden_patterns(grade, target)
             text_for_forbidden = self._apply_exceptions(text, grade, target)
-            # Check for forbidden signals — block override if present
-            forbidden_matches = self._match_signals(text_for_forbidden, forbidden_signals)
+            forbidden_matches = self._match_signals(
+                text_for_forbidden, forbidden_signals
+            )
             if forbidden_matches:
                 logger.debug(
-                    "Hard signal %r blocked by forbidden signal %r "
+                    "Hard signal %r (%s tier) blocked by forbidden %r "
                     "for grade %s target=%s",
-                    hard_matches[0],
+                    fired,
+                    tier,
                     forbidden_matches[0],
                     grade,
                     target,
@@ -433,14 +546,60 @@ class RuleEngine:
                 continue
 
             logger.debug(
-                "Hard override triggered — grade=%s target=%s signal=%r",
+                "Hard override triggered — grade=%s target=%s "
+                "signal=%r tier=%s",
                 grade,
                 target,
-                hard_matches[0],
+                fired,
+                tier,
             )
+            # Stash the tier on the last-evaluation cache so ``apply``
+            # can surface it in metadata without a second scan.
+            self._last_hard_tier = tier
+            self._last_hard_signal = fired
             return grade
 
         return None
+
+    # -----------------------------------------------------------------------
+    # Debug helpers — diagnostics for the missed-rule-owned exporter
+    # -----------------------------------------------------------------------
+    def would_hard_signal_match(
+        self,
+        text: str,
+        target: str,
+        grade: str,
+    ) -> bool:
+        """
+        Return True iff the hard-signal evaluation for ``grade`` would
+        trigger on ``text`` for the given target, **ignoring forbidden
+        signals and exceptions**. Strict signals require a single match,
+        cosignals require the usual two-signal corroboration — the
+        forbidden layer is the only thing skipped.
+
+        Use this together with :meth:`would_hard_override_fire` to
+        distinguish "missing pattern" (both False) from "blocked by a
+        forbidden" (pre True, post False) when auditing rule-owned
+        false negatives.
+        """
+        grade_def = self.grade_defs.get(grade, {})
+        applies_to = grade_def.get("applies_to", [SLEEVE, MEDIA])
+        if target not in applies_to:
+            return False
+        return self._evaluate_hard_match(text.lower(), grade, target) is not None
+
+    def would_hard_override_fire(
+        self,
+        text: str,
+        target: str,
+        grade: str,
+    ) -> bool:
+        """
+        Return True iff :meth:`check_hard_override` would assign
+        ``grade`` for this text/target — i.e. a hard signal matches
+        **and** no forbidden blocks it.
+        """
+        return self.check_hard_override(text.lower(), target) == grade
 
     # -----------------------------------------------------------------------
     # Soft signal override (confidence-gated)
@@ -488,6 +647,11 @@ class RuleEngine:
         )
 
         for grade in candidate_grades:
+            if (
+                grade == "Excellent"
+                and not self._allow_excellent_soft_override
+            ):
+                continue
             grade_def = self.grade_defs[grade]
 
             # Check target applicability
@@ -631,8 +795,15 @@ class RuleEngine:
                 override_grade = self._nm_sleeve_split_override(text_lower)
 
             # Step 2b — Hard signal override (Poor, Generic)
+            hard_tier: Optional[str] = None
+            hard_signal: Optional[str] = None
             if override_grade is None:
+                self._last_hard_tier = None
+                self._last_hard_signal = None
                 override_grade = self.check_hard_override(text_lower, target)
+                if override_grade is not None:
+                    hard_tier = self._last_hard_tier
+                    hard_signal = self._last_hard_signal
 
             # Step 3 — Soft signal override (if no hard override)
             if override_grade is None:
@@ -660,6 +831,11 @@ class RuleEngine:
                 else:
                     result["predicted_media_condition"] = override_grade
                 override_targets.append(target)
+                if hard_tier is not None:
+                    tier_key = f"hard_override_tier_{target}"
+                    sig_key = f"hard_override_signal_{target}"
+                    result["metadata"][tier_key] = hard_tier
+                    result["metadata"][sig_key] = hard_signal
 
         # Update metadata
         if override_targets:

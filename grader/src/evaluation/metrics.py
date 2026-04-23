@@ -241,6 +241,32 @@ def compute_metrics_from_label_strings(
     }
 
 
+def _bucket_audit(
+    helpful: np.ndarray,
+    harmful: np.ndarray,
+    neutral: np.ndarray,
+    mask: np.ndarray,
+) -> dict:
+    """
+    Aggregate helpful/harmful/neutral counts inside ``mask`` and compute
+    the override-precision on the filtered subset. Shared by the global
+    audit and the by_after / by_transition breakdowns in
+    :func:`compute_rule_override_audit`.
+    """
+    n_h = int((helpful & mask).sum())
+    n_x = int((harmful & mask).sum())
+    n_n = int((neutral & mask).sum())
+    denom = n_h + n_x
+    prec = round(n_h / denom, 4) if denom > 0 else None
+    return {
+        "n_changed": int(mask.sum()),
+        "n_helpful": n_h,
+        "n_harmful": n_x,
+        "n_neutral": n_n,
+        "override_precision": prec,
+    }
+
+
 def compute_rule_override_audit(
     y_true: np.ndarray,
     y_pred_before: list[str],
@@ -248,6 +274,7 @@ def compute_rule_override_audit(
     class_names: np.ndarray,
     target: str,
     split: str = "test",
+    top_k_transitions: int = 10,
 ) -> dict:
     """
     Compare model-only vs rule-adjusted labels against ground truth.
@@ -262,6 +289,16 @@ def compute_rule_override_audit(
     “bad override” signal).
 
     Also reports overall accuracy / macro-F1 before and after (full split).
+
+    **Stratified outputs** (new):
+
+    * ``by_after`` — dense map ``{after_grade: {n_changed, n_helpful,
+      n_harmful, n_neutral, override_precision}}`` covering every grade
+      that appears as an override destination (where a change occurred).
+    * ``by_transition`` — sparse map keyed ``"before->after"``, capped to
+      the top-K transitions by ``n_changed``. ``top_k_transitions``
+      defaults to 10. Both are committed outputs — Track B baseline and
+      iteration mining read them directly.
     """
     if not (len(y_true) == len(y_pred_before) == len(y_pred_after)):
         raise ValueError(
@@ -299,6 +336,37 @@ def compute_rule_override_audit(
         round(n_helpful / denom, 4) if denom > 0 else None
     )
 
+    # Stratified outputs — only over rows where the grade changed.
+    before_arr = np.array([str(b) for b in y_pred_before])
+    after_arr = np.array([str(a) for a in y_pred_after])
+
+    by_after: dict[str, dict] = {}
+    for after_grade in sorted(set(after_arr[ch].tolist())):
+        after_mask = changed & (after_arr == after_grade)
+        by_after[after_grade] = _bucket_audit(
+            mask_helpful, mask_harmful, mask_neutral, after_mask
+        )
+
+    # Rank transitions by n_changed; cap at top_k_transitions.
+    transition_counts: dict[str, int] = {}
+    for b_lab, a_lab, is_changed in zip(before_arr, after_arr, ch):
+        if not is_changed:
+            continue
+        key = f"{b_lab}->{a_lab}"
+        transition_counts[key] = transition_counts.get(key, 0) + 1
+
+    ranked = sorted(
+        transition_counts.items(), key=lambda kv: (-kv[1], kv[0])
+    )[:top_k_transitions]
+
+    by_transition: dict[str, dict] = {}
+    for key, _cnt in ranked:
+        b_lab, a_lab = key.split("->", 1)
+        tr_mask = changed & (before_arr == b_lab) & (after_arr == a_lab)
+        by_transition[key] = _bucket_audit(
+            mask_helpful, mask_harmful, mask_neutral, tr_mask
+        )
+
     return {
         "target": target,
         "split": split,
@@ -313,7 +381,82 @@ def compute_rule_override_audit(
         "n_harmful": n_harmful,
         "n_neutral": n_neutral,
         "override_precision": override_precision,
+        "by_after": by_after,
+        "by_transition": by_transition,
     }
+
+
+def format_override_audit_report(audit: dict) -> str:
+    """
+    Render an override audit dict as a compact text section, including
+    the by_after and by_transition breakdowns from the stratified audit.
+
+    Safe to call on audits missing ``by_after`` / ``by_transition`` keys
+    (e.g. pre-upgrade fixtures) — those sections simply render as
+    ``(no data)``.
+    """
+    target = str(audit.get("target", "?")).upper()
+    split = str(audit.get("split", "?"))
+    lines: list[str] = [
+        f"RULE OVERRIDE AUDIT — target={target} — split={split}",
+        f"  n_changed={audit.get('n_changed', 0)} "
+        f"helpful={audit.get('n_helpful', 0)} "
+        f"harmful={audit.get('n_harmful', 0)} "
+        f"neutral={audit.get('n_neutral', 0)} "
+        f"override_precision="
+        f"{_fmt_opt(audit.get('override_precision'))}",
+        "",
+        "  By final predicted grade (after):",
+    ]
+    by_after = audit.get("by_after") or {}
+    if not by_after:
+        lines.append("    (no data)")
+    else:
+        lines.append(
+            f"    {'after':<14} {'n':>5} {'help':>5} "
+            f"{'harm':>5} {'neut':>5} {'prec':>7}"
+        )
+        for g, row in sorted(
+            by_after.items(),
+            key=lambda kv: (-kv[1].get("n_changed", 0), kv[0]),
+        ):
+            lines.append(
+                f"    {g:<14} {row['n_changed']:>5} "
+                f"{row['n_helpful']:>5} {row['n_harmful']:>5} "
+                f"{row['n_neutral']:>5} "
+                f"{_fmt_opt(row.get('override_precision')):>7}"
+            )
+
+    lines.extend(["", "  Top transitions (before -> after):"])
+    by_tr = audit.get("by_transition") or {}
+    if not by_tr:
+        lines.append("    (no data)")
+    else:
+        lines.append(
+            f"    {'transition':<34} {'n':>5} {'help':>5} "
+            f"{'harm':>5} {'neut':>5} {'prec':>7}"
+        )
+        for tr, row in sorted(
+            by_tr.items(), key=lambda kv: (-kv[1].get("n_changed", 0), kv[0])
+        ):
+            lines.append(
+                f"    {tr:<34} {row['n_changed']:>5} "
+                f"{row['n_helpful']:>5} {row['n_harmful']:>5} "
+                f"{row['n_neutral']:>5} "
+                f"{_fmt_opt(row.get('override_precision')):>7}"
+            )
+
+    lines.append("")
+    return "\n".join(lines)
+
+
+def _fmt_opt(value) -> str:
+    if value is None:
+        return "—"
+    try:
+        return f"{float(value):.4f}"
+    except (TypeError, ValueError):
+        return str(value)
 
 
 # ---------------------------------------------------------------------------

@@ -37,8 +37,6 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.preprocessing import LabelEncoder
 
 from grader.src.mlflow_tracking import (
-    configure_mlflow_from_config,
-    mlflow_enabled,
     mlflow_log_artifacts_enabled,
     mlflow_pipeline_step_run_ctx,
 )
@@ -210,8 +208,8 @@ class TFIDFFeatureBuilder:
             ),
         }
 
-        if mlflow_enabled(self.config):
-            configure_mlflow_from_config(self.config)
+        # MLflow: ``run()`` uses ``mlflow_pipeline_step_run_ctx`` — configure only
+        # when a nested step run is actually opened (``log_pipeline_step_runs``).
 
     # -----------------------------------------------------------------------
     # Config loading
