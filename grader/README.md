@@ -141,12 +141,16 @@ Or omit eBay in the full pipeline with **`--skip-ebay-ingest`**.
 
 Exports completed sales from SQLite into the same record shape as Discogs ingest, for harmonization. Defaults: `data.sale_history` in `grader.yaml` (`sqlite_path`, `processed_jsonl`).
 
+The exporter joins each `release_id` to **`releases_features`** in the price-estimator feature store (`feature_store_path`, e.g. `price_estimator/data/feature_store.sqlite`) to set `release_format` / `release_description`, then applies the same **physical-vinyl** filter as `discogs_processed.jsonl` (see `apply_vinyl_filter` and `vinyl_format.py`). Optional `enrich_missing_from_discogs` uses the Discogs API for releases missing from the feature store. `on_missing_release: keep` retains rows with no format data (the default); `drop` removes them.
+
 ```bash
 uv run python -m grader.src.data.ingest_sale_history --dry-run
 uv run python -m grader.src.data.ingest_sale_history
 ```
 
 Useful flags: `--sale-db`, `--out`, `--limit N`, `--require-fetch-ok` (only releases with `sale_history_fetch_status.status = ok`), `--dry-run`.
+
+The full training pipeline runs the same export after Discogs ingest by default. Use **`python -m grader.src.pipeline train --skip-sale-history`** to skip it (for example if the sale DB is empty or you want a faster train).
 
 Run **before** harmonize so `discogs_sale_history.jsonl` exists when `LabelHarmonizer` runs.
 
