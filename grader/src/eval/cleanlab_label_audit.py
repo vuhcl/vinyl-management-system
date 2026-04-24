@@ -11,6 +11,8 @@ runs stratified K-fold ``predict_proba`` (uncalibrated heads only), then
     ``n_splits`` by the rarest class (minimum 2).
   - Cleanlab treats grades as nominal classes, not ordinal distances.
   - Run separate audits per target (sleeve / media).
+  - Each output CSV includes both ``sleeve_label`` and ``media_label`` from the
+    train row (for context); Cleanlab scores still apply only to ``target``.
 
 **TF-IDF-only fallback:** If ``train_{target}_X.npz`` is missing, refits TF-IDF
 on ``TFIDFFeatureBuilder.extract_texts`` and runs OOF LR on that matrix only.
@@ -309,6 +311,8 @@ def run_target_audit(
                 "source": rec.get("source", ""),
                 "label_confidence": rec.get("label_confidence", ""),
                 "target": target,
+                "sleeve_label": str(rec.get("sleeve_label", "")),
+                "media_label": str(rec.get("media_label", "")),
                 f"{target}_label": given,
                 "oof_pred_label": pred_label,
                 "cleanlab_label_issue": bool(issues[i]),

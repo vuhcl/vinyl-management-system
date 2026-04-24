@@ -172,3 +172,4 @@ def test_run_target_audit_disk_path_roundtrip(tmp_path: Path) -> None:
     assert len(rows) == n
     assert "cleanlab_label_issue" in rows[0]
     assert "cleanlab_self_confidence" in rows[0]
+    assert "sleeve_label" in rows[0] and "media_label" in rows[0]
