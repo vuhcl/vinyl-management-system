@@ -197,14 +197,33 @@ data:
 preprocessing:
   lowercase:              true
   normalize_whitespace:   true
-  # Strip lone digits from seller text (boilerplate leftovers); also applied
-  # when building TF-IDF inputs so stale splits cannot keep junk terms.
+  # When true, applies _strip_leading_numeric_boilerplate in clean_text and in
+  # TF-IDF extract_texts (catalog index digit before condition words). When
+  # false, that step is skipped.
   strip_stray_numeric_tokens: true
+
+  # Case-insensitive substring removals (longest-first at runtime). Applied
+  # after structural markdown/bracket/US-shipping-regex passes in clean_text.
+  promo_noise_patterns:
+    - "all items sent securely in a double padded mailer with the vinyl separated from the sleeve (unless sealed)"
+    - "if not completely satisfied send back for a full refund at our expense"
+    - "all the products that we sell are 100% guaranteed"
+    - "we have a warehouse full of new cd's, cassettes, lp's, 45's, 12'' singles"
+    - "that are 35 plus years old"
+    - "everything has been marked down 75% for another 24 hours ship up to 20 records in usa for only $5!! all orders over $25 cleaned on vpi!"
+    - "summer sale! all vinyl marked down 20%+ unlimited $5--"
+    - "packed safely, shipped promptly! lp's are shipped in custom boxes for reinforced protection"
+    - "customs friendly"
+    - "part of my personal collection"
+    - "warehouse back stock"
+    - "always shipped with domestic tracking"
+    - "full refund"
 
   # Abbreviation expansion — applied before any feature extraction.
   # Order matters: longest/most specific patterns first to avoid
   # partial matches (e.g. "vg++" must come before "vg+").
-  # Protected terms (see grading_guidelines.yaml) are never stripped.
+  # Protected terms (grading_guidelines.yaml) must survive cleaning; promo
+  # stripping avoids blanket ``**…**`` removal (sellers bold real defects).
   abbreviation_map:
     "m-":     "mint minus"
     "nm":     "near mint"

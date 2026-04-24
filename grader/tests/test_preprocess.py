@@ -106,6 +106,107 @@ class TestStrayNumericTokens:
         assert "inches" in result
 
 
+class TestPromoAndShippingNoiseStripping:
+    """Regression corpus for listing promo / shipping boilerplate (plan)."""
+
+    CORPUS = [
+        "[february frenzy - up to 90% off! original price: 1]",
+        " / $6.40 unlimited us-shipping / free on $100 orders of 3+ items read "
+        "seller terms before paying",
+        "everything has been marked down 75% for another 24 hours ship up to 20 "
+        "records in usa for only $5!! all orders over $25 cleaned on vpi!",
+        "summer sale! all vinyl marked down 20%+ unlimited $5--",
+        "***free shipping to uk mainland on orders over £15.00 & on orders over "
+        "£50.00 to europe***",
+        "### price now reduced to make way for new stock ### ",
+        "[sale! 4for3 on everything! sale! 22,000+ items]",
+        "part of my personal collection",
+        "/ $5.90 unlimited us-shipping / free on $100 orders of 3+ items / read "
+        "seller terms before paying",
+        " / $7.40 unlimited us-shipping / free on $100 orders of 3+ items read "
+        "seller terms before paying",
+        "$7.50 shipping for unlimited items in usa! packed safely, shipped "
+        "promptly! lp's are shipped in custom boxes for reinforced protection",
+        "**all items sent securely in a double padded mailer with the vinyl "
+        "separated from the sleeve (unless sealed)**",
+        " / $5 unlimited us-shipping / free on $100 orders of 3+ items read "
+        "seller terms before paying",
+        "customs friendly, all the products that we sell are 100% guaranteed if "
+        "not completely satisfied send back for a full refund at our expense we "
+        "have a warehouse full of new cd's, cassettes, lp's, 45's, 12'' singles "
+        "that are 35 plus years old",
+        "warehouse back stock",
+        "always shipped with domestic tracking",
+        "[1 euro sale: 250,000+ records at 1.00 free shipping on orders above 100 "
+        "euro inside eu!]",
+        "| pick up order over £10 (cash only) welcome at our shop in hackney "
+        "wick, east london",
+        "with you within 6",
+    ]
+
+    @pytest.mark.parametrize("raw", CORPUS)
+    def test_corpus_promo_only_becomes_empty(self, preprocessor, raw):
+        out = preprocessor.clean_text(raw)
+        assert out.strip() == ""
+
+    @pytest.mark.parametrize(
+        "ship_tail",
+        [
+            " / $1.00 unlimited us-shipping / free on $9 orders of 3+ items read "
+            "seller terms before paying",
+            " / $99.99 unlimited us-shipping / free on $200 orders of 3+ items "
+            "read seller terms before paying",
+        ],
+    )
+    def test_us_shipping_tail_any_amounts(self, preprocessor, ship_tail):
+        assert preprocessor.clean_text(ship_tail).strip() == ""
+
+    def test_us_shipping_concatenated_with_markdown_still_empty(
+        self, preprocessor
+    ):
+        combined = (
+            "**all items sent securely in a double padded mailer with the vinyl "
+            "separated from the sleeve (unless sealed)**"
+            " / $5 unlimited us-shipping / free on $100 orders of 3+ items read "
+            "seller terms before paying"
+        )
+        assert preprocessor.clean_text(combined).strip() == ""
+
+    def test_mixed_condition_and_promo_tail_keeps_condition(self, preprocessor):
+        raw = (
+            "corner wear and ring wear on cover. "
+            " / $6.40 unlimited us-shipping / free on $100 orders of 3+ items read "
+            "seller terms before paying"
+        )
+        out = preprocessor.clean_text(raw)
+        assert "corner wear" in out
+        assert "unlimited" not in out
+        assert "seller terms" not in out
+
+    def test_double_star_condition_emphasis_not_stripped(self, preprocessor):
+        """Sellers bold real defects with ** — must not delete protected terms."""
+        raw = "**light stain** on cover, **seam split** at bottom edge"
+        out = preprocessor.clean_text(raw)
+        lost = preprocessor._verify_protected_terms(raw.lower(), out)
+        assert "stain" not in lost
+        assert "split" not in lost
+        assert "seam split" not in lost
+        assert "stain" in out
+        assert "seam split" in out or "split" in out
+
+
+class TestStripStrayNumericTokensFlag:
+    def test_false_preserves_leading_catalog_digit(self, preprocessor, guidelines_path):
+        cfg = preprocessor.config
+        cfg["preprocessing"]["strip_stray_numeric_tokens"] = False
+        pre = Preprocessor(
+            config_path="unused",
+            guidelines_path=guidelines_path,
+            config=cfg,
+        )
+        assert "6" in pre.clean_text("6 sealed, new hype sticker").split()
+
+
 class TestProtectedTerms:
     def test_protected_terms_built(self, preprocessor):
         assert len(preprocessor.protected_terms) > 0

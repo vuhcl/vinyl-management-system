@@ -36,6 +36,7 @@ import yaml
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.preprocessing import LabelEncoder
 
+from grader.src.data.preprocess import Preprocessor
 from grader.src.mlflow_tracking import (
     mlflow_log_artifacts_enabled,
     mlflow_pipeline_step_run_ctx,
@@ -272,13 +273,15 @@ class TFIDFFeatureBuilder:
         Falls back to text field if text_clean is absent —
         handles edge cases where preprocess.py was not run.
         """
-        from grader.src.data.preprocess import Preprocessor
-
+        pp_cfg = self.config.get("preprocessing", {})
         texts = []
         for record in records:
             text = record.get("text_clean") or record.get("text", "")
             texts.append(
-                Preprocessor._strip_leading_numeric_boilerplate(text)
+                Preprocessor.normalize_text_for_tfidf(
+                    text,
+                    preprocessing_cfg=pp_cfg,
+                )
             )
         return texts
 

@@ -11,8 +11,12 @@ Transformation order (strictly enforced):
   2. Detect Generic sleeve signals    — on raw text
   3. Lowercase
   4. Normalize whitespace
-  5. Expand abbreviations             — after lowercase
-  6. Verify protected terms survive   — sanity check
+  5. Strip listing promo / shipping boilerplate (markdown, brackets, regex
+     templates, configured phrase chunks) — on lowercased collapsed text
+  6. Optionally strip leading catalog digit before condition words
+     (``strip_stray_numeric_tokens``)
+  7. Expand abbreviations             — after lowercase
+  8. Verify protected terms survive   — sanity check
 
 The original `text` field is preserved. Cleaned text is written
 to a new `text_clean` field. Labels are never modified.
@@ -28,7 +32,7 @@ import logging
 import re
 from collections import Counter
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Optional, Sequence
 
 import mlflow
 import yaml
@@ -49,6 +53,183 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
+# Listing promo / shipping noise (shared with TF-IDF extract_texts)
+# ---------------------------------------------------------------------------
+_DEFAULT_PROMO_NOISE_PATTERNS: tuple[str, ...] = (
+    "all items sent securely in a double padded mailer with the vinyl "
+    "separated from the sleeve (unless sealed)",
+    "if not completely satisfied send back for a full refund at our expense",
+    "all the products that we sell are 100% guaranteed",
+    "we have a warehouse full of new cd's, cassettes, lp's, 45's, 12'' singles",
+    "that are 35 plus years old",
+    "everything has been marked down 75% for another 24 hours ship up to "
+    "20 records in usa for only $5!! all orders over $25 cleaned on vpi!",
+    "summer sale! all vinyl marked down 20%+ unlimited $5--",
+    "packed safely, shipped promptly! lp's are shipped in custom boxes for "
+    "reinforced protection",
+    "customs friendly",
+    "part of my personal collection",
+    "warehouse back stock",
+    "always shipped with domestic tracking",
+    "full refund",
+)
+
+# Currency amount in seller promo/shipping boilerplate (already lowercased).
+_MONEY_TOKEN = r"(?:[$£€]\s*\d+(?:[.,]\d+)?)"
+
+_RE_DISCOGS_US_SHIP_TAIL = re.compile(
+    r"(?:^|\s)"
+    r"(?:/\s*)?"
+    + _MONEY_TOKEN
+    + r"\s*unlimited\s+us\s*-\s*shipping"
+    r"(?:\s*/\s*|\s+)+"
+    r"free\s+on\s*"
+    + _MONEY_TOKEN
+    + r"\s*orders\s+of\s*3\+\s*items"
+    r"(?:\s*/\s*|\s+)*"
+    r"read\s+seller\s+terms\s+before\s+paying",
+    re.IGNORECASE,
+)
+
+_RE_UNLIMITED_USA_SHIP_BANNER = re.compile(
+    r"(?:^|\s)"
+    + _MONEY_TOKEN
+    + r"\s*shipping\s+for\s+unlimited\s+items\s+in\s+usa\s*!",
+    re.IGNORECASE,
+)
+
+_RE_WITH_YOU_WITHIN = re.compile(
+    r"\bwith\s+you\s+within\s+\d+"
+    r"(?:\s*(?:day|days|working\s+days?|working\s+day))?\b",
+    re.IGNORECASE,
+)
+
+_RE_PICKUP_SHOP_LINE = re.compile(
+    r"(?:^|\s)\|\s*pick\s+up\s+order\s+over\s*"
+    + _MONEY_TOKEN
+    + r"(?:\s*\([^)]*\))?\s*welcome\s+at\s+our\s+shop\b[^.!?]*",
+    re.IGNORECASE,
+)
+
+# Discogs-style shop mailer blurb (often wrapped in **…**). We do **not** strip
+# arbitrary ``**…**`` spans — sellers bold real condition terms (**stain**,
+# **seam split**), which would drop protected vocabulary.
+_RE_STAR_MAILER_BLURB = re.compile(
+    r"\*\*all items sent securely in a double padded mailer with the vinyl "
+    r"separated from the sleeve \(unless sealed\)\*\*",
+    re.IGNORECASE,
+)
+
+# Only remove ``***…***`` when the inner text looks like shipping/promo, not
+# short condition emphasis.
+_RE_TRIPLE_STAR_PROMOISH = re.compile(
+    r"(?:free\s+shipping|orders\s+over|unlimited\s+us|marked\s+down|"
+    r"summer\s+sale|inside\s+eu|buy\s+\d|\d+\s*%\s*off|discount\s+on|"
+    r"shipping\s+to|euro\s+sale|records\s+at)",
+    re.IGNORECASE,
+)
+
+
+def _triple_star_inner_is_promo(inner: str) -> bool:
+    t = inner.strip()
+    if len(t) < 14:
+        return False
+    return bool(_RE_TRIPLE_STAR_PROMOISH.search(t))
+
+
+def _strip_one_gated_triple_star(s: str) -> tuple[str, bool]:
+    m = re.search(r"\*\*\*([\s\S]*?)\*\*\*", s)
+    if not m:
+        return s, False
+    if _triple_star_inner_is_promo(m.group(1)):
+        return s[: m.start()] + " " + s[m.end() :], True
+    return s, False
+
+
+def load_promo_noise_patterns(pp_cfg: dict[str, Any]) -> tuple[str, ...]:
+    """
+    Return promo phrase substrings (lowercased), longest first, for substring
+    removal. Empty or missing ``promo_noise_patterns`` falls back to defaults
+    so offline tests stay aligned with production grader.yaml.
+    """
+    raw = pp_cfg.get("promo_noise_patterns")
+    if not raw:
+        seq: Sequence[str] = _DEFAULT_PROMO_NOISE_PATTERNS
+    else:
+        seq = raw
+    phrases = [str(p).strip().lower() for p in seq if str(p).strip()]
+    return tuple(sorted(phrases, key=len, reverse=True))
+
+
+def strip_listing_promo_noise(
+    text: str,
+    promo_phrases: tuple[str, ...],
+) -> str:
+    """
+    Remove shop promo / shipping boilerplate spans. Caller must pass text
+    that is already lowercased with whitespace collapsed to single spaces.
+
+    Arbitrary ``**…**`` markdown is **not** removed — sellers use it to bold
+    real defects (e.g. **stain**, **seam split**), which would otherwise delete
+    grading vocabulary. Triple-star blocks are removed only when the inner
+    text matches shipping/promo heuristics.
+    """
+    s = text.strip()
+
+    while True:
+        s, changed = _strip_one_gated_triple_star(s)
+        if not changed:
+            break
+
+    while True:
+        n = _RE_STAR_MAILER_BLURB.sub(" ", s, count=1)
+        if n == s:
+            break
+        s = n
+
+    while True:
+        n = re.sub(r"#{3,}[\s\S]*?#{3,}", " ", s, count=1)
+        if n == s:
+            break
+        s = n
+
+    while re.search(r"\[[^\]]*\]", s):
+        s = re.sub(r"\[[^\]]*\]", " ", s, count=1)
+
+    while True:
+        n = _RE_DISCOGS_US_SHIP_TAIL.sub(" ", s, count=1)
+        if n == s:
+            break
+        s = n
+
+    while True:
+        n = _RE_UNLIMITED_USA_SHIP_BANNER.sub(" ", s, count=1)
+        if n == s:
+            break
+        s = n
+
+    while True:
+        n = _RE_PICKUP_SHOP_LINE.sub(" ", s, count=1)
+        if n == s:
+            break
+        s = n
+
+    s = _RE_WITH_YOU_WITHIN.sub(" ", s)
+
+    for phrase in promo_phrases:
+        if not phrase:
+            continue
+        while phrase in s:
+            s = s.replace(phrase, " ")
+
+    # Collapse punctuation glue left between removed phrase chunks (commas, etc.)
+    s = re.sub(r"(?:\s*[,;]\s*)+", " ", s)
+    s = re.sub(r"\s+", " ", s).strip()
+    s = s.strip(" ,;")
+    return s
+
+
+# ---------------------------------------------------------------------------
 # Preprocessor
 # ---------------------------------------------------------------------------
 class Preprocessor:
@@ -58,6 +239,8 @@ class Preprocessor:
     Config keys read from grader.yaml:
         preprocessing.lowercase
         preprocessing.normalize_whitespace
+        preprocessing.strip_stray_numeric_tokens
+        preprocessing.promo_noise_patterns
         preprocessing.abbreviation_map
         preprocessing.min_text_length_discogs
         data.splits.train / val / test
@@ -94,6 +277,12 @@ class Preprocessor:
         self.do_lowercase: bool = pp_cfg.get("lowercase", True)
         self.do_normalize_whitespace: bool = pp_cfg.get(
             "normalize_whitespace", True
+        )
+        self.strip_stray_numeric_tokens: bool = bool(
+            pp_cfg.get("strip_stray_numeric_tokens", True)
+        )
+        self.promo_noise_patterns: tuple[str, ...] = load_promo_noise_patterns(
+            pp_cfg
         )
 
         # Build ordered abbreviation list — order from config is preserved.
@@ -717,13 +906,43 @@ class Preprocessor:
         Steps:
           1. Lowercase
           2. Normalize whitespace
-          3. Expand abbreviations
+          3. Strip listing promo / shipping boilerplate
+          4. Optionally strip leading catalog digit (``strip_stray_numeric_tokens``)
+          5. Expand abbreviations
         """
         cleaned = self._lowercase(text)
         cleaned = self._normalize_whitespace(cleaned)
-        cleaned = self._strip_leading_numeric_boilerplate(cleaned)
+        cleaned = strip_listing_promo_noise(
+            cleaned, self.promo_noise_patterns
+        )
+        if self.strip_stray_numeric_tokens:
+            cleaned = self._strip_leading_numeric_boilerplate(cleaned)
         cleaned = self._expand_abbreviations(cleaned)
         return cleaned
+
+    @classmethod
+    def normalize_text_for_tfidf(
+        cls,
+        text: str,
+        *,
+        preprocessing_cfg: dict[str, Any],
+    ) -> str:
+        """
+        Match ``clean_text`` through promo stripping and leading-digit cleanup,
+        but **omit** abbreviation expansion so TF-IDF sees the same tokens as
+        ``text_clean`` from preprocess (which already expanded abbrevs).
+        """
+        pp = preprocessing_cfg
+        s = text.strip()
+        if pp.get("lowercase", True):
+            s = s.lower()
+        if pp.get("normalize_whitespace", True):
+            s = re.sub(r"\s+", " ", s).strip()
+        phrases = load_promo_noise_patterns(pp)
+        s = strip_listing_promo_noise(s, phrases)
+        if bool(pp.get("strip_stray_numeric_tokens", True)):
+            s = cls._strip_leading_numeric_boilerplate(s)
+        return s
 
     # -----------------------------------------------------------------------
     # Record processing
