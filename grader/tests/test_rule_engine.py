@@ -146,6 +146,58 @@ class TestHardOverrides:
         )
         assert grade == "Generic"
 
+    def test_generic_matte_black_and_one_sheet_strict_fire(self, engine):
+        assert (
+            engine.check_hard_override(
+                "ships in generic matte black sleeve only", "sleeve"
+            )
+            == "Generic"
+        )
+        assert (
+            engine.check_hard_override(
+                "generic one-sheet sleeve, no artwork", "sleeve"
+            )
+            == "Generic"
+        )
+
+    def test_black_sleeve_plain_jacket_cosignal_alone_does_not_fire(
+        self, engine
+    ):
+        for text in (
+            "black sleeve",
+            "plain black jacket",
+            "plain cover",
+            "white label",
+        ):
+            assert engine.check_hard_override(text, "sleeve") is None
+
+    def test_black_sleeve_with_corroboration_triggers_generic(self, engine):
+        assert (
+            engine.check_hard_override(
+                "black sleeve, no original cover", "sleeve"
+            )
+            == "Generic"
+        )
+
+    def test_white_label_promo_with_no_cover_triggers_generic(self, engine):
+        # WL promos often use generic/plain housing — not an anti-Generic cue.
+        assert (
+            engine.check_hard_override(
+                "white label promo, no cover", "sleeve"
+            )
+            == "Generic"
+        )
+
+    def test_white_label_with_original_cover_does_not_trigger_generic(
+        self, engine
+    ):
+        assert (
+            engine.check_hard_override(
+                "white label copy, original cover has wear", "sleeve"
+            )
+            is None
+        )
+
     def test_generic_does_not_apply_to_media(self, engine):
         grade = engine.check_hard_override("this is a generic sleeve", "media")
         assert grade != "Generic"
