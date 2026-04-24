@@ -517,6 +517,22 @@ wheels = [
 ]
 
 [[package]]
+name = "cleanlab"
+version = "2.9.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "numpy" },
+    { name = "pandas" },
+    { name = "scikit-learn" },
+    { name = "termcolor" },
+    { name = "tqdm" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/82/ab/80cbcd832bda6e18ef22f0f9120675f70b7d532a164f762fb660f73fc346/cleanlab-2.9.0.tar.gz", hash = "sha256:abe25fe0c772ced8c4b36a94e0de71726db00802224b7fb7bee06db6ff95eb4e", size = 273633, upload-time = "2026-01-13T18:02:46.7Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/87/8a/612ba4408b0b21c7ca8cf5671d61ddb5499e675bcec3058e6f48839672cb/cleanlab-2.9.0-py3-none-any.whl", hash = "sha256:9a317d9ba547c388dd15fffec71fcf838cda1404ef4034b6865da78be6603f4e", size = 306078, upload-time = "2026-01-13T18:02:44.912Z" },
+]
+
+[[package]]
 name = "click"
 version = "8.3.2"
 source = { registry = "https://pypi.org/simple" }
@@ -3613,6 +3629,15 @@ wheels = [
 ]
 
 [[package]]
+name = "termcolor"
+version = "3.3.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/46/79/cf31d7a93a8fdc6aa0fbb665be84426a8c5a557d9240b6239e9e11e35fc5/termcolor-3.3.0.tar.gz", hash = "sha256:348871ca648ec6a9a983a13ab626c0acce02f515b9e1983332b17af7979521c5", size = 14434, upload-time = "2025-12-29T12:55:21.882Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/33/d1/8bb87d21e9aeb323cc03034f5eaf2c8f69841e40e4853c2627edf8111ed3/termcolor-3.3.0-py3-none-any.whl", hash = "sha256:cf642efadaf0a8ebbbf4bc7a31cec2f9b5f21a9f726f4ccbb08192c9c26f43a5", size = 7734, upload-time = "2025-12-29T12:55:20.718Z" },
+]
+
+[[package]]
 name = "threadpoolctl"
 version = "3.6.0"
 source = { registry = "https://pypi.org/simple" }
@@ -3886,6 +3911,9 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
+data-quality = [
+    { name = "cleanlab" },
+]
 serve = [
     { name = "fastapi" },
     { name = "uvicorn", extra = ["standard"] },
@@ -3894,6 +3922,7 @@ serve = [
 [package.metadata]
 requires-dist = [
     { name = "certifi", specifier = ">=2024.0.0" },
+    { name = "cleanlab", marker = "extra == 'data-quality'", specifier = ">=2.1.0" },
     { name = "coremltools", specifier = ">=7.0" },
     { name = "datasets", specifier = ">=2.17.0" },
     { name = "fastapi", marker = "extra == 'serve'", specifier = ">=0.115.0" },
@@ -3914,7 +3943,7 @@ requires-dist = [
     { name = "uvicorn", extras = ["standard"], marker = "extra == 'serve'", specifier = ">=0.32.0" },
     { name = "vinyl-shared", editable = "shared" },
 ]
-provides-extras = ["serve"]
+provides-extras = ["serve", "data-quality"]
 
 [[package]]
 name = "vinyl-management-system"
@@ -3931,12 +3960,14 @@ dependencies = [
 
 [package.optional-dependencies]
 test = [
+    { name = "cleanlab" },
     { name = "pytest" },
     { name = "pytest-cov" },
 ]
 
 [package.metadata]
 requires-dist = [
+    { name = "cleanlab", marker = "extra == 'test'", specifier = ">=2.1.0" },
     { name = "pytest", marker = "extra == 'test'", specifier = ">=7.4.0" },
     { name = "pytest-cov", marker = "extra == 'test'", specifier = ">=4.1.0" },
     { name = "vinyl-core", editable = "core" },

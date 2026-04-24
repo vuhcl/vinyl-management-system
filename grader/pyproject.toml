@@ -35,6 +35,10 @@ serve = [
     "fastapi>=0.115.0",
     "uvicorn[standard]>=0.32.0",
 ]
+# Optional: train-split label-issue audit (OOF probs + Cleanlab).
+data_quality = [
+    "cleanlab>=2.1.0",
+]
 
 [tool.setuptools.packages.find]
 where = [".."]
