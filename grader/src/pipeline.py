@@ -385,11 +385,25 @@ class Pipeline:
                     )
                     if sh.get("ok"):
                         results["sale_history_ingest"] = sh
+                        trim = sh.get("trim") or {}
+                        sh_cfg = sh.get("sale_history_settings") or {}
                         logger.info(
-                            "Sale history → %s (%d line(s), vinyl drop in post: %s)",
+                            "Sale history → %s (%d line(s), vinyl post=%s, "
+                            "trim in/joint/sleeve/total=%s/%s/%s/%s, prefetch=%s order=%s "
+                            "joint_cap=%s sleeve_cap=%s total_cap=%s balance_sleeve_trim=%s)",
                             sh.get("out"),
                             sh.get("written", 0),
                             (sh.get("post") or {}).get("vinyl_dropped", 0),
+                            trim.get("input_rows"),
+                            trim.get("after_joint_trim"),
+                            trim.get("after_sleeve_trim"),
+                            trim.get("after_total_trim"),
+                            sh_cfg.get("sql_prefetch_limit"),
+                            sh_cfg.get("sql_sample_order"),
+                            sh_cfg.get("max_rows_per_joint_grade"),
+                            sh_cfg.get("max_rows_per_sleeve_grade"),
+                            sh_cfg.get("max_total_sale_history_rows"),
+                            sh_cfg.get("balance_joint_within_sleeve_trim"),
                         )
                     else:
                         logger.warning(
@@ -641,7 +655,14 @@ class Pipeline:
 
             # Step 9 — Rule engine: compare model vs adjusted; audit overrides
             logger.info("=" * 50)
-            logger.info("STEP 9 — RULE ENGINE EVAL (test + test_thin)")
+            _ev = self.config.get("evaluation") or {}
+            _rs = _ev.get("rule_eval_splits")
+            _split_note = (
+                ", ".join(str(s) for s in _rs)
+                if isinstance(_rs, list) and _rs
+                else "test + test_thin"
+            )
+            logger.info("STEP 9 — RULE ENGINE EVAL (%s)", _split_note)
             logger.info("=" * 50)
 
             rule_engine = self._get_rule_engine()
@@ -769,7 +790,12 @@ class Pipeline:
                 **meta,
             }
             record.update(
-                preprocessor.compute_description_quality(text, text_clean)
+                preprocessor.compute_description_quality(
+                    text,
+                    text_clean,
+                    sleeve_label=str(meta.get("sleeve_label") or ""),
+                    media_label=str(meta.get("media_label") or ""),
+                )
             )
             records.append(record)
 
@@ -987,7 +1013,14 @@ class Pipeline:
         # Baseline snapshot accumulator: {split: {target: {...}}}
         baseline_snapshot: dict[str, dict] = {}
 
-        for split_name in ("test", "test_thin"):
+        ev = self.config.get("evaluation") or {}
+        _res = ev.get("rule_eval_splits")
+        if isinstance(_res, list) and _res:
+            eval_splits = [str(s) for s in _res]
+        else:
+            eval_splits = ["test", "test_thin"]
+
+        for split_name in eval_splits:
             if split_name == "test_thin" and not (splits_dir / "test_thin.jsonl").exists():
                 logger.info(
                     "Rule eval — skip split=test_thin (no test_thin.jsonl)"

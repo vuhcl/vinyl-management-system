@@ -135,7 +135,14 @@ def preprocess_batch(
             "source": meta.get("source", "grader_api"),
             **meta,
         }
-        record.update(pre.compute_description_quality(text, text_clean))
+        record.update(
+            pre.compute_description_quality(
+                text,
+                text_clean,
+                sleeve_label=str(meta.get("sleeve_label") or ""),
+                media_label=str(meta.get("media_label") or ""),
+            )
+        )
         records.append(record)
     return clean_texts, records
 

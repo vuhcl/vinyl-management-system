@@ -151,8 +151,12 @@ class Preprocessor:
         # comment does not include any playback-related language.
         # This is intentionally conservative: we only treat "playback" cues
         # as verifiable, not cosmetic cover wording.
-        mint_def = self.guidelines.get("grades", {}).get("Mint", {})
-        self.mint_hard_signals: list[str] = self._collect_hard_signals(mint_def)
+        self._mint_grade_def: dict[str, Any] = (
+            self.guidelines.get("grades", {}).get("Mint", {}) or {}
+        )
+        self.mint_hard_signals: list[str] = self._collect_hard_signals(
+            self._mint_grade_def
+        )
 
         media_cue_substrings = (
             "play",
@@ -315,6 +319,37 @@ class Preprocessor:
             "mint",
             "poor",
         )
+
+        # Mint sleeve listings often have very short notes ("still sealed", …).
+        # When enabled, treat sleeve note as adequate if sleeve_label is Mint and
+        # any Mint-ish phrase matches (media label unrestricted).
+        self.mint_sleeve_label_relax_sleeve_note: bool = bool(
+            da_cfg.get(
+                "mint_sleeve_label_relax_sleeve_note",
+                da_cfg.get("mint_both_labels_relax_sleeve_note", True),
+            )
+        )
+        _mint_relax: list[str] = list(
+            self._collect_hard_signals(self._mint_grade_def)
+        )
+        _mint_relax_seen: set[str] = set(_mint_relax)
+        for _sig in self._mint_grade_def.get("supporting_signals", []) or []:
+            if isinstance(_sig, str):
+                _ls = _sig.lower().strip()
+                if _ls and _ls not in _mint_relax_seen:
+                    _mint_relax.append(_ls)
+                    _mint_relax_seen.add(_ls)
+        for _sig in da_cfg.get("mint_sleeve_note_relax_extra_terms", []) or []:
+            if isinstance(_sig, str):
+                _ls = _sig.lower().strip()
+                if _ls and _ls not in _mint_relax_seen:
+                    _mint_relax.append(_ls)
+                    _mint_relax_seen.add(_ls)
+        for _extra in ("brand new", "like new", "new copy"):
+            if _extra not in _mint_relax_seen:
+                _mint_relax.append(_extra)
+                _mint_relax_seen.add(_extra)
+        self.mint_sleeve_relax_substrings: tuple[str, ...] = tuple(_mint_relax)
 
         # Paths
         processed_dir = Path(self.config["paths"]["processed"])
@@ -533,8 +568,20 @@ class Preprocessor:
         """True when media_evidence_strength is not ``none`` (see detect_*)."""
         return self.detect_media_evidence_strength(raw_text) != "none"
 
-    def compute_description_quality(
+    def _mint_listing_sleeve_relaxed_ok(
         self, raw_text: str, text_clean: str
+    ) -> bool:
+        """Short sealed / Mint-ish copy counts as sleeve evidence."""
+        blob = f"{raw_text} {text_clean}".lower()
+        return any(h in blob for h in self.mint_sleeve_relax_substrings)
+
+    def compute_description_quality(
+        self,
+        raw_text: str,
+        text_clean: str,
+        *,
+        sleeve_label: str | None = None,
+        media_label: str | None = None,
     ) -> dict:
         """
         Fields for training filter and inference UX.
@@ -542,6 +589,10 @@ class Preprocessor:
         Returns keys: sleeve_note_adequate, media_note_adequate,
         adequate_for_training, description_quality_gaps (list[str]),
         description_quality_prompts (list[str]), needs_richer_note (bool).
+
+        When ``mint_sleeve_label_relax_sleeve_note`` is enabled in config and
+        ``sleeve_label`` is ``Mint``, sleeve adequacy also passes if the note
+        contains Mint listing phrases (sealed, shrink, brand new, …).
         """
         if not self.description_adequacy_enabled:
             return {
@@ -554,6 +605,13 @@ class Preprocessor:
             }
 
         sleeve_ok = self.sleeve_note_adequate(text_clean)
+        if (
+            not sleeve_ok
+            and self.mint_sleeve_label_relax_sleeve_note
+            and str(sleeve_label or "").strip() == "Mint"
+            and self._mint_listing_sleeve_relaxed_ok(raw_text, text_clean)
+        ):
+            sleeve_ok = True
         media_ok = self.media_note_adequate(raw_text)
         gaps: list[str] = []
         prompts: list[str] = []
@@ -706,7 +764,12 @@ class Preprocessor:
         processed["media_verifiable"] = media_verifiable
         processed["media_evidence_strength"] = media_evidence_strength
 
-        dq = self.compute_description_quality(raw_text, text_clean)
+        dq = self.compute_description_quality(
+            raw_text,
+            text_clean,
+            sleeve_label=str(record.get("sleeve_label") or ""),
+            media_label=str(record.get("media_label") or ""),
+        )
         processed.update(dq)
 
         # If text-based Generic detection fires but sleeve_label is not

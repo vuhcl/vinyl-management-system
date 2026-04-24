@@ -193,6 +193,38 @@ class TestDistributionReport:
 
 
 class TestRunMethod:
+    def test_run_strips_label_whitespace(
+        self, tmp_dirs, test_config, guidelines_path, sample_unified_records
+    ):
+        processed = tmp_dirs["processed"]
+        discogs_rec = {
+            "item_id": "padded_1",
+            "source": "discogs",
+            "text": (
+                "jacket has corner wear and ring wear, "
+                "vinyl plays cleanly with no pops"
+            ),
+            "sleeve_label": "  Very Good Plus  ",
+            "media_label": " Near Mint ",
+            "label_confidence": 1.0,
+        }
+        ebay_rec = next(
+            r for r in sample_unified_records if r["source"] == "ebay_jp"
+        )
+        with open(processed / "discogs_processed.jsonl", "w") as f:
+            f.write(json.dumps(discogs_rec) + "\n")
+        with open(processed / "ebay_processed.jsonl", "w") as f:
+            f.write(json.dumps(ebay_rec) + "\n")
+
+        h = LabelHarmonizer(
+            config_path=test_config,
+            guidelines_path=guidelines_path,
+        )
+        records = h.run(dry_run=True)
+        padded = next(r for r in records if r["item_id"] == "padded_1")
+        assert padded["sleeve_label"] == "Very Good Plus"
+        assert padded["media_label"] == "Near Mint"
+
     def test_run_dry_produces_records(
         self, harmonizer, discogs_jsonl, ebay_jsonl
     ):

@@ -320,7 +320,12 @@ class LabelHarmonizer:
         for record in records:
             raw = record.get("text", "") or ""
             text_clean = pre.clean_text(raw)
-            dq = pre.compute_description_quality(raw, text_clean)
+            dq = pre.compute_description_quality(
+                raw,
+                text_clean,
+                sleeve_label=str(record.get("sleeve_label") or ""),
+                media_label=str(record.get("media_label") or ""),
+            )
             if dq["adequate_for_training"]:
                 kept.append(record)
 
@@ -588,6 +593,11 @@ class LabelHarmonizer:
                         self._stats["drops"][drop_reason] += 1
                         self._stats["total_dropped"] += 1
                         continue
+
+                    for _k in ("sleeve_label", "media_label"):
+                        _v = record.get(_k)
+                        if isinstance(_v, str):
+                            record[_k] = _v.strip()
 
                     drop_reason = self.validate_grades(record)
                     if drop_reason:

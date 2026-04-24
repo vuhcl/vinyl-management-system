@@ -235,6 +235,8 @@ def test_config(tmp_dirs, guidelines_path):
                 "enabled": True,
                 "drop_insufficient_from_training": False,
                 "require_both_for_training": True,
+                # Tests call compute_description_quality without labels — keep strict.
+                "mint_sleeve_label_relax_sleeve_note": False,
                 "min_chars_sleeve_fallback": 56,
                 "user_prompt_sleeve": "Add sleeve detail.",
                 "user_prompt_media": "Add media detail.",
