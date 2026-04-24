@@ -251,8 +251,9 @@ class TestStratifiedOverrideAudit:
 class TestRegressionGuidelineFixtures:
     """
     Positive + adversarial fixtures pinned to the §13b/§14b edits:
-      - Poor strict media signals still fire on single match.
-      - Poor cosignal (``skipping``) requires corroboration.
+      - Poor strict media signals (including bare ``skip``) fire on
+        single match; negated/qualified ``skip*`` is blocked by
+        ``forbidden_signals``.
       - Poor forbidden softeners block catastrophic misfires.
       - Generic strict phrases fire alone; ambiguous ``white sleeve``
         requires corroboration.
@@ -320,6 +321,34 @@ class TestRegressionGuidelineFixtures:
             )
             is None
         )
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "it plays without problems (no jump / skip / repeat) some noise",
+            "surface marks but no jumps or skips, sides c/d vg+",
+            "deeper scuffs on side 3 that do not skip, still plays fine",
+            "plays through fine without any skips/sticking cover is vg+",
+            "plays through with minimal/no popping or skipping",
+            "needle does not jump or skip though",
+            "no deep scratches or skipping but lots of surface noise",
+            "the b-side is near mint without jumping or skipping",
+            "we clean but do not test 45s for any skips, plays fine",
+        ],
+    )
+    def test_poor_negated_skip_phrases_do_not_fire(self, engine, text):
+        assert engine.check_hard_override(text.lower(), "media") is None
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "just one skip on side a",
+            "repeating skip in the intro, rest is fine",
+            "disc 2 is cracked; cannot play without pops or skipping",
+        ],
+    )
+    def test_poor_affirmative_skip_phrases_still_fire(self, engine, text):
+        assert engine.check_hard_override(text.lower(), "media") == "Poor"
 
     def test_poor_not_warped_disclaimer_blocks(self, engine):
         # "not warped" is the explicit disclaimer — must block any
@@ -411,6 +440,33 @@ class TestRegressionGuidelineFixtures:
                 "cover is fully split along the spine", "sleeve"
             )
             == "Poor"
+        )
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "jacket spine is split all the way and nearly to the end",
+            "sleeve is split along all seams and held with tape on the spine",
+            "bottom half of front and back with full chunks of cardboard missing",
+            "sleeve is in good order but the seam is starting to separate on one side",
+        ],
+    )
+    def test_poor_sleeve_new_structural_strict_fires(
+        self, engine, text: str
+    ) -> None:
+        assert engine.check_hard_override(text.lower(), "sleeve") == "Poor"
+
+    def test_poor_sleeve_jacket_is_apart_from_does_not_fire_poor(
+        self, engine
+    ) -> None:
+        # "jacket is apart from …" is not structural failure — avoid
+        # matching a naive ``jacket is apart`` substring (not in config).
+        assert (
+            engine.check_hard_override(
+                "double album jacket is apart from the 1990s reissue",
+                "sleeve",
+            )
+            is None
         )
 
     def test_poor_sleeve_cosignal_water_damage_needs_corroboration(self, engine):

@@ -45,6 +45,51 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+# Emoji / pictograph / common dingbat decoration (before boilerplate rules).
+_EMOJI_AND_PICTO_RE = re.compile(
+    (
+        "["
+        "\U0001F1E0-\U0001F1FF"  # regional indicator / flags
+        "\U0001F300-\U0001F5FF"
+        "\U0001F600-\U0001F64F"
+        "\U0001F680-\U0001F6FF"
+        "\U0001F700-\U0001F7FF"
+        "\U0001F800-\U0001F8FF"
+        "\U0001F900-\U0001F9FF"
+        "\U0001FA00-\U0001FAFF"
+        "\U00002700-\U000027BF"  # dingbats
+        "\U00002600-\U000026FF"  # misc symbols (★, ☮, …)
+        "]+"
+    )
+)
+
+
+def normalize_seller_comment_text(
+    text: str,
+    *,
+    strip_urls: bool = True,
+    strip_emoji: bool = True,
+) -> str:
+    """
+    Run before :meth:`DiscogsIngester.strip_boilerplate_from_notes` — collapse
+    ``___`` underlines, ``http(s)`` and ``www.`` URLs, the ``links:`` label, and
+    emoji / pictographic symbols. Whitespace is collapsed; empty string if input is
+    empty after trim.
+    """
+    s = (text or "").strip()
+    if not s:
+        return ""
+    s = re.sub(r"_{3,}", " ", s)
+    if strip_urls:
+        s = re.sub(r"(?i)\blinks:\s*", " ", s)
+        s = re.sub(r"https?://\S+", " ", s, flags=re.IGNORECASE)
+        s = re.sub(r"\bwww\.\S+", " ", s, flags=re.IGNORECASE)
+    if strip_emoji:
+        s = _EMOJI_AND_PICTO_RE.sub(" ", s)
+    s = re.sub(r"\s+", " ", s).strip()
+    return s
+
+
 # Defaults for generic seller-note filter (overridable via grader.yaml).
 _DEFAULT_GENERIC_NOTE_PATTERNS: tuple[str, ...] = (
     "check out our other",
@@ -74,12 +119,10 @@ _DEFAULT_GENERIC_NOTE_PATTERNS: tuple[str, ...] = (
     "combined shipping",
     "discount on shipping",
     "us shipping",
-    "buy 3 or more items",
     "buy 6 or more items",
     "get a 10% discount",
     "get a 20% discount",
     "discount price will be refund after payment",
-    "all products are shipped",
     "shipped from our us hub",
     "from our us hub",
     # Common shop header/footer (profile / policies), e.g.:
@@ -112,6 +155,66 @@ _DEFAULT_GENERIC_NOTE_PATTERNS: tuple[str, ...] = (
     "collection]",
     # Price / shipping promo fragments in seller headers
     "$6 /",
+    # ——— Extended promos (sale history + marketplace) — see generic_note_filter in grader.yaml
+    "whiplash mailers",
+    "new kensington",
+    "img.facerecords.com",
+    "facerecords-discogs-grading",
+    "lostracks records barcelona",
+    "summer sale! all vinyl marked down",
+    "* buy 5 get cheapest free *",
+    "gratitude and good beats sale!",
+    "contact me if you need pics",
+    "washed for free with my ultrasonic machine",
+    "unlimited $5",
+    "change currency",
+    "free shipping for orders over $50 or more than 5 items",
+    "thousands of records in store, collect in the shop",
+    "not adapt offer price",
+    "dhl from japan",
+    "ship all over world via dhl",
+    "secure packaging",
+    "tracking always provided",
+    "secured quality packaging",
+    "inner cardboard stiffeners",
+    "$6 shipping for first 3 45rpm",
+    "[ u.s.a address ]",
+    "lovers rock!",
+    "valentines day",
+    "record has been play tested to ensure accuracy in grading",
+    "$6 shipping on any size order",
+    "free for u.s orders over $75",
+    "links:",
+    "www.recorddude.com",
+    "therecorddude",
+    "tinyurl.com/therecorddude-ebay",
+    "handsome zacks labor day sale",
+    "marked down an additional 20%",
+    "hzr's workin' hard",
+    "labor day sale",
+    "track all international orders",
+    "bubble wrap and sturdy cardboard boxes are a great way to protect all orders",
+    "please do not pay automatically when you make the purchase",
+    "invoice manually through discogs",
+    "many thanks for your collaboration",
+    "pickup possible at smallville records hamburg",
+    "smallville records hamburg",
+    "!..check out our great shipping rates for",
+    "demonfuzz",
+    "save on shipping",
+    "pics & clips upon request",
+    "shipped with insurance which we will cover for united states delivery",
+    "international postage must be sent registered with insurance paid by buyer",
+    "please visit my store for more blues",
+    "little junior parker 45's",
+    "singles (us only) for $5.00",
+    'any amount of 7" singles',
+    "message me if you have further questions",
+    "conservatively graded",
+    # Extra shop / logistics tails (sale history + marketplace)
+    "ships same day",
+    "ships worldwide",
+    "insured shipping",
 )
 _DEFAULT_ITEM_SPECIFIC_HINTS: tuple[str, ...] = (
     "scratch",
@@ -211,7 +314,8 @@ class DiscogsIngester:
         data.discogs.inventory_send_limit_param — also send limit= (website mirror)
         data.discogs.inventory_format_api_param — send format=… on inventory GET
         data.discogs.vinyl_format_filter_stage — ``fetch`` (default) vs ``post_patch``
-        data.discogs.generic_note_filter — boilerplate drop, strip_boilerplate, patterns
+        data.discogs.generic_note_filter — boilerplate drop, strip_boilerplate, patterns,
+            strip_urls, strip_emoji (normalize before ``strip_boilerplate``)
         paths.raw                   — raw output directory
         paths.processed             — processed output directory
         mlflow.tracking_uri
@@ -326,6 +430,8 @@ class DiscogsIngester:
             _DEFAULT_PRESERVATION_KEYWORDS if _k is None else _k
         )
         self.strip_boilerplate_enabled: bool = bool(gnf.get("strip_boilerplate", True))
+        self.strip_seller_comment_urls: bool = bool(gnf.get("strip_urls", True))
+        self.strip_seller_comment_emoji: bool = bool(gnf.get("strip_emoji", True))
         # fetch: drop non-vinyl during inventory fetch (default). post_patch: keep
         # all formats until after label patches; pipeline runs vinyl_format filter
         # on discogs_processed.jsonl.
@@ -742,6 +848,13 @@ class DiscogsIngester:
         """
         return self.condition_map.get(raw_condition)
 
+    def _normalize_seller_comment_text(self, text: str) -> str:
+        return normalize_seller_comment_text(
+            text,
+            strip_urls=self.strip_seller_comment_urls,
+            strip_emoji=self.strip_seller_comment_emoji,
+        )
+
     def _detect_media_verifiable(self, text: str) -> bool:
         """
         Returns False if seller notes contain any unverified media signal.
@@ -862,13 +975,14 @@ class DiscogsIngester:
         The raw listing structure is preserved in raw_sleeve / raw_media
         so labels can be re-derived if the condition map changes.
         """
-        # Extract condition fields
-        raw_sleeve = listing.get("sleeve_condition", "")
-        raw_media = listing.get("condition", "")  # Discogs uses "condition" for media
+        # Extract condition fields — strip so condition_map matches SQLite/API padding.
+        raw_sleeve = (listing.get("sleeve_condition") or "").strip()
+        raw_media = (listing.get("condition") or "").strip()  # Discogs: "condition" = media
 
-        # Extract seller notes; strip shop boilerplate before filters & output
+        # Extract seller notes: normalize (URLs, emoji) then shop boilerplate.
         raw_comments = listing.get("comments", "") or ""
-        text = self.strip_boilerplate_from_notes(raw_comments)
+        work = self._normalize_seller_comment_text(raw_comments)
+        text = self.strip_boilerplate_from_notes(work)
 
         # Apply filters — return None with logged reason on failure
         drop_reason = self._get_drop_reason(text, raw_sleeve, raw_media)

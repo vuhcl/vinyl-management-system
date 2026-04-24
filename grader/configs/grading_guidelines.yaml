@@ -12,6 +12,11 @@
 # Deliberate deviations from official standards are
 # documented inline. This file is the single source of
 # truth for all grading logic.
+#
+# Track B (rule iteration): pair each behavioral change with regression
+# tests in grader/tests/test_rule_engine.py and
+# grader/tests/test_grade_analysis_slice.py — see grader/README.md
+# "Rule-engine iteration loop".
 # ============================================================
 
 # ------------------------------------------------------------
@@ -794,14 +799,21 @@ grades:
       split into ``strict`` (any single match fires) and
       ``cosignal`` (requires another distinct signal from the
       same grade's strict or cosignal list as corroboration).
-      Policy on skips: Good's rubric explicitly says the disc
-      "plays through", so any skip (``skip``, ``skipping``,
-      ``skips throughout``, plural skip phrasings, etc.) is by
-      definition below Good. They are therefore strict Poor
-      hard signals. The only legitimate non-Poor skip is a
-      setup-dependent / inconsistent one ("only skips on one
-      turntable", "skip depending on the turntable and tonearm
-      weight"), which is handled by entries in
+      Policy on skips: an **affirmative** playback skip (any
+      phrasing that asserts the disc actually skips, including
+      ``skip``, ``skips``, ``skipping``, ``skipped``,
+      ``repeating skip``, etc.) is strict Poor: Good's rubric
+      says the disc "plays through", so the model may label
+      such a note Good, but the rule is allowed to hold Poor.
+      **Negated, qualified, or list boilerplate** that merely
+      mentions the word (e.g. "no skips", "no jump / skip /
+      repeat", "without any skips", "does not skip", slash or
+      "or … skipping" denials) must **not** fire Poor — those
+      are handled by multi-word ``forbidden_signals`` (and
+      rare ``forbidden_exceptions_media``), not by demoting
+      bare ``skip*`` to cosignal. The only other non-Poor skip
+      class is **setup-dependent** phrasing (``only skips on
+      one turntable``, etc.), which is also in
       ``forbidden_signals``. Sleeve and media are graded
       independently via per-target ``hard_signals_*_sleeve`` /
       ``hard_signals_*_media`` lists so that playback wording
@@ -853,6 +865,10 @@ grades:
       - falling apart
       - in pieces
       - disintegrated
+      - split all the way
+      - split along all seams
+      - chunks of cardboard missing
+      - seam is starting to separate
     hard_signals_cosignal_sleeve:
       - heavy water damage
       - severe water damage
@@ -868,13 +884,31 @@ grades:
       - without skipping
       - no skip
       - no skips
+      - no jumps or skips
       - without skips
+      - without any skips
       - don't skip
       - doesnt skip
       - doesn't skip
+      - does not skip
+      - do not skip
+      - does not jump or skip
+      - doesn't jump or skip
       - never skips
       - not skipping
       - not skipped
+      - no jump / skip / repeat
+      - minimal/no popping or skipping
+      - no deep scratches or skipping
+      - without jumping or skipping
+      - no repeating clicks or skips
+      - no warps or skips
+      - no pops, clicks or skips
+      - if there are any skips or repeats
+      - might skip
+      - skips may be possible
+      - do not test 45s for any skips
+      - does not test 45s for any skips
       # Inconsistent / setup-dependent playback — per user guidance,
       # the only legitimate reason a stated skip should NOT fire Poor
       # is when the seller tells us the skip is not reproducible on
@@ -946,15 +980,21 @@ grades:
       match fires) and ``cosignal`` (ambiguous — requires
       corroboration from another strict or cosignal signal).
       The split targets false-positive drivers like bare
-      ``white sleeve`` / ``plain sleeve``, which the user
-      flagged as grammatically ambiguous (inner sleeves vs
-      housing sleeves) and should not fire Generic alone.
+      ``white sleeve`` / ``black sleeve`` / ``plain sleeve`` /
+      ``plain … jacket`` / ``plain cover`` / ``white label``,
+      which are often grammatically ambiguous (inner vs outer
+      housing). ``white label`` is cosignal-only so it does not
+      fire alone—WL/promo listings often *do* use generic sleeves,
+      so combine with another cue or a strict line. WL/promo
+      listings are not excluded from Generic on that basis alone.
       Note: a Generic sleeve can still have a condition
       sub-note in the seller text (e.g. "generic sleeve, VG+")
       — in that case, Generic is the sleeve grade. The
       condition sub-note is preserved in seller notes only.
     # Strict: unambiguous "no original cover" wording — any one match fires.
     hard_signals_strict:
+      - generic matte black sleeve
+      - generic one-sheet sleeve
       - generic sleeve
       - generic cover
       - generic jacket
@@ -972,17 +1012,27 @@ grades:
       - replacement cover
       - stock sleeve
     # Cosignal: ambiguous phrases that must corroborate with another strict /
-    # cosignal signal. ``white sleeve`` often refers to a white *inner* sleeve
-    # paired with an original jacket; ``plain sleeve`` / ``die-cut sleeve``
-    # likewise. ``promo sleeve`` / ``promotional sleeve`` / ``inner sleeve
+    # cosignal signal. ``white sleeve`` / ``black sleeve`` often refer to a
+    # *inner* or *company* paper sleeve paired with an original jacket;
+    # ``plain sleeve`` / ``plain cover`` / ``plain … jacket`` likewise.
+    # ``white label`` is cosignal-only so it never fires Generic alone; WL
+    # promos often ship in generic/plain housings, so we do **not** forbid
+    # ``white label promo``. Pair with another cue when the listing also
+    # mentions an original jacket, or use strict lines. ``promo sleeve``
+    # / ``promotional sleeve`` / ``inner sleeve
     # only`` are demoted per plan §11 because promos can ship with original
     # art and "inner sleeve only" is sometimes a condition sub-note on the
     # inner paper rather than a housing statement. They only indicate Generic
     # when another cue is present.
     hard_signals_cosignal:
+      - black sleeve
       - white sleeve
+      - plain black jacket
+      - plain cover
       - plain sleeve
       - plain white
+      - plain white jacket
+      - white label
       - die-cut sleeve
       - die cut sleeve
       - promo sleeve

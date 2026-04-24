@@ -57,7 +57,7 @@ ebay:
 # ------------------------------------------------------------
 data:
   harmonization:
-    min_samples_per_class: 50      # warn if any class falls below this
+    min_samples_per_class: 500      # warn if any class falls below this
     output_path: grader/data/processed/unified.jsonl
     report_path: grader/reports/class_distribution.txt
     # Drop description-thin rows using the same rules as preprocess
@@ -72,6 +72,25 @@ data:
   sale_history:
     sqlite_path: price_estimator/data/cache/sale_history.sqlite
     processed_jsonl: grader/data/processed/discogs_sale_history.jsonl
+    # Optional SQLite prefetch before parse (biased prefix unless full table).
+    # sql_sample_order applies only when sql_prefetch_limit > 0: ordered (default)
+    # or random (ORDER BY RANDOM() — costly on huge DBs).
+    sql_prefetch_limit: null
+    sql_sample_order: ordered
+    # After parse + enrich: cap rows per (sleeve_label, media_label), then optional
+    # per sleeve_label, then optional global cap.
+    max_rows_per_joint_grade: 5000
+    joint_sample_seed: 42
+    # Cap rows per sleeve_label (aggregated over media); runs after joint cap.
+    max_rows_per_sleeve_grade: 30000
+    # Omit or null to use joint_sample_seed + 100003 for the sleeve-stratum shuffle.
+    sleeve_stratum_sample_seed: null
+    # When the sleeve cap fires: if true, split that sleeve's row budget across
+    # media_label values as evenly as counts allow (then shuffle within each).
+    # If false (default), one shuffle over all rows for that sleeve (dominant
+    # (sleeve, media) pairs can take most of the cap).
+    balance_joint_within_sleeve_trim: true
+    max_total_sale_history_rows: 200000
     # Join release_id → price_estimator feature store (format_desc / formats_json).
     feature_store_path: price_estimator/data/feature_store.sqlite
     enrich_from_feature_store: true
@@ -106,7 +125,7 @@ data:
     inventory_sort_order: desc
     # Send format=Vinyl (etc.) on inventory GET — not in official docs; if 400, we retry without.
     inventory_format_api_param: true
-    target_per_grade:   30000        # max listings to fetch per canonical grade
+    target_per_grade:   20000        # max listings to fetch per canonical grade
                                    # grades: Mint, Near Mint, VG+, VG, Good, Poor
                                    # Excellent excluded — Discogs has no EX grade
                                    # Generic excluded — not a searchable condition
@@ -115,6 +134,11 @@ data:
       enabled: true
       # Remove boilerplate sentences/lines from saved ``text`` (same patterns as drop).
       strip_boilerplate: true
+      # Strip http(s) / ``www.`` and emoji/dingbats before pattern matching (see
+      # ``grader/src/data/ingest_discogs.py``: ``normalize_seller_comment_text``,
+      # ``_DEFAULT_GENERIC_NOTE_PATTERNS``). Set false to ablate without forking code.
+      strip_urls: true
+      strip_emoji: true
       # If any pattern matches (case-insensitive) and the note lacks item-specific
       # hints, the row is dropped — unless sleeve/media is Mint or preservation
       # keywords (sealed, shrink, …) appear in the comment.
@@ -161,7 +185,7 @@ data:
   # Train/val/test split ratios — must sum to 1.0
   # Stratified by sleeve_label and media_label jointly
   splits:
-    train:        0.70
+    train:        0.7
     val:          0.15
     test:         0.15
     stratify_by:  [sleeve_label, media_label]
@@ -213,6 +237,12 @@ preprocessing:
     enabled:                        true
     drop_insufficient_from_training: true
     require_both_for_training:      true
+    # When sleeve_label is Mint, treat short sealed / Mint-ish copy as sleeve-adequate
+    # (see preprocess.compute_description_quality). Legacy key
+    # mint_both_labels_relax_sleeve_note is still read if this key is omitted.
+    mint_sleeve_label_relax_sleeve_note: true
+    # Optional extra substrings (lowercased) for Mint-sleeve relaxation only.
+    # mint_sleeve_note_relax_extra_terms: []
     # If the note is at least this long (cleaned text) and has no sleeve
     # keywords, still count sleeve as adequate (avoids dropping long notes).
     min_chars_sleeve_fallback:      56
@@ -343,6 +373,11 @@ evaluation:
   # rule-adjusted prediction is Excellent. Override audit still uses raw
   # before/after.
   excellent_eval_use_model_prediction: true
+  # Optional: which splits get rule-engine eval in pipeline step 9 (default:
+  # test + test_thin). Uncomment the next two lines for fast Track B
+  # iteration when test_thin is huge (writes a smaller rule_engine_baseline.json).
+  # rule_eval_splits:
+  #   - test
 
 # ------------------------------------------------------------
 # MLflow

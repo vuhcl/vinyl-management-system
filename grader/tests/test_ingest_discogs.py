@@ -12,6 +12,7 @@ from grader.src.data.ingest_discogs import (
     _DEFAULT_GENERIC_NOTE_PATTERNS,
     _DEFAULT_ITEM_SPECIFIC_HINTS,
     _DEFAULT_PRESERVATION_KEYWORDS,
+    normalize_seller_comment_text,
 )
 
 
@@ -152,6 +153,43 @@ class TestGenericSellerNotes:
         assert reason is None
 
 
+class TestNormalizeSellerCommentText:
+    def test_strips_urls_www_and_links(self):
+        s = "links: https://example.com/a and www.test.org/x ok"
+        out = normalize_seller_comment_text(s)
+        assert "http" not in out.lower()
+        assert "www." not in out.lower()
+        assert "links" not in out.lower()
+        assert "ok" in out.lower()
+
+    def test_strips_emoji_marks_underscores(self):
+        s = "________vg+ with ★ and 💯 and hairline"
+        out = normalize_seller_comment_text(s)
+        assert "💯" not in out
+        assert "★" not in out
+        assert "___" not in out
+        assert "hairline" in out.lower()
+        assert "vg+" in out.lower()
+
+    def test_respects_strip_url_off(self):
+        t = normalize_seller_comment_text(
+            "a https://x.com b", strip_urls=False, strip_emoji=True
+        )
+        assert "https" in t
+
+    def test_respects_strip_emoji_off(self):
+        t = normalize_seller_comment_text(
+            "a ★ b", strip_urls=True, strip_emoji=False
+        )
+        assert "★" in t
+
+    def test_disables_both_strips(self):
+        raw = "see https://a.com/ ★"
+        t = normalize_seller_comment_text(raw, strip_urls=False, strip_emoji=False)
+        assert "https" in t
+        assert "★" in t
+
+
 class TestUnverifiedMediaDetection:
     def test_unplayed_is_unverified(self, ingester):
         result = ingester._detect_media_verifiable("sealed, unplayed")
@@ -222,6 +260,24 @@ class TestStripBoilerplateNotes:
         assert "details and pictures" not in out
         assert "mentioned in the item description" not in out
 
+    def test_strips_ships_same_day_boilerplate(self, ingester_strip):
+        raw = (
+            "Light hairline on side a. We offer ships same day when paid before noon."
+        )
+        out = ingester_strip.strip_boilerplate_from_notes(raw).lower()
+        assert "hairline" in out
+        assert "ships same day" not in out
+
+    def test_strips_buy_five_get_cheapest_free(self, ingester_strip):
+        raw = (
+            "Light hairline on side a. * buy 5 get cheapest free * "
+            "Extra text about nothing important."
+        )
+        out = ingester_strip.strip_boilerplate_from_notes(raw).lower()
+        assert "hairline" in out
+        assert "buy 5" not in out
+        assert "get cheapest" not in out
+
     def test_strips_promo_and_refund_spam_keeps_condition(self, ingester_strip):
         raw = (
             "[HALF OFF! Marked for deletion 3/23] [NEW LOW PRICE MARCH 15] "
@@ -261,6 +317,45 @@ class TestStripBoilerplateNotes:
 
 
 class TestParseListing:
+    def test_parse_listing_strips_condition_whitespace(self, ingester):
+        """Padded Discogs / SQLite condition strings still map via condition_map."""
+        ingester._stats = {"drops": {}}
+        listing = {
+            "id": 999,
+            "condition": "  Near Mint (NM or M-)  ",
+            "sleeve_condition": " Very Good Plus (VG+) ",
+            "comments": (
+                "Light hairline under bright light; jacket shows minor ring wear "
+                "and plays cleanly with no pops or skips."
+            ),
+            "release": {"artist": "A", "title": "T"},
+        }
+        r = ingester.parse_listing(listing)
+        assert r is not None
+        assert r["sleeve_label"] == "Very Good Plus"
+        assert r["media_label"] == "Near Mint"
+        assert r["raw_sleeve"] == "Very Good Plus (VG+)"
+        assert r["raw_media"] == "Near Mint (NM or M-)"
+
+    def test_parse_listing_strips_urls_before_text(self, ingester):
+        """``normalize_seller_comment_text`` runs before ``strip_boilerplate``."""
+        ingester._stats = {"drops": {}}
+        listing = {
+            "id": 1,
+            "condition": "Near Mint (NM or M-)",
+            "sleeve_condition": "Very Good Plus (VG+)",
+            "comments": (
+                "Light hairline under bright light and see photos at "
+                "https://example.com/photo for detail."
+            ),
+            "release": {"artist": "A", "title": "T"},
+        }
+        r = ingester.parse_listing(listing)
+        assert r is not None
+        assert "http" not in r["text"]
+        assert "https" not in r["text"]
+        assert "hairline" in r["text"].lower()
+
     def test_valid_listing_parsed(self, ingester, sample_discogs_listing):
         ingester._stats = {"drops": {}}
         result = ingester.parse_listing(sample_discogs_listing)

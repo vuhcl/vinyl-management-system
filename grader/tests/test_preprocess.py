@@ -7,8 +7,10 @@ adaptive stratified splitting.
 """
 
 import re
+from pathlib import Path
 
 import pytest
+import yaml
 
 from grader.src.data.preprocess import Preprocessor
 
@@ -304,12 +306,119 @@ class TestDescriptionQuality:
         assert dq["sleeve_note_adequate"] is True
         assert dq["media_note_adequate"] is False
 
+    def test_mint_mint_short_note_sleeve_relaxed_when_enabled(
+        self, test_config, guidelines_path
+    ):
+        with Path(test_config).open(encoding="utf-8") as f:
+            cfg = yaml.safe_load(f)
+        cfg["preprocessing"]["description_adequacy"][
+            "mint_sleeve_label_relax_sleeve_note"
+        ] = True
+        pre = Preprocessor("unused.yaml", guidelines_path, config=cfg)
+        text = "brand new, sealed"
+        cleaned = pre.clean_text(text)
+        dq = pre.compute_description_quality(
+            text, cleaned, sleeve_label="Mint", media_label="Mint"
+        )
+        assert dq["sleeve_note_adequate"] is True
+        assert dq["media_note_adequate"] is True
+        assert dq["adequate_for_training"] is True
+
+    def test_mint_sleeve_near_mint_media_short_note_relaxed_when_enabled(
+        self, test_config, guidelines_path
+    ):
+        with Path(test_config).open(encoding="utf-8") as f:
+            cfg = yaml.safe_load(f)
+        cfg["preprocessing"]["description_adequacy"][
+            "mint_sleeve_label_relax_sleeve_note"
+        ] = True
+        pre = Preprocessor("unused.yaml", guidelines_path, config=cfg)
+        text = "brand new, sealed"
+        cleaned = pre.clean_text(text)
+        dq = pre.compute_description_quality(
+            text,
+            cleaned,
+            sleeve_label="Mint",
+            media_label="Near Mint",
+        )
+        assert dq["sleeve_note_adequate"] is True
+        assert dq["media_note_adequate"] is True
+        assert dq["adequate_for_training"] is True
+
+    def test_mint_mint_relax_off_short_note_still_thin_sleeve(
+        self, preprocessor
+    ):
+        text = "brand new, sealed"
+        cleaned = preprocessor.clean_text(text)
+        dq = preprocessor.compute_description_quality(
+            text, cleaned, sleeve_label="Mint", media_label="Mint"
+        )
+        assert dq["sleeve_note_adequate"] is False
+
+    def test_near_mint_sleeve_short_note_not_relaxed_even_when_enabled(
+        self, test_config, guidelines_path
+    ):
+        with Path(test_config).open(encoding="utf-8") as f:
+            cfg = yaml.safe_load(f)
+        cfg["preprocessing"]["description_adequacy"][
+            "mint_sleeve_label_relax_sleeve_note"
+        ] = True
+        pre = Preprocessor("unused.yaml", guidelines_path, config=cfg)
+        text = "brand new, sealed"
+        cleaned = pre.clean_text(text)
+        dq = pre.compute_description_quality(
+            text,
+            cleaned,
+            sleeve_label="Near Mint",
+            media_label="Mint",
+        )
+        assert dq["sleeve_note_adequate"] is False
+
+    def test_legacy_mint_both_labels_config_key_still_honored(
+        self, test_config, guidelines_path
+    ):
+        with Path(test_config).open(encoding="utf-8") as f:
+            cfg = yaml.safe_load(f)
+        da = cfg["preprocessing"]["description_adequacy"]
+        da.pop("mint_sleeve_label_relax_sleeve_note", None)
+        da["mint_both_labels_relax_sleeve_note"] = True
+        pre = Preprocessor("unused.yaml", guidelines_path, config=cfg)
+        text = "brand new, sealed"
+        cleaned = pre.clean_text(text)
+        dq = pre.compute_description_quality(
+            text,
+            cleaned,
+            sleeve_label="Mint",
+            media_label="Very Good Plus",
+        )
+        assert dq["sleeve_note_adequate"] is True
+
     def test_process_record_has_quality_fields(
         self, preprocessor, sample_unified_records
     ):
         r = preprocessor.process_record(sample_unified_records[0])
         assert "sleeve_note_adequate" in r
         assert "description_quality_prompts" in r
+
+    def test_process_record_mint_sleeve_short_note_when_relax_on(
+        self, test_config, guidelines_path
+    ):
+        with Path(test_config).open(encoding="utf-8") as f:
+            cfg = yaml.safe_load(f)
+        cfg["preprocessing"]["description_adequacy"][
+            "mint_sleeve_label_relax_sleeve_note"
+        ] = True
+        pre = Preprocessor("unused.yaml", guidelines_path, config=cfg)
+        r = pre.process_record(
+            {
+                "item_id": "mint_short",
+                "source": "discogs",
+                "text": "brand new, sealed",
+                "sleeve_label": "Mint",
+                "media_label": "Near Mint",
+            }
+        )
+        assert r["adequate_for_training"] is True
 
 
 @pytest.mark.usefixtures("unified_jsonl_path")

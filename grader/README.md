@@ -243,6 +243,8 @@ uv run python -m grader.src.models.transformer
      --skip-baseline --skip-transformer
    ```
 
+   If `test_thin` is huge, set `evaluation.rule_eval_splits: [test]` in `grader.yaml` (uncomment the stub there) so step 9 only scores `test` and finishes quickly; restore `test` + `test_thin` for full coverage before you commit.
+
 2. **Regenerate the diagnostic CSVs** for the split under review:
 
    ```bash
@@ -252,7 +254,12 @@ uv run python -m grader.src.models.transformer
 
    Outputs land under `grader/reports/harmful_overrides_{split}.csv` and `grader/reports/missed_rule_owned_{split}_{target}.csv`. The missed-rows exporter emits two diagnostic booleans — `hard_signal_pre_forbidden` (would any hard signal match, ignoring forbiddens?) and `hard_signal_post_forbidden` (what the engine actually did) — so rows categorize cleanly into *missing pattern* (both false) vs *over-eager forbidden* (pre true, post false).
 
-3. **Diff the baseline** against the prior iteration's `rule_engine_baseline.json` (git history or a saved copy) and open MLflow tags keyed `rule_baseline_*` in parallel. Focus on the rule-owned `by_after` buckets (`Poor`, `Generic`) and the corresponding `slice_recall_adjusted`.
+3. **Diff the baseline** against the prior iteration's `rule_engine_baseline.json` (git history or a saved copy) and open MLflow tags keyed `rule_baseline_*` in parallel. Use `python -m grader.src.eval.diff_rule_engine_baseline <before> <after>`; it understands the on-disk `splits` shape from `_write_rule_engine_baseline`. Focus on the rule-owned `by_after` buckets (`Poor`, `Generic`) and `slice_recall` / `recall_adjusted`.
+
+  ```bash
+  python -m grader.src.eval.diff_rule_engine_baseline <before> <after>
+  ```
+
 
 4. **Edit `grader/configs/grading_guidelines.yaml`**. For every change, pair a positive and an adversarial fixture in [`grader/tests/test_grade_analysis_slice.py`](grader/tests/test_grade_analysis_slice.py) (`TestRegressionGuidelineFixtures`) or [`test_rule_engine.py`](grader/tests/test_rule_engine.py). The `hard_signals_strict` / `hard_signals_cosignal` split (and the per-target `_sleeve` / `_media` variants) is the primary tuning surface — prefer demoting phrases to `cosignal` over widening `forbidden_signals`, because cosignal requires *evidence* rather than *absence of counter-evidence*.
 
