@@ -36,7 +36,10 @@ import yaml
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.preprocessing import LabelEncoder
 
-from grader.src.data.preprocess import Preprocessor
+from grader.src.data.preprocess import (
+    Preprocessor,
+    build_protected_term_token_patterns,
+)
 from grader.src.mlflow_tracking import (
     mlflow_log_artifacts_enabled,
     mlflow_pipeline_step_run_ctx,
@@ -274,6 +277,22 @@ class TFIDFFeatureBuilder:
         handles edge cases where preprocess.py was not run.
         """
         pp_cfg = self.config.get("preprocessing", {})
+        protected_term_patterns: dict[str, re.Pattern[str]] | None = None
+        gp = self.config.get("rules", {}).get("guidelines_path")
+        if gp:
+            try:
+                with open(gp, "r", encoding="utf-8") as gf:
+                    guidelines = yaml.safe_load(gf)
+                if isinstance(guidelines, dict):
+                    protected_term_patterns = (
+                        build_protected_term_token_patterns(guidelines)
+                    )
+            except OSError as exc:
+                logger.warning(
+                    "Could not load guidelines for TF-IDF promo gating (%s): %s",
+                    gp,
+                    exc,
+                )
         texts = []
         for record in records:
             text = record.get("text_clean") or record.get("text", "")
@@ -281,6 +300,7 @@ class TFIDFFeatureBuilder:
                 Preprocessor.normalize_text_for_tfidf(
                     text,
                     preprocessing_cfg=pp_cfg,
+                    protected_term_patterns=protected_term_patterns,
                 )
             )
         return texts

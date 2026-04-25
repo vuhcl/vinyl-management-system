@@ -63,6 +63,23 @@ class TestExtractTextStrayDigits:
         assert "6" not in texts[0].split()
         assert "sealed" in texts[0]
 
+    def test_extract_texts_preserves_bracket_when_inner_has_protected_token(
+        self, builder
+    ):
+        """Gated ``[]`` stripping matches preprocess (guidelines patterns)."""
+        raw = "before [vg+ with light scratch] after"
+        records = [
+            {
+                "text_clean": "",
+                "text": raw,
+                "sleeve_label": "Mint",
+                "media_label": "Mint",
+            }
+        ]
+        texts = builder.extract_texts(records)
+        assert "scratch" in texts[0]
+        assert "[" in texts[0]
+
 
 class TestVectorizerFitting:
     def test_vectorizer_fits_on_train(

@@ -12,7 +12,10 @@ Transformation order (strictly enforced):
   3. Lowercase
   4. Normalize whitespace
   5. Strip listing promo / shipping boilerplate (markdown, brackets, regex
-     templates, configured phrase chunks) — on lowercased collapsed text
+     templates, configured phrase chunks) — on lowercased collapsed text.
+     When protected-term patterns are supplied, ``###…###``, ``[…]``, and
+     promo-gated ``***…***`` spans whose inner text matches a protected
+     whole-token pattern are left intact to avoid dropping real defects.
   6. Optionally strip leading catalog digit before condition words
      (``strip_stray_numeric_tokens``)
   7. Expand abbreviations             — after lowercase
@@ -56,6 +59,13 @@ logger = logging.getLogger(__name__)
 # Listing promo / shipping noise (shared with TF-IDF extract_texts)
 # ---------------------------------------------------------------------------
 _DEFAULT_PROMO_NOISE_PATTERNS: tuple[str, ...] = (
+    "**all $1 & $2 items = buy 2 get 1 free !! note: price deduction will be "
+    "made on the least priced items in the order post-invoice so please "
+    "refrain from making payment until final subtotal is adjusted**",
+    '/all sealed items are sold "one way / as is" and cannot be returned or '
+    "exchanged",
+    'all sealed items are sold "one way / as is" and cannot be returned or '
+    "exchanged",
     "all items sent securely in a double padded mailer with the vinyl "
     "separated from the sleeve (unless sealed)",
     "if not completely satisfied send back for a full refund at our expense",
@@ -65,6 +75,7 @@ _DEFAULT_PROMO_NOISE_PATTERNS: tuple[str, ...] = (
     "everything has been marked down 75% for another 24 hours ship up to "
     "20 records in usa for only $5!! all orders over $25 cleaned on vpi!",
     "summer sale! all vinyl marked down 20%+ unlimited $5--",
+    "summer sale 10% off storewide 1 week only!",
     "packed safely, shipped promptly! lp's are shipped in custom boxes for "
     "reinforced protection",
     "customs friendly",
@@ -72,6 +83,71 @@ _DEFAULT_PROMO_NOISE_PATTERNS: tuple[str, ...] = (
     "warehouse back stock",
     "always shipped with domestic tracking",
     "full refund",
+    "post x4 records for the same price as shipping one record",
+    "100 000+ items in our shop in upminster essex (district line / m25)",
+    "- 1000's more records & cds at our shop in upminster essex",
+    "100 000+ items in our shop",
+    "you can collect in store we buy records!",
+    "cleaned in a degritter - the best ultrasonic record cleaning",
+    "disc stored in anti static inner",
+    "ultrasonic cleaned",
+    "vpi vacuumed",
+    "shipped in sturdy whiplash mailer",
+    "whiplash mailer",
+    "international buyers message me for your shipping quote",
+    "qualify for free shipping",
+    "less than half of our inventory is posted here!",
+    "we're a real record store near pittsburgh pa",
+    "read seller terms!",
+    "cds ship in cardboard!",
+    "$9 flat shipping!",
+    "scoop purchase limited time buy 6x12\" singles get 6x12\" singles free "
+    "( cheapest free )",
+    "buy this copy today",
+    "uk post only",
+    "uk mainland customers 1-7 lp/12\" or 30 7\" singles same p&p combine & "
+    "save*",
+    "* -accurate grading or refund*",
+    "*buy 5 get cheapest free*",
+    "jacksonville pressing",
+    "all fair offers accepted",
+    "⭐",
+    "$5 unlimited shipping in usa",
+    "postal charges reflect quality care and services used",
+    "we're marrs plectrum records official rsd real world indie shop in "
+    "peterborough uk",
+    "we\u2019re marrs plectrum records official rsd real world indie shop in "
+    "peterborough uk",
+    "all orders in uk sent first class",
+    "europe/worldwide with tracking",
+    "we only use quality mailers",
+    "ship throughout the week",
+    "we do this professionally",
+    "recorded delivery",
+    "pics available upon request",
+    "cheapest price",
+    "accepting paypal credit",
+    "pay in 3",
+    "watch my cleaning process here",
+    "orders over $60 ship for $6",
+    "free shipping on usa orders over $30",
+    "flatrate shipping rates to all 6 continents",
+    "from our us-hub",
+    "check my other black sabbath records and combine shipping !!!",
+    "buy 12 records and get the cheapest for free",
+    "you will receive 2 free records in the same style",
+    "free shipping: above 145 euro in europe (eu)",
+    "check out our big stock of house techno trance disco & more",
+    "pick up in barcelona possible",
+    "cheap worldwide shipping price",
+    "regular 1-5lp is the same shipping cost (2lp count as 2) gatefold sleeves "
+    "is as well",
+    "*was £295 27th jun '25 reduced 8th jun '25 £282 7th aug '25 £275 22nd aug "
+    "'25 £269 5th sep '25 reduced 10th oct '25*",
+    "superlow shipping prices to the europe and the us",
+    "label variation",
+    "orders usually processed within 24-48 hours",
+    "in business since 1979",
 )
 
 # Currency amount in seller promo/shipping boilerplate (already lowercased).
@@ -98,6 +174,202 @@ _RE_UNLIMITED_USA_SHIP_BANNER = re.compile(
     re.IGNORECASE,
 )
 
+# ``$N unlimited shipping in usa`` (amount parameterized; ``in the usa`` not matched).
+_RE_MONEY_UNLIMITED_SHIPPING_IN_USA = re.compile(
+    r"(?:^|\s)"
+    + _MONEY_TOKEN
+    + r"\s*unlimited\s+shipping\s+in\s+usa\b",
+    re.IGNORECASE,
+)
+
+# BLACK STAR (U+2B50) / glowing-star emoji (optional U+FE0F) seller decoration.
+_RE_BLACK_STAR_DECORATION = re.compile("\u2b50\ufe0f?")
+
+# UK bulk-shipping promo (Discogs-style; amounts parameterized).
+_RE_UK_BULK_SHIP_PROMO = re.compile(
+    r"\buk\s+(?:upto|up\s+to)\s+\d+\s+records\s+delivered\s+2nd\s+class\s+for\s*"
+    + _MONEY_TOKEN
+    + r"\s+or\s+\d+\s+1st\s+class\s+for\s*"
+    + _MONEY_TOKEN
+    + r"\s+free\s+uk\s+shipping\s+on\s*"
+    + _MONEY_TOKEN
+    + r"\s+or\s+over\s+orders?\b",
+    re.IGNORECASE,
+)
+
+# Trailing seller date stamps like ``3/23]`` (month/day + bracket).
+_RE_DATE_STAMP_BRACKET = re.compile(r"\b\d{1,2}/\d{1,2}\]", re.IGNORECASE)
+
+# Discogs-style multi-record shipping promo (``post x4`` / ``post x 3``, etc.).
+_RE_POST_N_RECORDS_SAME_SHIP_PRICE = re.compile(
+    r"\bpost\s+x\s*\d+\s+records?\s+for\s+the\s+same\s+price\s+as\s+shipping\s+"
+    r"one\s+record\b",
+    re.IGNORECASE,
+)
+
+# Shop inventory brag (European-style thousands ``100 000+`` or compact digits).
+# Longer ``… shop in upminster essex (…)`` must run first — a trailing ``\b``
+# after ``shop`` would otherwise win before the optional location tail matches.
+_RE_ITEMS_IN_OUR_SHOP_UPMINSTER_PROMO = re.compile(
+    r"\b(?:\d{1,3}(?:\s+\d{3})+|\d{5,8})\s*\+?\s*items\s+in\s+our\s+shop\s+"
+    r"in\s+upminster\s+essex\s*\(\s*district\s*line\s*/\s*m25\s*\)",
+    re.IGNORECASE,
+)
+_RE_ITEMS_IN_OUR_SHOP_PROMO = re.compile(
+    r"\b(?:\d{1,3}(?:\s+\d{3})+|\d{5,8})\s*\+?\s*items\s+in\s+our\s+shop\b",
+    re.IGNORECASE,
+)
+
+# ``- 1000's more records & cds at our shop in upminster essex`` (leading dash).
+_RE_DASH_1000S_MORE_RECORDS_UPMINSTER = re.compile(
+    r"(?:^|\s)-\s*1000['\u2019]?s\s+more\s+records\s*&\s*cd(?:'|\u2019)?s\s+"
+    r"at\s+our\s+shop\s+in\s+upminster\s+essex\b",
+    re.IGNORECASE,
+)
+
+_RE_COLLECT_STORE_BUY_RECORDS = re.compile(
+    r"\byou can collect in store we buy records[!?.]*(?=\s|$)",
+    re.IGNORECASE,
+)
+
+# Degritter / ultrasonic cleaning shop boilerplate (hyphen or en/em dash).
+_RE_DEGRITTER_ULTRASONIC_PROMO = re.compile(
+    r"\bcleaned\s+in\s+a\s+degritter\s*[-–—]\s*the\s+best\s+ultrasonic\s+record\s+cleaning\b",
+    re.IGNORECASE,
+)
+
+_RE_INTERNATIONAL_BUYERS_SHIPPING_QUOTE = re.compile(
+    r"\binternational\s+buyers\s*,?\s*message\s+me\s+for\s+your\s+shipping\s+quote"
+    r"[!.,]*(?=\s|$)",
+    re.IGNORECASE,
+)
+
+_RE_QUALIFY_FREE_SHIPPING_PROMO = re.compile(
+    r"\b(?:may\s+|will\s+)?qualif(?:y|ying|ies|ied)\s+for\s+free\s+shipping\b",
+    re.IGNORECASE,
+)
+
+# ``orders over $X ship for $Y`` threshold shipping blurbs.
+_RE_ORDERS_OVER_SHIP_FOR = re.compile(
+    r"\borders\s+over\s+"
+    + _MONEY_TOKEN
+    + r"\s+ship\s+for\s*"
+    + _MONEY_TOKEN
+    + r"\b",
+    re.IGNORECASE,
+)
+
+# ``free shipping on usa orders over $X`` shop banners.
+_RE_FREE_SHIPPING_ON_USA_ORDERS_OVER = re.compile(
+    r"\bfree\s+shipping\s+on\s+usa\s+orders\s+over\s+"
+    + _MONEY_TOKEN
+    + r"\b",
+    re.IGNORECASE,
+)
+
+# ``buy N records and get the cheapest for free`` bundle promos.
+_RE_BUY_N_RECORDS_GET_CHEAPEST_FOR_FREE = re.compile(
+    r"\bbuy\s+\d+\s+records\s+and\s+get\s+the\s+cheapest\s+for\s+free\b",
+    re.IGNORECASE,
+)
+
+# ``you will receive N free records in the same style`` bundle blurbs.
+_RE_YOU_WILL_RECEIVE_N_FREE_RECORDS_SAME_STYLE = re.compile(
+    r"\byou\s+will\s+receive\s+\d+\s+free\s+records\s+in\s+the\s+same\s+style\b",
+    re.IGNORECASE,
+)
+
+# ``free shipping: above N euro in europe (eu)`` EU threshold blurbs.
+_RE_FREE_SHIPPING_ABOVE_EURO_IN_EUROPE_EU = re.compile(
+    r"\bfree\s+shipping:\s*above\s+\d+(?:[.,]\d+)?\s+euros?\s+in\s+europe\s*"
+    r"\(\s*eu\s*\)",
+    re.IGNORECASE,
+)
+
+# ``$N flat shipping!`` (amount parameterized; optional leading space / line start).
+_RE_FLAT_SHIPPING_PROMO = re.compile(
+    r"(?:^|\s)" + _MONEY_TOKEN + r"\s*flat\s+shipping!*",
+    re.IGNORECASE,
+)
+
+# ``cd's ship …`` / ``cds ship …`` shop blurb.
+_RE_CDS_SHIP_CARDBOARD_PROMO = re.compile(
+    r"\bcd'?s\s+ship\s+in\s+cardboard!*",
+    re.IGNORECASE,
+)
+
+_RE_READ_SELLER_TERMS_SHOUT = re.compile(
+    r"\bread\s+seller\s+terms!+(?=\s|$|[,;.])",
+    re.IGNORECASE,
+)
+
+_RE_REAL_RECORD_STORE_PITTSBURGH_PROMO = re.compile(
+    r"\bwe['\u2019]re\s+a\s+real\s+record\s+store\s+near\s+pittsburgh\s+pa\b",
+    re.IGNORECASE,
+)
+
+_RE_LESS_HALF_INVENTORY_POSTED_PROMO = re.compile(
+    r"\bless\s+than\s+half\s+of\s+our\s+inventory\s+is\s+posted\s+here!*"
+    r"(?=\s|$|[,;.])",
+    re.IGNORECASE,
+)
+
+_RE_BUY_THIS_COPY_TODAY_PROMO = re.compile(
+    r"\bbuy this copy today\b",
+    re.IGNORECASE,
+)
+
+# ``check my other black sabbath records and combine shipping!!!`` shop CTA.
+_RE_CHECK_OTHER_BLACK_SABBATH_COMBINE_SHIPPING = re.compile(
+    r"\bcheck\s+my\s+other\s+black\s+sabbath\s+records\s+and\s+combine\s+shipping"
+    r"(?:\s*!+)?(?=\s|$|[.!,?;])",
+    re.IGNORECASE,
+)
+
+# Scoop ``6x12 singles`` bundle line (straight or curly inch marks before
+# ``singles``).
+_RE_SCOOP_6X12_BUNDLE_PROMO = re.compile(
+    r"\bscoop\s+purchase\s+limited\s+time\s+buy\s+6x12\W*singles\s+get\s+6x12"
+    r"\W*singles\s+free\s*\(\s*cheapest\s+free\s*\)",
+    re.IGNORECASE,
+)
+
+_RE_UK_POST_ONLY_PROMO = re.compile(
+    r"\buk\s+post\s+only!*(?=\s|$|[,.;])",
+    re.IGNORECASE,
+)
+
+# ``*buy N get cheapest free*`` style promos (leading/trailing asterisks).
+_RE_BUY_N_GET_CHEAPEST_FREE_PROMO = re.compile(
+    r"\*+\s*buy\s+\d+\s+get\s+cheapest\s+free\s*\*+",
+    re.IGNORECASE,
+)
+
+# ``*was £… 27th jun … reduced … *`` Discogs price-drop history (dates + amounts).
+_RE_STAR_WAS_PRICE_DATED_REDUCTION_HISTORY = re.compile(
+    r"\*+was\s+"
+    + _MONEY_TOKEN
+    + r"(?=[\s\S]*(?:\breduced\b|\d{1,2}(?:st|nd|rd|th)\s+[a-z]{3,9}))"
+    r"[\s\S]{10,800}?"
+    r"\*+",
+    re.IGNORECASE,
+)
+
+# ``* -accurate grading or refund*`` shop guarantee blurbs.
+_RE_ACCURATE_GRADING_OR_REFUND_PROMO = re.compile(
+    r"\*+\s*-\s*accurate\s+grading\s+or\s+refund\s*\*+",
+    re.IGNORECASE,
+)
+
+# UK mainland P&P combine line (``1-7 lp/12" or 30 7" singles …``).
+_RE_UK_MAINLAND_COMBINE_SAVE_PROMO = re.compile(
+    r"\buk\s+mainland\s+customers\s+"
+    r"\d+-\d+\s+lp/\d+[\"'\u201d]?"
+    r"\s+or\s+\d+\s+7[\"'\u201d]\s+singles\s+"
+    r"same\s+p&p\s+combine\s*&\s*save\*+",
+    re.IGNORECASE,
+)
+
 _RE_WITH_YOU_WITHIN = re.compile(
     r"\bwith\s+you\s+within\s+\d+"
     r"(?:\s*(?:day|days|working\s+days?|working\s+day))?\b",
@@ -120,14 +392,76 @@ _RE_STAR_MAILER_BLURB = re.compile(
     re.IGNORECASE,
 )
 
+# ``**all $A & $B items = buy 2 get 1 free !! note: … post-invoice …**`` shop promo.
+_RE_STAR_BUY2_GET1_LEAST_PRICED_NOTE = re.compile(
+    r"\*\*all\s+"
+    + _MONEY_TOKEN
+    + r"\s*&\s*"
+    + _MONEY_TOKEN
+    + r"\s*items\s*=\s*buy\s+2\s+get\s+1\s+free\s*!+\s*"
+    r"note:\s*price\s+deduction\s+will\s+be\s+made\s+on\s+the\s+least\s+priced\s+"
+    r"items\s+in\s+the\s+order\s+post-invoice\s+so\s+please\s+refrain\s+from\s+"
+    r"making\s+payment\s+until\s+final\s+subtotal\s+is\s+adjusted\*\*",
+    re.IGNORECASE,
+)
+
 # Only remove ``***…***`` when the inner text looks like shipping/promo, not
 # short condition emphasis.
 _RE_TRIPLE_STAR_PROMOISH = re.compile(
-    r"(?:free\s+shipping|orders\s+over|unlimited\s+us|marked\s+down|"
-    r"summer\s+sale|inside\s+eu|buy\s+\d|\d+\s*%\s*off|discount\s+on|"
-    r"shipping\s+to|euro\s+sale|records\s+at)",
+    r"(?:free\s+shipping|free\s+uk\s+shipping|orders\s+over|unlimited\s+us|"
+    r"marked\s+down|summer\s+sale|inside\s+eu|buy\s+\d|\d+\s*%\s*off|"
+    r"discount\s+on|shipping\s+to|euro\s+sale|records\s+at)",
     re.IGNORECASE,
 )
+
+# ``### … ###`` shop banners (same non-greedy semantics as legacy single-pass sub).
+_RE_HASH_SHOP_BLOCK = re.compile(r"(#{3,})([\s\S]*?)(#{3,})", re.IGNORECASE)
+
+
+def protected_terms_from_grades(grades: dict[str, Any]) -> set[str]:
+    """
+    Collect lowercase strings from every ``*signal*`` list on each grade
+    definition (same rule as protected-term harvesting for cleaning).
+    """
+    terms: set[str] = set()
+    for grade_def in grades.values():
+        if not isinstance(grade_def, dict):
+            continue
+        for key, value in grade_def.items():
+            if "signal" not in key.lower():
+                continue
+            if not isinstance(value, list):
+                continue
+            for signal in value:
+                if isinstance(signal, str):
+                    terms.add(signal.lower())
+    return terms
+
+
+def build_protected_term_token_patterns(
+    guidelines: dict[str, Any],
+) -> dict[str, re.Pattern[str]]:
+    """
+    Build whole-token regex patterns (``\\b`` + ``re.escape``) for every
+    guideline-derived protected term — same semantics as ``Preprocessor``
+    uses for ``_verify_protected_terms`` / structural promo gating.
+    """
+    grades = guidelines.get("grades", {})
+    if not isinstance(grades, dict):
+        grades = {}
+    terms = protected_terms_from_grades(grades)
+    return {
+        t: re.compile(rf"\b{re.escape(t)}\b", re.IGNORECASE)
+        for t in terms
+        if str(t).strip()
+    }
+
+
+def _inner_matches_any_protected(
+    inner: str,
+    patterns: dict[str, re.Pattern[str]],
+) -> bool:
+    return any(p.search(inner) for p in patterns.values())
 
 
 def _triple_star_inner_is_promo(inner: str) -> bool:
@@ -135,15 +469,6 @@ def _triple_star_inner_is_promo(inner: str) -> bool:
     if len(t) < 14:
         return False
     return bool(_RE_TRIPLE_STAR_PROMOISH.search(t))
-
-
-def _strip_one_gated_triple_star(s: str) -> tuple[str, bool]:
-    m = re.search(r"\*\*\*([\s\S]*?)\*\*\*", s)
-    if not m:
-        return s, False
-    if _triple_star_inner_is_promo(m.group(1)):
-        return s[: m.start()] + " " + s[m.end() :], True
-    return s, False
 
 
 def load_promo_noise_patterns(pp_cfg: dict[str, Any]) -> tuple[str, ...]:
@@ -164,22 +489,70 @@ def load_promo_noise_patterns(pp_cfg: dict[str, Any]) -> tuple[str, ...]:
 def strip_listing_promo_noise(
     text: str,
     promo_phrases: tuple[str, ...],
+    *,
+    protected_term_patterns: dict[str, re.Pattern[str]] | None = None,
 ) -> str:
     """
     Remove shop promo / shipping boilerplate spans. Caller must pass text
     that is already lowercased with whitespace collapsed to single spaces.
 
+    When ``protected_term_patterns`` is provided (same whole-token patterns
+    as ``Preprocessor._protected_term_token_patterns``), structural removals
+    for ``###…###``, ``[…]``, and promo-gated ``***…***`` are **skipped** if
+    the span's inner text matches any protected term, so real defect wording
+    co-located with seller templates is not dropped.
+
     Arbitrary ``**…**`` markdown is **not** removed — sellers use it to bold
     real defects (e.g. **stain**, **seam split**), which would otherwise delete
     grading vocabulary. Triple-star blocks are removed only when the inner
-    text matches shipping/promo heuristics.
+    text matches shipping/promo heuristics. UK bulk-shipping lines,
+    ``mm/dd]`` date stamps, ``post xN records for the same price as shipping
+    one record`` promos, ``NNN NNN+ items in our shop`` shop brags (optional
+    Upminster / district line tail), ``you can collect in store we buy
+    records`` CTAs, ``- 1000's more records & cds … upminster essex`` dash promos,
+    Degritter ultrasonic-cleaning blurbs, international
+    buyer shipping-quote CTAs, ``qualify for free shipping``-style lines
+    (optional may/will; qualify / qualifies / qualifying / qualified),
+    ``orders over $X ship for $Y`` threshold blurbs,
+    ``free shipping on usa orders over $X`` banners,
+    ``buy N records and get the cheapest for free`` / ``you will receive N free
+    records in the same style`` / ``free shipping: above N euro in europe (eu)``
+    promos, ``$N flat shipping!``,
+    ``cds ship in cardboard!``, ``read seller terms!``,
+    Pittsburgh real-record-store blurbs, ``less than half … posted here``
+    inventory promos, ``buy this copy today``, Black Sabbath ``check my other
+    … combine shipping`` CTAs, Scoop ``6x12`` bundle blurbs,
+    ``uk post only`` shipping notes,     ``*buy N get cheapest free*`` promos,
+    ``*was £… / $… … reduced / dated price history*`` blocks,
+    ``* -accurate grading or refund*`` blurbs, UK mainland ``combine & save``
+    P&P lines, and ``**all $A & $B items = buy 2 get 1 free !! note: …**`` shop
+    promos are also removed via dedicated regexes. ``$N unlimited shipping in
+    usa`` banners, U+2B50 decorative star glyphs (optional emoji VS16), and
+    substring phrases such as ``jacksonville pressing`` / ``all fair offers
+    accepted`` follow the configured ``promo_noise_patterns`` list.
     """
     s = text.strip()
 
+    # Gated ``*** … ***`` — promo-ish inner only; skip strip if inner matches
+    # a protected whole token (mixed seller templates).
+    pos = 0
     while True:
-        s, changed = _strip_one_gated_triple_star(s)
-        if not changed:
+        m = re.search(r"\*\*\*([\s\S]*?)\*\*\*", s[pos:])
+        if not m:
             break
+        abs_start = pos + m.start()
+        abs_end = pos + m.end()
+        inner = m.group(1)
+        if _triple_star_inner_is_promo(inner):
+            if protected_term_patterns and _inner_matches_any_protected(
+                inner, protected_term_patterns
+            ):
+                pos = abs_end
+                continue
+            s = s[:abs_start] + " " + s[abs_end:]
+            pos = max(0, abs_start)
+            continue
+        pos = abs_end
 
     while True:
         n = _RE_STAR_MAILER_BLURB.sub(" ", s, count=1)
@@ -188,13 +561,46 @@ def strip_listing_promo_noise(
         s = n
 
     while True:
-        n = re.sub(r"#{3,}[\s\S]*?#{3,}", " ", s, count=1)
+        n = _RE_STAR_BUY2_GET1_LEAST_PRICED_NOTE.sub(" ", s, count=1)
         if n == s:
             break
         s = n
 
-    while re.search(r"\[[^\]]*\]", s):
-        s = re.sub(r"\[[^\]]*\]", " ", s, count=1)
+    # ``### … ###`` — skip removal when inner matches a protected token.
+    pos = 0
+    chunks: list[str] = []
+    while True:
+        m = _RE_HASH_SHOP_BLOCK.search(s, pos)
+        if not m:
+            chunks.append(s[pos:])
+            break
+        chunks.append(s[pos : m.start()])
+        inner = m.group(2)
+        if protected_term_patterns and _inner_matches_any_protected(
+            inner, protected_term_patterns
+        ):
+            chunks.append(m.group(0))
+        else:
+            chunks.append(" ")
+        pos = m.end()
+    s = "".join(chunks)
+
+    # ``[ … ]`` — skip removal when inner matches a protected token.
+    search_at = 0
+    while True:
+        m = re.search(r"\[([^\]]*)\]", s[search_at:])
+        if not m:
+            break
+        abs_start = search_at + m.start()
+        abs_end = search_at + m.end()
+        inner = m.group(1)
+        if protected_term_patterns and _inner_matches_any_protected(
+            inner, protected_term_patterns
+        ):
+            search_at = abs_end
+            continue
+        s = s[:abs_start] + " " + s[abs_end:]
+        search_at = max(0, abs_start)
 
     while True:
         n = _RE_DISCOGS_US_SHIP_TAIL.sub(" ", s, count=1)
@@ -209,12 +615,188 @@ def strip_listing_promo_noise(
         s = n
 
     while True:
+        n = _RE_MONEY_UNLIMITED_SHIPPING_IN_USA.sub(" ", s, count=1)
+        if n == s:
+            break
+        s = n
+
+    while True:
+        n = _RE_UK_BULK_SHIP_PROMO.sub(" ", s, count=1)
+        if n == s:
+            break
+        s = n
+
+    while True:
         n = _RE_PICKUP_SHOP_LINE.sub(" ", s, count=1)
         if n == s:
             break
         s = n
 
     s = _RE_WITH_YOU_WITHIN.sub(" ", s)
+
+    s = _RE_DATE_STAMP_BRACKET.sub(" ", s)
+
+    while True:
+        n = _RE_POST_N_RECORDS_SAME_SHIP_PRICE.sub(" ", s, count=1)
+        if n == s:
+            break
+        s = n
+
+    while True:
+        n = _RE_ITEMS_IN_OUR_SHOP_UPMINSTER_PROMO.sub(" ", s, count=1)
+        if n == s:
+            break
+        s = n
+
+    while True:
+        n = _RE_ITEMS_IN_OUR_SHOP_PROMO.sub(" ", s, count=1)
+        if n == s:
+            break
+        s = n
+
+    while True:
+        n = _RE_DASH_1000S_MORE_RECORDS_UPMINSTER.sub(" ", s, count=1)
+        if n == s:
+            break
+        s = n
+
+    while True:
+        n = _RE_COLLECT_STORE_BUY_RECORDS.sub(" ", s, count=1)
+        if n == s:
+            break
+        s = n
+
+    while True:
+        n = _RE_DEGRITTER_ULTRASONIC_PROMO.sub(" ", s, count=1)
+        if n == s:
+            break
+        s = n
+
+    while True:
+        n = _RE_INTERNATIONAL_BUYERS_SHIPPING_QUOTE.sub(" ", s, count=1)
+        if n == s:
+            break
+        s = n
+
+    while True:
+        n = _RE_QUALIFY_FREE_SHIPPING_PROMO.sub(" ", s, count=1)
+        if n == s:
+            break
+        s = n
+
+    while True:
+        n = _RE_ORDERS_OVER_SHIP_FOR.sub(" ", s, count=1)
+        if n == s:
+            break
+        s = n
+
+    while True:
+        n = _RE_FREE_SHIPPING_ON_USA_ORDERS_OVER.sub(" ", s, count=1)
+        if n == s:
+            break
+        s = n
+
+    while True:
+        n = _RE_BUY_N_RECORDS_GET_CHEAPEST_FOR_FREE.sub(" ", s, count=1)
+        if n == s:
+            break
+        s = n
+
+    while True:
+        n = _RE_YOU_WILL_RECEIVE_N_FREE_RECORDS_SAME_STYLE.sub(" ", s, count=1)
+        if n == s:
+            break
+        s = n
+
+    while True:
+        n = _RE_FREE_SHIPPING_ABOVE_EURO_IN_EUROPE_EU.sub(" ", s, count=1)
+        if n == s:
+            break
+        s = n
+
+    while True:
+        n = _RE_FLAT_SHIPPING_PROMO.sub(" ", s, count=1)
+        if n == s:
+            break
+        s = n
+
+    while True:
+        n = _RE_CDS_SHIP_CARDBOARD_PROMO.sub(" ", s, count=1)
+        if n == s:
+            break
+        s = n
+
+    while True:
+        n = _RE_READ_SELLER_TERMS_SHOUT.sub(" ", s, count=1)
+        if n == s:
+            break
+        s = n
+
+    while True:
+        n = _RE_REAL_RECORD_STORE_PITTSBURGH_PROMO.sub(" ", s, count=1)
+        if n == s:
+            break
+        s = n
+
+    while True:
+        n = _RE_LESS_HALF_INVENTORY_POSTED_PROMO.sub(" ", s, count=1)
+        if n == s:
+            break
+        s = n
+
+    while True:
+        n = _RE_SCOOP_6X12_BUNDLE_PROMO.sub(" ", s, count=1)
+        if n == s:
+            break
+        s = n
+
+    while True:
+        n = _RE_BUY_THIS_COPY_TODAY_PROMO.sub(" ", s, count=1)
+        if n == s:
+            break
+        s = n
+
+    while True:
+        n = _RE_CHECK_OTHER_BLACK_SABBATH_COMBINE_SHIPPING.sub(" ", s, count=1)
+        if n == s:
+            break
+        s = n
+
+    while True:
+        n = _RE_UK_POST_ONLY_PROMO.sub(" ", s, count=1)
+        if n == s:
+            break
+        s = n
+
+    while True:
+        n = _RE_UK_MAINLAND_COMBINE_SAVE_PROMO.sub(" ", s, count=1)
+        if n == s:
+            break
+        s = n
+
+    while True:
+        n = _RE_ACCURATE_GRADING_OR_REFUND_PROMO.sub(" ", s, count=1)
+        if n == s:
+            break
+        s = n
+
+    while True:
+        n = _RE_BUY_N_GET_CHEAPEST_FREE_PROMO.sub(" ", s, count=1)
+        if n == s:
+            break
+        s = n
+
+    while True:
+        n = _RE_STAR_WAS_PRICE_DATED_REDUCTION_HISTORY.sub(" ", s, count=1)
+        if n == s:
+            break
+        s = n
+
+    while True:
+        n = _RE_BLACK_STAR_DECORATION.sub(" ", s, count=1)
+        if n == s:
+            break
+        s = n
 
     for phrase in promo_phrases:
         if not phrase:
@@ -256,9 +838,9 @@ class Preprocessor:
             (aggregated across legacy ``hard_signals`` plus the
             strict/cosignal variants introduced in §13/§13b; see
             :func:`_collect_hard_signals`)
-        grades[*].hard_signals*
-            — protected terms derived from all hard-signal variants
-              (strict, cosignal, per-target)
+        grades[*].*signal* lists
+            — protected terms for cleaning / gating (all keys whose names
+              contain ``signal``)
     """
 
     def __init__(
@@ -433,6 +1015,11 @@ class Preprocessor:
         # supporting_signals across all grades. These must survive
         # all text transformations unchanged.
         self.protected_terms: set[str] = self._build_protected_terms()
+        self._protected_term_token_patterns: dict[str, re.Pattern[str]] = {
+            t: re.compile(rf"\b{re.escape(t)}\b", re.IGNORECASE)
+            for t in self.protected_terms
+            if str(t).strip()
+        }
 
         # Split config
         split_cfg = self.config["data"]["splits"]
@@ -617,20 +1204,10 @@ class Preprocessor:
         These terms carry grading signal and must survive normalization.
         Stored in lowercase for case-insensitive comparison.
         """
-        terms: set[str] = set()
         grades = self.guidelines.get("grades", {})
-        for grade_def in grades.values():
-            if not isinstance(grade_def, dict):
-                continue
-            for key, value in grade_def.items():
-                if "signal" not in key.lower():
-                    continue
-                if not isinstance(value, list):
-                    continue
-                for signal in value:
-                    if isinstance(signal, str):
-                        terms.add(signal.lower())
-        return terms
+        if not isinstance(grades, dict):
+            return set()
+        return protected_terms_from_grades(grades)
 
     # -----------------------------------------------------------------------
     # Detection — must run on RAW text
@@ -876,9 +1453,21 @@ class Preprocessor:
         Order is preserved from grader.yaml abbreviation_map.
         Longer patterns (vg++) are applied before shorter ones (vg+)
         to prevent partial match corruption.
+
+        When an abbreviation is immediately followed by a letter (e.g.
+        ``vg+original`` with no space), append a single space so the
+        expansion does not glue to the next word (``… plus original``).
         """
         for pattern, expansion in self.abbreviation_patterns:
-            text = pattern.sub(expansion, text)
+
+            def _repl(m: re.Match[str], exp: str = expansion) -> str:
+                s = m.string
+                j = m.end()
+                if j < len(s) and s[j].isalpha():
+                    return f"{exp} "
+                return exp
+
+            text = pattern.sub(_repl, text)
         return text
 
     def _verify_protected_terms(
@@ -886,15 +1475,16 @@ class Preprocessor:
     ) -> list[str]:
         """
         Sanity check — verify that protected terms present in the
-        original text are still present in the cleaned text.
+        original text as **whole tokens** still appear that way in the cleaned
+        text (``\\b`` word boundaries + ``re.escape`` per term).
 
         Returns list of terms that were lost during transformation.
-        A non-empty list indicates a preprocessing bug.
+        A non-empty list indicates a preprocessing bug or an aggressive strip
+        that removed a real defect token.
         """
-        original_lower = original.lower()
-        lost = []
-        for term in self.protected_terms:
-            if term in original_lower and term not in cleaned.lower():
+        lost: list[str] = []
+        for term, pat in self._protected_term_token_patterns.items():
+            if pat.search(original) and not pat.search(cleaned):
                 lost.append(term)
         return lost
 
@@ -913,7 +1503,9 @@ class Preprocessor:
         cleaned = self._lowercase(text)
         cleaned = self._normalize_whitespace(cleaned)
         cleaned = strip_listing_promo_noise(
-            cleaned, self.promo_noise_patterns
+            cleaned,
+            self.promo_noise_patterns,
+            protected_term_patterns=self._protected_term_token_patterns,
         )
         if self.strip_stray_numeric_tokens:
             cleaned = self._strip_leading_numeric_boilerplate(cleaned)
@@ -926,11 +1518,16 @@ class Preprocessor:
         text: str,
         *,
         preprocessing_cfg: dict[str, Any],
+        protected_term_patterns: dict[str, re.Pattern[str]] | None = None,
     ) -> str:
         """
         Match ``clean_text`` through promo stripping and leading-digit cleanup,
         but **omit** abbreviation expansion so TF-IDF sees the same tokens as
         ``text_clean`` from preprocess (which already expanded abbrevs).
+
+        Pass the same ``protected_term_patterns`` as ``Preprocessor`` uses
+        (from ``build_protected_term_token_patterns(guidelines)``) so TF-IDF
+        skips the same gated ``###`` / ``[]`` / ``***`` spans as training.
         """
         pp = preprocessing_cfg
         s = text.strip()
@@ -939,7 +1536,9 @@ class Preprocessor:
         if pp.get("normalize_whitespace", True):
             s = re.sub(r"\s+", " ", s).strip()
         phrases = load_promo_noise_patterns(pp)
-        s = strip_listing_promo_noise(s, phrases)
+        s = strip_listing_promo_noise(
+            s, phrases, protected_term_patterns=protected_term_patterns
+        )
         if bool(pp.get("strip_stray_numeric_tokens", True)):
             s = cls._strip_leading_numeric_boilerplate(s)
         return s
