@@ -3,17 +3,20 @@ Apply hand-maintained label corrections to ingested JSONL.
 
 ``data.label_patches_path`` in grader.yaml should point to a JSONL file (see
 ``grader/data/label_patches.example.jsonl``). After Discogs/eBay ingest overwrites
-``discogs_processed.jsonl`` / ``ebay_processed.jsonl``, the training pipeline
+``discogs_processed.jsonl`` / ``ebay_processed.jsonl`` /
+``discogs_sale_history.jsonl`` (when used), the training pipeline
 re-applies those patches so manual relabels survive re-ingestion.
 
-Each patch line must include ``item_id`` and ``source`` (``discogs`` or
-``ebay_jp``). Optional keys merged into the matching row (whitelist only):
+Each patch line must include ``item_id`` and ``source`` (``discogs``,
+``ebay_jp``, or ``discogs_sale_history``). Optional keys merged into the
+matching row (whitelist only):
 ``sleeve_label``, ``media_label``, ``text``, ``label_confidence``,
 ``media_verifiable``, ``raw_sleeve``, ``raw_media``, ``obi_condition``.
 """
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import logging
 import sys
@@ -37,7 +40,9 @@ _ALLOWED_MERGE_KEYS: frozenset[str] = frozenset(
     }
 )
 
-_VALID_SOURCES: frozenset[str] = frozenset({"discogs", "ebay_jp"})
+_VALID_SOURCES: frozenset[str] = frozenset(
+    {"discogs", "ebay_jp", "discogs_sale_history"}
+)
 
 
 def _resolve_path(raw: str | Path) -> Path:
@@ -200,9 +205,11 @@ def apply_label_patches_after_ingest(
 ) -> dict[str, Any]:
     """
     If ``data.label_patches_path`` is set and the file exists, merge patches into
-    processed JSONL for Discogs and eBay.
+    processed JSONL for Discogs, eBay JP, and (when present) Discogs sale history.
 
-    Call this only after ingest has written (or would have written) those files.
+    Call only after the writers for those JSONLs have run in the current session
+    (training pipeline runs sale-history export before Discogs/eBay ingest so
+    ``discogs_sale_history.jsonl`` is not overwritten after patching).
     """
     data_cfg = config.get("data") or {}
     raw = data_cfg.get("label_patches_path")
@@ -223,6 +230,7 @@ def apply_label_patches_after_ingest(
     processed_dir = _resolve_path(config["paths"]["processed"])
     discogs_path = processed_dir / "discogs_processed.jsonl"
     ebay_path = processed_dir / "ebay_processed.jsonl"
+    sale_path = processed_dir / "discogs_sale_history.jsonl"
 
     d_stats = apply_label_patches_to_processed_file(
         discogs_path, source="discogs", index=index, dry_run=dry_run
@@ -230,7 +238,14 @@ def apply_label_patches_after_ingest(
     e_stats = apply_label_patches_to_processed_file(
         ebay_path, source="ebay_jp", index=index, dry_run=dry_run
     )
-    total_updated = int(d_stats.get("updated", 0)) + int(e_stats.get("updated", 0))
+    sh_stats = apply_label_patches_to_processed_file(
+        sale_path, source="discogs_sale_history", index=index, dry_run=dry_run
+    )
+    total_updated = (
+        int(d_stats.get("updated", 0))
+        + int(e_stats.get("updated", 0))
+        + int(sh_stats.get("updated", 0))
+    )
     return {
         "enabled": True,
         "path": str(path),
@@ -239,6 +254,7 @@ def apply_label_patches_after_ingest(
         "skipped_invalid_entries": skipped,
         "discogs": d_stats,
         "ebay_jp": e_stats,
+        "discogs_sale_history": sh_stats,
         "updated_total": total_updated,
         "dry_run": dry_run,
     }
@@ -273,7 +289,7 @@ def export_label_patches_from_jsonl(
                 continue
             iid = str(rec.get("item_id", "")).strip()
             src = str(rec.get("source", "")).strip()
-            if src not in _VALID_SOURCES or not iid:
+            if str(src).strip() not in _VALID_SOURCES or not iid:
                 n_skip += 1
                 continue
             sl = rec.get("sleeve_label")
@@ -316,11 +332,84 @@ def export_label_patches_from_jsonl(
     }
 
 
+def append_csv_to_label_patches(
+    csv_path: Path,
+    dest_path: Path,
+    *,
+    dry_run: bool = False,
+) -> dict[str, int | str]:
+    """
+    Read a CSV with at least ``item_id`` and ``source`` columns plus any
+    ``_ALLOWED_MERGE_KEYS`` columns, and append one JSON patch object per row
+    to ``dest_path`` (UTF-8, newline-delimited).
+
+    ``source`` must be ``discogs``, ``ebay_jp``, or ``discogs_sale_history``.
+    """
+    if not csv_path.is_file():
+        raise FileNotFoundError(str(csv_path))
+    dest_path.parent.mkdir(parents=True, exist_ok=True)
+    n_out = 0
+    n_skip = 0
+    out_lines: list[str] = []
+    with csv_path.open(newline="", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        fields = {str(c).strip() for c in (reader.fieldnames or [])}
+        if not {"item_id", "source"}.issubset(fields):
+            raise ValueError(
+                f"CSV must include item_id and source columns; got {reader.fieldnames!r}"
+            )
+        for row in reader:
+            iid = str(row.get("item_id", "")).strip()
+            src = str(row.get("source", "")).strip()
+            if not iid or src not in _VALID_SOURCES:
+                n_skip += 1
+                continue
+            obj: dict[str, Any] = {"item_id": iid, "source": src}
+            for k in _ALLOWED_MERGE_KEYS:
+                if k not in row:
+                    continue
+                raw = row.get(k)
+                if raw is None:
+                    continue
+                if isinstance(raw, str) and not raw.strip():
+                    continue
+                if k == "label_confidence":
+                    try:
+                        obj[k] = float(raw)
+                    except (TypeError, ValueError):
+                        pass
+                else:
+                    obj[k] = raw
+            if len(obj) <= 2:
+                n_skip += 1
+                continue
+            out_lines.append(json.dumps(obj, ensure_ascii=False))
+            n_out += 1
+    if not dry_run and out_lines:
+        with dest_path.open("a", encoding="utf-8") as out:
+            for line in out_lines:
+                out.write(line + "\n")
+    logger.info(
+        "label_patches CSV append: %d line(s) -> %s (skipped %d, dry_run=%s)",
+        n_out,
+        dest_path,
+        n_skip,
+        dry_run,
+    )
+    return {
+        "appended": n_out,
+        "skipped_rows": n_skip,
+        "csv": str(csv_path),
+        "dest": str(dest_path),
+        "dry_run": dry_run,
+    }
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description=(
-            "Apply label_patches_path to processed JSONL, or export patches "
-            "from unified/processed JSONL."
+            "Apply label_patches_path to processed JSONL, export patches from "
+            "unified/processed JSONL, or append patch lines from a CSV."
         ),
     )
     parser.add_argument(
@@ -347,8 +436,42 @@ def main() -> int:
         action="store_true",
         help="Log counts only; do not write files",
     )
+    parser.add_argument(
+        "--append-from-csv",
+        metavar="CSV",
+        default="",
+        help=(
+            "Read CSV (item_id, source, sleeve_label, media_label, …) and "
+            "append JSONL patch lines to --append-to."
+        ),
+    )
+    parser.add_argument(
+        "--append-to",
+        metavar="JSONL",
+        default="",
+        help="Destination JSONL for --append-from-csv (required with that flag).",
+    )
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO)
+
+    if args.append_from_csv and str(args.append_from_csv).strip():
+        csv_p = _resolve_path(str(args.append_from_csv).strip())
+        if not args.append_to or not str(args.append_to).strip():
+            print(
+                "--append-to is required with --append-from-csv.",
+                file=sys.stderr,
+            )
+            return 1
+        dest_p = _resolve_path(str(args.append_to).strip())
+        try:
+            stats = append_csv_to_label_patches(
+                csv_p, dest_p, dry_run=args.dry_run
+            )
+        except (OSError, ValueError) as e:
+            print(str(e), file=sys.stderr)
+            return 1
+        print(json.dumps(stats, indent=2))
+        return 0
 
     if args.export_from:
         with open(args.config, encoding="utf-8") as f:

@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 
 from grader.src.data.label_patches import (
+    append_csv_to_label_patches,
     apply_label_patches_after_ingest,
     apply_label_patches_to_processed_file,
     export_label_patches_from_jsonl,
@@ -83,9 +84,61 @@ def test_apply_label_patches_after_ingest_from_config(tmp_path: Path) -> None:
     }
     out = apply_label_patches_after_ingest(cfg)
     assert out["updated_total"] == 1
+    assert "discogs_sale_history" in out
     row = json.loads((proc / "discogs_processed.jsonl").read_text().strip())
     assert row["media_label"] == "Near Mint"
     assert row["sleeve_label"] == "Poor"
+
+
+def test_apply_label_patches_sale_history(tmp_path: Path) -> None:
+    proc = tmp_path / "processed"
+    proc.mkdir()
+    sh = proc / "discogs_sale_history.jsonl"
+    rec = {
+        "item_id": "sale-1",
+        "source": "discogs_sale_history",
+        "text": "played once",
+        "sleeve_label": "Good",
+        "media_label": "Good",
+        "label_confidence": 1.0,
+    }
+    sh.write_text(json.dumps(rec) + "\n", encoding="utf-8")
+    patch = tmp_path / "patch.jsonl"
+    patch.write_text(
+        '{"item_id": "sale-1", "source": "discogs_sale_history", '
+        '"sleeve_label": "Very Good Plus"}\n',
+        encoding="utf-8",
+    )
+    from grader.src.data.label_patches import _build_patch_index
+
+    patches = load_label_patches(patch)
+    index, _ = _build_patch_index(patches)
+    st = apply_label_patches_to_processed_file(
+        sh, source="discogs_sale_history", index=index, dry_run=False
+    )
+    assert st["updated"] == 1
+    loaded = json.loads(sh.read_text(encoding="utf-8").strip())
+    assert loaded["sleeve_label"] == "Very Good Plus"
+
+
+def test_append_csv_to_label_patches(tmp_path: Path) -> None:
+    csv_p = tmp_path / "in.csv"
+    csv_p.write_text(
+        "item_id,source,sleeve_label,media_label\n"
+        'x1,discogs,Very Good,Near Mint\n'
+        'x2,bad_source,Good,Good\n',
+        encoding="utf-8",
+    )
+    dest = tmp_path / "out.jsonl"
+    dest.write_text('{"item_id": "old", "source": "discogs"}\n', encoding="utf-8")
+    stats = append_csv_to_label_patches(csv_p, dest, dry_run=False)
+    assert stats["appended"] == 1
+    assert stats["skipped_rows"] == 1
+    lines = dest.read_text(encoding="utf-8").strip().split("\n")
+    assert len(lines) == 2
+    last = json.loads(lines[-1])
+    assert last["item_id"] == "x1"
+    assert last["sleeve_label"] == "Very Good"
 
 
 def test_export_label_patches_from_unified(tmp_path: Path) -> None:

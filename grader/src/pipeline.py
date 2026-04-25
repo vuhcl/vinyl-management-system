@@ -333,50 +333,12 @@ class Pipeline:
                 logger.info("STEP 1 — DATA INGESTION")
                 logger.info("=" * 50)
 
-                discogs_ingester = DiscogsIngester(
-                    config_path=self.config_path,
-                    guidelines_path=self.guidelines_path,
-                    config=self.config,
-                )
-                discogs_ingester.run()
+                repo_root = Path(__file__).resolve().parents[2]
 
-                if skip_ebay_ingest:
-                    logger.info(
-                        "Skipping eBay ingestion (--skip-ebay-ingest) — "
-                        "harmonizer will use Discogs only if ebay_processed.jsonl "
-                        "is missing."
-                    )
-                else:
-                    ebay_ingester = EbayIngester(
-                        config_path=self.config_path,
-                        guidelines_path=self.guidelines_path,
-                        config=self.config,
-                    )
-                    ebay_ingester.run()
-
-                patch_stats = apply_label_patches_after_ingest(self.config)
-                if patch_stats.get("enabled"):
-                    results["label_patches"] = patch_stats
-                    if patch_stats.get("updated_total", 0):
-                        logger.info(
-                            "Label patches applied: %d row(s) updated "
-                            "(see data.label_patches_path).",
-                            patch_stats["updated_total"],
-                        )
-
-                vinyl_post = run_post_patch_vinyl_filter_from_config(
-                    self.config,
-                    filter_sale_jsonl=bool(skip_sale_history_ingest),
-                )
-                if vinyl_post.get("ran"):
-                    results["discogs_vinyl_post_filter"] = vinyl_post
-                    logger.info(
-                        "Discogs post-patch vinyl filter: dropped=%s kept=%s",
-                        vinyl_post.get("dropped"),
-                        vinyl_post.get("kept"),
-                    )
+                # Sale history first so ``apply_label_patches_after_ingest`` (below)
+                # merges into a fresh ``discogs_sale_history.jsonl`` instead of a
+                # file that is about to be overwritten.
                 if not skip_sale_history_ingest:
-                    repo_root = Path(__file__).resolve().parents[2]
                     sh = run_sale_history_ingest_from_config(
                         self.config,
                         Path(self.config_path),
@@ -410,6 +372,49 @@ class Pipeline:
                             "Sale history ingest not run: %s",
                             sh.get("error", sh),
                         )
+
+                discogs_ingester = DiscogsIngester(
+                    config_path=self.config_path,
+                    guidelines_path=self.guidelines_path,
+                    config=self.config,
+                )
+                discogs_ingester.run()
+
+                if skip_ebay_ingest:
+                    logger.info(
+                        "Skipping eBay ingestion (--skip-ebay-ingest) — "
+                        "harmonizer will use Discogs only if ebay_processed.jsonl "
+                        "is missing."
+                    )
+                else:
+                    ebay_ingester = EbayIngester(
+                        config_path=self.config_path,
+                        guidelines_path=self.guidelines_path,
+                        config=self.config,
+                    )
+                    ebay_ingester.run()
+
+                patch_stats = apply_label_patches_after_ingest(self.config)
+                if patch_stats.get("enabled"):
+                    results["label_patches"] = patch_stats
+                    if patch_stats.get("updated_total", 0):
+                        logger.info(
+                            "Label patches applied: %d row(s) updated "
+                            "(see data.label_patches_path).",
+                            patch_stats["updated_total"],
+                        )
+
+                vinyl_post = run_post_patch_vinyl_filter_from_config(
+                    self.config,
+                    filter_sale_jsonl=True,
+                )
+                if vinyl_post.get("ran"):
+                    results["discogs_vinyl_post_filter"] = vinyl_post
+                    logger.info(
+                        "Discogs post-patch vinyl filter: dropped=%s kept=%s",
+                        vinyl_post.get("dropped"),
+                        vinyl_post.get("kept"),
+                    )
             else:
                 logger.info("Skipping ingestion — using existing raw data.")
             # Step 2 — Label harmonization
