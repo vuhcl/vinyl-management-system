@@ -86,6 +86,15 @@ class TestHardOverrides:
             engine.check_hard_override("skipping on side two", "sleeve") is None
         )
 
+    def test_vinyl_repeatedly_skips_triggers_poor_media(self, engine):
+        """Affirmative skip phrasing on the disc must Poor media (sleeve unchanged)."""
+        text = (
+            "sleeve is decent close to very good plus but the vinyl repeatedly skips"
+        ).lower()
+        assert engine.check_contradiction(text) is False
+        assert engine.check_hard_override(text, "media") == "Poor"
+        assert engine.check_hard_override(text, "sleeve") is None
+
     def test_turntable_dependent_skip_not_poor(self, engine):
         """Seller says behavior varies by turntable — block Poor hard override."""
         text = (
@@ -146,6 +155,18 @@ class TestHardOverrides:
         )
         assert grade == "Generic"
 
+    def test_poor_sleeve_precedence_over_generic_sleeve(self, engine):
+        """
+        Catastrophic jacket (Poor sleeve) must win over generic-housing cues
+        (Generic) when both hard-match — regression for gold-Poor rows stuck
+        on ``white generic sleeve`` + seam destruction.
+        """
+        text = (
+            "sleeve in very bad condition shipped in white generic sleeve, "
+            "top and bottom seams fully split"
+        )
+        assert engine.check_hard_override(text, "sleeve") == "Poor"
+
     def test_generic_matte_black_and_one_sheet_strict_fire(self, engine):
         assert (
             engine.check_hard_override(
@@ -156,6 +177,24 @@ class TestHardOverrides:
         assert (
             engine.check_hard_override(
                 "generic one-sheet sleeve, no artwork", "sleeve"
+            )
+            == "Generic"
+        )
+
+    def test_salsoul_sleeve_triggers_generic(self, engine):
+        assert (
+            engine.check_hard_override(
+                "comes in salsoul sleeve, no picture cover", "sleeve"
+            )
+            == "Generic"
+        )
+
+    def test_structured_cover_equals_generic_strict(self, engine):
+        """Seller template lines like ``cover=generic`` are strict Generic."""
+        assert (
+            engine.check_hard_override(
+                "media=very good plus cover=generic [hairline on media]",
+                "sleeve",
             )
             == "Generic"
         )
@@ -394,6 +433,101 @@ class TestSoftOverrides:
 
 
 class TestApplyMethod:
+    def test_excellent_collapses_to_near_mint_when_soft_off(
+        self, engine, sample_prediction
+    ):
+        """rules.allow_excellent_soft_override false → remap model Excellent to NM."""
+        pred = {
+            **sample_prediction,
+            "predicted_sleeve_condition": "Excellent",
+            "predicted_media_condition": "Excellent",
+            "confidence_scores": {
+                "sleeve": {
+                    "Mint": 0.01,
+                    "Near Mint": 0.01,
+                    "Excellent": 0.96,
+                    "Very Good Plus": 0.01,
+                    "Very Good": 0.005,
+                    "Good": 0.005,
+                    "Poor": 0.005,
+                    "Generic": 0.005,
+                },
+                "media": {
+                    "Mint": 0.01,
+                    "Near Mint": 0.01,
+                    "Excellent": 0.96,
+                    "Very Good Plus": 0.01,
+                    "Very Good": 0.005,
+                    "Good": 0.005,
+                    "Poor": 0.005,
+                },
+            },
+        }
+        text = (
+            "vinyl has one or two very minor hairline surface marks only "
+            "visible under harsh lighting"
+        )
+        result = engine.apply(pred, text)
+        assert result["predicted_sleeve_condition"] == "Near Mint"
+        assert result["predicted_media_condition"] == "Near Mint"
+        assert "Excellent" not in result["confidence_scores"]["sleeve"]
+        assert "Excellent" not in result["confidence_scores"]["media"]
+        assert result["confidence_scores"]["sleeve"]["Near Mint"] == pytest.approx(
+            0.01 + 0.96
+        )
+        assert result["confidence_scores"]["media"]["Near Mint"] == pytest.approx(
+            0.01 + 0.96
+        )
+        assert set(result["metadata"].get("excellent_collapsed_to_near_mint", [])) == {
+            "sleeve",
+            "media",
+        }
+
+    def test_excellent_not_collapsed_when_soft_on(
+        self, engine_allow_excellent, sample_prediction
+    ):
+        pred = {
+            **sample_prediction,
+            "predicted_sleeve_condition": "Excellent",
+            "predicted_media_condition": "Excellent",
+            "confidence_scores": {
+                "sleeve": {
+                    **sample_prediction["confidence_scores"]["sleeve"],
+                    "Excellent": 0.96,
+                    "Near Mint": 0.01,
+                    "Very Good Plus": 0.01,
+                },
+                "media": {
+                    **sample_prediction["confidence_scores"]["media"],
+                    "Excellent": 0.96,
+                    "Near Mint": 0.01,
+                    "Very Good Plus": 0.01,
+                },
+            },
+        }
+        result = engine_allow_excellent.apply(pred, "plays perfectly, no issues")
+        assert result["predicted_sleeve_condition"] == "Excellent"
+        assert result["predicted_media_condition"] == "Excellent"
+        assert "excellent_collapsed_to_near_mint" not in result["metadata"]
+
+    def test_contradiction_still_collapses_excellent_to_nm(
+        self, engine, sample_prediction
+    ):
+        pred = {
+            **sample_prediction,
+            "predicted_sleeve_condition": "Excellent",
+            "predicted_media_condition": "Excellent",
+            "confidence_scores": {
+                "sleeve": {**sample_prediction["confidence_scores"]["sleeve"], "Excellent": 0.96},
+                "media": {**sample_prediction["confidence_scores"]["media"], "Excellent": 0.96},
+            },
+        }
+        result = engine.apply(pred, "sealed record, surface noise on quiet passages")
+        assert result["metadata"]["contradiction_detected"] is True
+        assert result["metadata"]["rule_override_applied"] is False
+        assert result["predicted_sleeve_condition"] == "Near Mint"
+        assert result["predicted_media_condition"] == "Near Mint"
+
     def test_contradiction_suppresses_override(self, engine, sample_prediction):
         text = "sealed record, surface noise on quiet passages"
         result = engine.apply(sample_prediction, text)
