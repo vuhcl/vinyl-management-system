@@ -257,6 +257,224 @@ class TestPromoAndShippingNoiseStripping:
         assert "buy 2 get 1" not in out
         assert "post-invoice" not in out
 
+    def test_priced_to_move_ships_quickly_storage_mailers_ctas_removed(
+        self, preprocessor
+    ):
+        for raw in (
+            "priced to move!",
+            "need to create more storage space.",
+            "ships quickly",
+            "ships quickly, same or next day",
+            "same or next day",
+            "secure vinyl mailer",
+            "pics available",
+            "pics available upon request",
+            "reach out w/ any questions",
+            "reach out with any questions",
+            "us orders only",
+        ):
+            assert preprocessor.clean_text(raw).strip() == ""
+        combined = (
+            "ships quickly, same or next day. secure vinyl mailers! "
+            "us orders only reach out with any questions"
+        )
+        assert preprocessor.clean_text(combined).strip() == ""
+        mixed = (
+            "vg+ sleeve, light ring wear. "
+            "priced to move. ships quickly, same or next day. "
+            "secure vinyl mailer. pics available. us orders only."
+        )
+        out = preprocessor.clean_text(mixed).strip()
+        assert "very good plus" in out
+        assert "ring wear" in out
+        assert "priced" not in out
+        assert "ships quickly" not in out
+        assert "mailer" not in out
+        assert "pics available" not in out
+        assert "orders only" not in out
+
+    def test_offer_for_euro_or_less_removed(self, preprocessor):
+        for raw in (
+            "offer for 2€ or less",
+            "offers for 2 € or less",
+            "offer for 1,50€ or less!",
+            "offer for 3 eur or less",
+        ):
+            assert preprocessor.clean_text(raw).strip() == ""
+        mixed = "vg+ sleeve. offer for 2€ or less."
+        out = preprocessor.clean_text(mixed).strip()
+        assert "very good plus" in out
+        assert "offer for" not in out
+        assert "or less" not in out
+
+    def test_see_my_shipping_policy_mail_prices_removed(self, preprocessor):
+        for raw in (
+            "see my shipping policy for correct mail prices",
+            "see my shipping policy for correct mail price!",
+            "see my shipping policy for correct postal prices.",
+        ):
+            assert preprocessor.clean_text(raw).strip() == ""
+        mixed = (
+            "vg+ sleeve, light wear. "
+            "see my shipping policy for correct mail prices."
+        )
+        out = preprocessor.clean_text(mixed).strip()
+        assert "very good plus" in out
+        assert "shipping policy" not in out
+
+    def test_get_pct_off_final_price_removed(self, preprocessor):
+        for raw in (
+            "get 20% off final price",
+            "get 10 % off final price!",
+            "get 5% off final price.",
+        ):
+            assert preprocessor.clean_text(raw).strip() == ""
+        mixed = "vg+ sleeve. get 20% off final price when you buy 3."
+        out = preprocessor.clean_text(mixed).strip()
+        assert "very good plus" in out
+        assert "final price" not in out
+        assert "20%" not in out
+
+    def test_protective_box_wisconsin_flat_domestic_thanks_small_business_removed(
+        self, preprocessor
+    ):
+        for raw in (
+            "ships in protective box",
+            "ship in a protective boxes!",
+            "independent start-up in wisconsin",
+            "independent startup in wisconsin.",
+            "independent start up in wisconsin",
+            "flat rate $7.50 domestic shipping",
+            "flat rate £4 domestic shipping!",
+            "thanks for supporting small business",
+            "thanks for supporting a small business.",
+            "thanks for supporting small businesses!",
+        ):
+            assert preprocessor.clean_text(raw).strip() == ""
+        mixed = (
+            "vg+ sleeve, light wear. ships in protective box. "
+            "flat rate $7.50 domestic shipping. "
+            "thanks for supporting small business. "
+            "independent start-up in wisconsin."
+        )
+        out = preprocessor.clean_text(mixed).strip()
+        assert "very good plus" in out
+        assert "protective" not in out
+        assert "wisconsin" not in out
+        assert "domestic shipping" not in out
+        assert "small business" not in out
+
+    def test_grade_mint_only_when_still_sealed_policy_removed(self, preprocessor):
+        raw = "i generally only grade mint when records are still sealed"
+        assert preprocessor.clean_text(raw).strip() == ""
+        assert preprocessor.clean_text(raw + ".").strip() == ""
+        mixed = (
+            "vg+ sleeve, light ring wear. "
+            "i generally only grade mint when records are still sealed."
+        )
+        out = preprocessor.clean_text(mixed).strip()
+        assert "very good plus" in out
+        assert "ring wear" in out
+        assert "grade mint" not in out
+        assert "still sealed" not in out
+
+    def test_shipping_time_threshold_and_la_store_blurbs_removed(
+        self, preprocessor
+    ):
+        for raw in (
+            "free over $30",
+            "free over $90!",
+            "free over £25.",
+            "usually same day",
+            "usually same day!",
+            "free same day international shipping",
+            "average 8 - 10 days",
+            "average 8–10 days.",
+            "all shipping includes tracking",
+            "the same price whether you buy 1 or 100 records",
+            "the same price whether you buy 1 or 12 records!",
+            "shipped from our l.a store",
+            "shipped from our la store.",
+        ):
+            assert preprocessor.clean_text(raw).strip() == ""
+        # Bare ``over $N`` is not stripped (would hit ``just over $90`` prose).
+        keep = "vg+ sleeve. just over $90 in value on discogs."
+        out_keep = preprocessor.clean_text(keep).strip()
+        assert "just over" in out_keep
+        assert "$90" in out_keep or "90" in out_keep
+        mixed = (
+            "nm vinyl, light hairlines. free over $30. usually same day. "
+            "free same day international shipping. average 8 - 10 days. "
+            "all shipping includes tracking. "
+            "the same price whether you buy 1 or 100 records. "
+            "shipped from our l.a store."
+        )
+        out = preprocessor.clean_text(mixed).strip()
+        assert "near mint" in out
+        assert "hairlines" in out
+        assert "free over" not in out
+        assert "same day" not in out
+        assert "international shipping" not in out
+        assert "average" not in out
+        assert "includes tracking" not in out
+        assert "same price" not in out
+        assert "l.a" not in out
+        assert "store" not in out
+
+    def test_money_unlimited_items_shipped_in_us_removed(self, preprocessor):
+        raw = "$7 unlimited items shipped in the u.s"
+        assert preprocessor.clean_text(raw).strip() == ""
+        assert preprocessor.clean_text(raw + ".").strip() == ""
+        assert preprocessor.clean_text("$12 unlimited item shipped in the u.s!").strip() == ""
+        mixed = "vg+ sleeve. $7 unlimited items shipped in the u.s."
+        out = preprocessor.clean_text(mixed).strip()
+        assert "very good plus" in out
+        assert "unlimited" not in out
+        assert "shipped in the" not in out
+
+    def test_low_priced_worldwide_delivery_standalone_removed(self, preprocessor):
+        for raw in (
+            "low priced",
+            "low-priced!",
+            "worldwide delivery",
+            "worldwide delivery.",
+            "low priced quick worldwide delivery",
+        ):
+            assert preprocessor.clean_text(raw).strip() == ""
+        mixed = "vg+ sleeve, light wear. low priced. worldwide delivery."
+        out = preprocessor.clean_text(mixed).strip()
+        assert "very good plus" in out
+        assert "low priced" not in out
+        assert "worldwide delivery" not in out
+
+    def test_unlimited_uk_shipping_banner_and_photos_on_request_removed(
+        self, preprocessor
+    ):
+        for raw in (
+            "£5 unlimited uk shipping",
+            "£ 5.50 unlimited uk shipping!",
+            "€4 unlimited uk shipping",
+        ):
+            assert preprocessor.clean_text(raw).strip() == ""
+        for raw in (
+            "photos on request",
+            "photo on request.",
+            "photos upon request",
+            "more photos upon request.",
+            "more photos on request",
+            "photos on demand!",
+        ):
+            assert preprocessor.clean_text(raw).strip() == ""
+        sleeve = "vg+ sleeve, light wear. photos on the sleeve under raking light."
+        assert "photos on the sleeve" in preprocessor.clean_text(sleeve).lower()
+        mixed = (
+            "nm vinyl. £5 unlimited uk shipping. more photos on request."
+        )
+        out = preprocessor.clean_text(mixed).strip()
+        assert "near mint" in out
+        assert "unlimited" not in out
+        assert "photos on" not in out
+
     def test_mixed_condition_and_promo_tail_keeps_condition(self, preprocessor):
         raw = (
             "corner wear and ring wear on cover. "
@@ -356,6 +574,72 @@ class TestPromoAndShippingNoiseStripping:
         assert "very good plus" in out
         assert "degritter" not in out
         assert "ultrasonic" not in out
+
+    def test_inventory_ultrasonic_cleaned_and_allow_week_order_status_removed(
+        self, preprocessor
+    ):
+        inv = (
+            "everything in our inventory is ultrasonically cleaned before shipment"
+        )
+        assert preprocessor.clean_text(inv).strip() == ""
+        assert (
+            preprocessor.clean_text(
+                "everything in our inventory is ultrasonic cleaned prior to shipment."
+            ).strip()
+            == ""
+        )
+        status = (
+            "please allow up to 1 week before checking the status of your order"
+        )
+        assert preprocessor.clean_text(status).strip() == ""
+        assert (
+            preprocessor.clean_text(
+                "please allow up to 2 weeks before checking the status of your order!"
+            ).strip()
+            == ""
+        )
+        mixed = (
+            "vg+ sleeve, light wear. "
+            + inv
+            + ". "
+            + status
+            + "."
+        )
+        out = preprocessor.clean_text(mixed).strip()
+        assert "very good plus" in out
+        assert "inventory" not in out
+        assert "ultrasonic" not in out
+        assert "allow up to" not in out
+        assert "status of your order" not in out
+
+    def test_everything_pct_off_through_date_and_sealed_mm_policy_removed(
+        self, preprocessor
+    ):
+        sale = "everything is 10% off through december 31"
+        assert preprocessor.clean_text(sale).strip() == ""
+        assert (
+            preprocessor.clean_text(
+                "everything is 15 % off through january 5th, 2026!"
+            ).strip()
+            == ""
+        )
+        sealed = (
+            "this includes sealed items if the condition is m/m then it is sealed"
+        )
+        assert preprocessor.clean_text(sealed).strip() == ""
+        assert (
+            preprocessor.clean_text(
+                "this includes sealed items if the condition is m / m then it is sealed."
+            ).strip()
+            == ""
+        )
+        mixed = f"vg+ sleeve, light wear. {sale}. {sealed}."
+        out = preprocessor.clean_text(mixed).strip()
+        assert "very good plus" in out
+        assert "december" not in out
+        assert "10%" not in out
+        assert "sealed items if" not in out
+        assert "then it is sealed" not in out
 
     def test_disc_anti_static_ultrasonic_vpi_whiplash_promos_removed(
         self, preprocessor
@@ -743,6 +1027,101 @@ class TestPromoAndShippingNoiseStripping:
         assert "shipping quote" not in out
         assert "international buyers" not in out
 
+    def test_international_kg_parcel_and_fill_parcel_promos_removed(
+        self, preprocessor
+    ):
+        assert (
+            preprocessor.clean_text(
+                "international shipping in 2 kg parcels"
+            ).strip()
+            == ""
+        )
+        assert (
+            preprocessor.clean_text(
+                "international shipping in 10 kg parcel"
+            ).strip()
+            == ""
+        )
+        assert (
+            preprocessor.clean_text(
+                "fill up your parcel with 6 records/ 15 cds"
+            ).strip()
+            == ""
+        )
+        assert (
+            preprocessor.clean_text(
+                "fill up your parcel with 3 records / 7 cd's"
+            ).strip()
+            == ""
+        )
+        mixed = (
+            "nm vinyl, light marks. international shipping in 2 kg parcels "
+            "hairline only"
+        )
+        out = preprocessor.clean_text(mixed).strip()
+        assert "near mint" in out
+        assert "hairline" in out
+        assert "kg parcels" not in out
+        mixed_fill = (
+            "vg+ sleeve. fill up your parcel with 6 records/ 15 cds ring wear"
+        )
+        out_f = preprocessor.clean_text(mixed_fill).strip()
+        assert "very good plus" in out_f
+        assert "ring wear" in out_f
+        assert "fill up your parcel" not in out_f
+
+    def test_ships_business_days_usps_tracking_within_us_custom_mailers_removed(
+        self, preprocessor
+    ):
+        assert preprocessor.clean_text("ships in 2 business days").strip() == ""
+        assert preprocessor.clean_text("ship in 1 business day.").strip() == ""
+        assert preprocessor.clean_text("usps media mail").strip() == ""
+        assert (
+            preprocessor.clean_text("usps media mail with tracking").strip() == ""
+        )
+        assert preprocessor.clean_text("ships with tracking").strip() == ""
+        assert preprocessor.clean_text("sent with tracking!").strip() == ""
+        assert (
+            preprocessor.clean_text("$6 shipping within the u.s").strip() == ""
+        )
+        assert (
+            preprocessor.clean_text("£3 shipping within the us.").strip() == ""
+        )
+        long_blurb = (
+            "i use custom shipping mailers with added corner protection and "
+            "cardboard padding"
+        )
+        assert preprocessor.clean_text(long_blurb).strip() == ""
+        mixed = (
+            "vg+ sleeve, light wear. ships in 2 business days ring bump "
+            "usps media mail $6 shipping within the u.s"
+        )
+        out = preprocessor.clean_text(mixed).strip()
+        assert "very good plus" in out
+        assert "ring bump" in out
+        assert "business days" not in out
+        assert "usps" not in out
+        assert "shipping within" not in out
+
+    def test_low_priced_quick_worldwide_delivery_removed(self, preprocessor):
+        assert (
+            preprocessor.clean_text(
+                "low priced quick worldwide delivery"
+            ).strip()
+            == ""
+        )
+        assert (
+            preprocessor.clean_text("low-priced quick worldwide delivery!")
+            .strip()
+            == ""
+        )
+        out = preprocessor.clean_text(
+            "nm vinyl. low priced quick worldwide delivery light marks"
+        ).strip()
+        assert "near mint" in out
+        assert "light marks" in out
+        assert "worldwide delivery" not in out
+
     def test_qualify_free_shipping_promo_removed(self, preprocessor):
         assert preprocessor.clean_text("qualify for free shipping").strip() == ""
         assert (
@@ -766,6 +1145,45 @@ class TestPromoAndShippingNoiseStripping:
     def test_misc_shop_shipping_promos_removed(self, preprocessor):
         assert preprocessor.clean_text("$9 flat shipping!").strip() == ""
         assert preprocessor.clean_text("£3.50 flat shipping!").strip() == ""
+        assert (
+            preprocessor.clean_text(
+                "$6.50 flat rate shipping on all orders!"
+            ).strip()
+            == ""
+        )
+        assert (
+            preprocessor.clean_text(
+                "€4 flat rate shipping on all orders!"
+            ).strip()
+            == ""
+        )
+        assert (
+            preprocessor.clean_text(
+                "$6.50 flat rate shipping on all orders"
+            ).strip()
+            == ""
+        )
+        assert (
+            preprocessor.clean_text(
+                "$6.95 shipping in the u.s with tracking packed well and "
+                "secure in a new"
+            ).strip()
+            == ""
+        )
+        assert (
+            preprocessor.clean_text(
+                "$6.95 shipping in the u.s with tracking packed well and "
+                "secure in a new mailer."
+            ).strip()
+            == ""
+        )
+        assert (
+            preprocessor.clean_text(
+                "$6.95 shipping in the u.s with tracking packed well and "
+                "secure in a new whiplash mailer"
+            ).strip()
+            == ""
+        )
         assert preprocessor.clean_text("cds ship in cardboard!").strip() == ""
         assert preprocessor.clean_text("cd's ship in cardboard!").strip() == ""
         assert preprocessor.clean_text("read seller terms!").strip() == ""
@@ -802,6 +1220,22 @@ class TestPromoAndShippingNoiseStripping:
         assert "read seller" not in out
         assert "flat shipping" not in out
         assert "cardboard" not in out
+        mixed_flat_rate = (
+            "ex sleeve. $6.50 flat rate shipping on all orders! small corner ding"
+        )
+        out_fr = preprocessor.clean_text(mixed_flat_rate).strip()
+        assert "excellent" in out_fr
+        assert "corner ding" in out_fr
+        assert "flat rate" not in out_fr
+        assert "all orders" not in out_fr
+        mixed_us_ship = (
+            "vg+ vinyl. $6.95 shipping in the u.s with tracking packed well "
+            "and secure in a new. corner ding on sleeve"
+        )
+        out_us = preprocessor.clean_text(mixed_us_ship).strip()
+        assert "very good plus" in out_us
+        assert "corner ding" in out_us
+        assert "tracking packed" not in out_us
 
     def test_buy_today_and_scoop_6x12_promos_removed(self, preprocessor):
         assert preprocessor.clean_text("buy this copy today").strip() == ""
@@ -825,6 +1259,18 @@ class TestPromoAndShippingNoiseStripping:
         out = preprocessor.clean_text("vg+ sleeve. uk post only!").strip()
         assert "very good plus" in out
         assert "uk post" not in out
+
+    def test_uk_pp_for_n_records_promo_removed(self, preprocessor):
+        assert preprocessor.clean_text("uk p+p for 5 records").strip() == ""
+        assert preprocessor.clean_text("uk p&p for 12 records").strip() == ""
+        assert preprocessor.clean_text("uk p+p for 1 record").strip() == ""
+        out = preprocessor.clean_text(
+            "nm vinyl, light hairline. uk p+p for 5 records"
+        ).strip()
+        assert "near mint" in out
+        assert "hairline" in out
+        assert "p+p" not in out
+        assert "p&p" not in out
 
     def test_jacksonville_fair_offers_star_and_unlimited_usa_ship_removed(
         self, preprocessor
