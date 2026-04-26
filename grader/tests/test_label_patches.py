@@ -10,6 +10,7 @@ from grader.src.data.label_patches import (
     apply_label_patches_to_processed_file,
     export_label_patches_from_jsonl,
     load_label_patches,
+    merge_csv_into_label_patches,
 )
 
 
@@ -139,6 +140,37 @@ def test_append_csv_to_label_patches(tmp_path: Path) -> None:
     last = json.loads(lines[-1])
     assert last["item_id"] == "x1"
     assert last["sleeve_label"] == "Very Good"
+
+
+def test_merge_csv_into_label_patches(tmp_path: Path) -> None:
+    dest = tmp_path / "p.jsonl"
+    dest.write_text(
+        '{"item_id": "1", "source": "discogs", "sleeve_label": "Good", '
+        '"media_label": "Mint"}\n',
+        encoding="utf-8",
+    )
+    csv_p = tmp_path / "in.csv"
+    csv_p.write_text(
+        "item_id,source,sleeve_label,media_label\n"
+        "1,discogs,Very Good Plus,\n"
+        "2,discogs,Near Mint,Near Mint\n",
+        encoding="utf-8",
+    )
+    st = merge_csv_into_label_patches(csv_p, dest, dry_run=False)
+    assert st["appended"] == 1
+    assert st["updated_sleeve"] == 1
+    assert st["skipped_rows"] == 0
+    lines = [json.loads(s) for s in dest.read_text(encoding="utf-8").splitlines() if s]
+    assert len(lines) == 2
+    u = next(x for x in lines if x["item_id"] == "1")
+    a = next(x for x in lines if x["item_id"] == "2")
+    assert u["sleeve_label"] == "Very Good Plus" and u["media_label"] == "Mint"
+    assert a == {
+        "item_id": "2",
+        "source": "discogs",
+        "sleeve_label": "Near Mint",
+        "media_label": "Near Mint",
+    }
 
 
 def test_export_label_patches_from_unified(tmp_path: Path) -> None:
