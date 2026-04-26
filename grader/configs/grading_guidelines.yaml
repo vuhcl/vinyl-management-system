@@ -223,11 +223,16 @@ grades:
       - not sealed
       # not "opened" alone — matches "never opened" on sealed listings
       - opened copy
-      - opened to inspect
+      - opened to
+      - does not come sealed
+      - did not come sealed
       - opened shrink
       - still in shrink
       - shrink but opened
       - resealed
+      - was sealed
+      - play tested
+      - playtest
       - re-sealed
       - replaced shrink
       - shrink removed
@@ -248,12 +253,18 @@ grades:
       - corner ding
       - corner dings
       - notch cut
+      - notched
+      - crease
+      - creasing
       - corner cut
       - damaged
       - split
       - crack
       - worn
       - writing
+      - ding
+      - dent
+      - hole
       - sticker
       - water damage
     min_supporting: 0
@@ -268,13 +279,16 @@ grades:
       noticeable defects on cover or inserts.
     hard_signals: []
     supporting_signals_sleeve:
-      - no marks
-      - no defects
       - no wear
       - excellent condition
       - perfect condition
       - mint minus
       - like new
+      - no signs of wear
+      - no obvious wear
+      - no visible wear
+      - no visible shelf wear
+      - no visible shelf-wear
     supporting_signals_media:
       - never played
       - barely played
@@ -290,14 +304,18 @@ grades:
       - seam split
       - scratch
       - scratches
+      - wear
+      - discoloration
       - fold
       - worn
       - writing
       - tape
-      - sticker
       - mold
+      - wear
       - stain
       - ringwear
+      - hole punch
+      - punch hole
       - foggy
       - cloudy
       - haze
@@ -339,12 +357,21 @@ grades:
       - no tape
       - no stickers
       - no sticker
+      - any split
+      - no punch hole
+      - no hole
+      - no ring wear
+      - no stain
+      - no mark
+      - no scratch
+      - turtles sticker
       - without tape
       - without stickers
       - without sticker
       - hype sticker
       - hyped sticker
       - hypesticker
+      - no wear
     forbidden_exceptions_media:
       - no skip
       - no warp
@@ -405,12 +432,12 @@ grades:
       - seam split
       - worn
       - writing
+      - discoloration
       - tape
-      - sticker
-      - price sticker
       - mold
       - stain
       - stains
+      - hole punch
       - ringwear
       - ring wear
       - foxing
@@ -437,8 +464,6 @@ grades:
       - skip
       - skipping
       - mold
-      - stain
-      - stains
       - groove wear
       - foggy
       - cloudy
@@ -464,6 +489,7 @@ grades:
       - no stickers
       - no sticker
       - without tape
+      - any split
       - without stickers
       - without sticker
       - hype sticker
@@ -514,6 +540,12 @@ grades:
       - corner ding
       - light foxing
       - light ringwear
+      - minimal ring wear
+      - minimal wear
+      - minimal edge wear
+      - minimal corner wear
+      - minimal shelf wear
+      - minimal spine wear
       - light ring wear
       - smaller creases
       - light stain
@@ -538,16 +570,9 @@ grades:
     forbidden_signals_sleeve:
       - groove wear
       - tape
-      - sticker
-      - price sticker
       - significant wear
       - heavy wear
       - mold
-      - foggy
-      - cloudy
-      - haze
-      - hazy
-      - clouding
       - seam split
       - spine split
       - cutout
@@ -593,6 +618,7 @@ grades:
       - hyped sticker
       - tiny seam split
       - small seam split
+      - any split
     forbidden_exceptions_media:
       - no skips
       - no pops or skips
@@ -636,6 +662,9 @@ grades:
       - tape on label
       - tape on spine
       - tape on back
+      - notch
+      - notched
+      - clear tape
       - clear-tape
       - tape repair
       - groove wear
@@ -745,7 +774,8 @@ grades:
       - pretty bad
       - visible wear
       - heavy wear
-      - numerous hairlines
+      - partially split
+      - partial split
     supporting_signals_media:
       - significant surface noise
       - surface noise throughout
@@ -770,18 +800,16 @@ grades:
       - opaque
       - numerous hairlines
     forbidden_signals_sleeve:
-      - skipping
-      - skip
-      - cracked
-      - water damage
-      - water damaged
+      - completely split
+      - complete split
+      - chunks missing
+      - cardboard missing
+      - chunk missing
     forbidden_signals_media:
       - skipping
       - skip
       - badly warped
       - cracked
-      - water damage
-      - water damaged
       - won't play
       - does not play
       - unplayable
@@ -885,6 +913,7 @@ grades:
       - completely split
       - complete split
       - fully split
+      - severe decay
       - falling apart
       - in pieces
       - disintegrated
@@ -892,13 +921,15 @@ grades:
       - split along all seams
       - split across
       - ripped apart
+      - torn off
+      - torn apart
       - write off
+      - cracked
       - side of the sleeve is split
       - cover is not present
       - cover not present
       - seam completely split
       - chunks of cardboard missing
-      - seam is starting to separate
     hard_signals_cosignal_sleeve:
       - heavy water damage
       - severe water damage
@@ -908,7 +939,27 @@ grades:
       - terrible condition
       - poor condition
     supporting_signals: []
-    forbidden_signals:
+    forbidden_signals_sleeve:
+    # Negated split — "no splits", "not split" should not be Poor sleeve.
+      - no splits
+      - no split
+      - not split
+      - not severe
+      - no severe
+      # Packaging / seal context — "broken seal", "seal is broken", "not been broken"
+      # describes the shrink-wrap, not the disc.
+      - broken seal
+      - seal broken
+      - seal is broken
+      - not been broken
+      - has not been broken
+      - never been broken
+      # Parenthetical "(broken)" almost always describes an accessory (sticker, tab,
+      # OBI flap), not the disc itself — disc breaks use "cracked" or "broken" plainly.
+      - (broken)
+      - intact
+      - in tact
+    forbidden_signals_media:
       # Negated playback issues — the word-boundary regex "skip" /
       # "skipping" still matches inside these phrases, so listing them
       # as forbiddens is the only way to prevent a negated mention
@@ -979,21 +1030,6 @@ grades:
       # contradictory descriptions are handled by the ``contradictions``
       # list further down (which suppresses all overrides, letting the
       # model decide), not by blocking Poor specifically.
-      # Negated split — "no splits", "not split" should not be Poor sleeve.
-      - no splits
-      - no split
-      - not split
-      # Packaging / seal context — "broken seal", "seal is broken", "not been broken"
-      # describes the shrink-wrap, not the disc.
-      - broken seal
-      - seal broken
-      - seal is broken
-      - not been broken
-      - has not been broken
-      - never been broken
-      # Parenthetical "(broken)" almost always describes an accessory (sticker, tab,
-      # OBI flap), not the disc itself — disc breaks use "cracked" or "broken" plainly.
-      - (broken)
     # Empty stubs flag the gap so Track B iterations fill them from
     # harmful / missed CSV exports.
     forbidden_exceptions_sleeve: []
@@ -1050,6 +1086,8 @@ grades:
       - company sleeve
       - salsoul sleeve
       - replacement sleeve
+      - replacement-sleeve
+      - replacement
       - stock sleeve
     # Cosignal: ambiguous phrases that must corroborate with another strict /
     # cosignal signal. ``white sleeve`` / ``black sleeve`` often refer to a
@@ -1074,6 +1112,7 @@ grades:
       - plain white jacket
       - white label
       - die-cut sleeve
+      - diecut sleeve
       - die cut sleeve
       - promo sleeve
       - promotional sleeve

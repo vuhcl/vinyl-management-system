@@ -300,6 +300,8 @@ preprocessing:
     "ex":     "excellent"
     "e+":     "excellent plus"
     "e-":     "excellent minus"
+    "ois":    "original inner sleeve"
+    "opis":   "original printed inner sleeve"
     "woc":    "writing on cover"
     "wobc":   "writing on back cover"
     "wol":    "writing on label"
