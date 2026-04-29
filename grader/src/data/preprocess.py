@@ -91,6 +91,7 @@ _DEFAULT_PROMO_NOISE_PATTERNS: tuple[str, ...] = (
     "cleaned in a degritter - the best ultrasonic record cleaning",
     "disc stored in anti static inner",
     "ultrasonic cleaned",
+    "cleaned with ultrasonic",
     "vpi vacuumed",
     "shipped in sturdy whiplash mailer",
     "whiplash mailer",
@@ -110,6 +111,10 @@ _DEFAULT_PROMO_NOISE_PATTERNS: tuple[str, ...] = (
     "* -accurate grading or refund*",
     "*buy 5 get cheapest free*",
     "jacksonville pressing",
+    "japanese pressing",
+    "without obi",
+    "w/o obi",
+    "no obi",
     "all fair offers accepted",
     "⭐",
     "$5 unlimited shipping in usa",
@@ -124,6 +129,7 @@ _DEFAULT_PROMO_NOISE_PATTERNS: tuple[str, ...] = (
     "ship throughout the week",
     "we do this professionally",
     "recorded delivery",
+    "still in shrink-wrap",
     "pics available upon request",
     "cheapest price",
     "accepting paypal credit",
@@ -148,6 +154,12 @@ _DEFAULT_PROMO_NOISE_PATTERNS: tuple[str, ...] = (
     "label variation",
     "orders usually processed within 24-48 hours",
     "in business since 1979",
+    "rsd flash sale extended to",
+    "up to 90% off",
+    "items over original prices",
+    "the price you see is the last price only items with this promo text",
+    "items under 3€",
+    "items under 3 eur",
 )
 
 # Currency amount in seller promo/shipping boilerplate (already lowercased).
@@ -174,6 +186,40 @@ _RE_UNLIMITED_USA_SHIP_BANNER = re.compile(
     re.IGNORECASE,
 )
 
+# ``6.50 shipping for unlimited items in usa`` without currency symbol.
+_RE_DECIMAL_SHIPPING_UNLIMITED_ITEMS_USA = re.compile(
+    r"(?:^|\s)\d+(?:[.,]\d+)\s*shipping\s+for\s+unlimited\s+items\s+in\s+usa\s*!*",
+    re.IGNORECASE,
+)
+
+# ``30% off select items`` banner.
+_RE_PERCENT_OFF_SELECT_ITEMS = re.compile(
+    r"\b\d+\s*%\s*off\s+select\s+items\b(?:\s*[!.,…]+)?",
+    re.IGNORECASE,
+)
+
+# Format-only promo fragment often concatenated into seller boilerplate.
+_RE_CD_LP_BRAND_NEW_FRAGMENT = re.compile(
+    r"\bcd\s+lp\s+brand\s+new\b(?:\s*[!.,…]+)?",
+    re.IGNORECASE,
+)
+
+# Generic seller handling/storage boilerplate; not condition evidence.
+_RE_ALL_RECORDS_PROFESSIONALLY_CLEANED = re.compile(
+    r"\ball\s+records?\s+professionally\s+cleaned\b(?:\s*[!.,…]+)?",
+    re.IGNORECASE,
+)
+_RE_STORED_HIGH_QUALITY_ANTISTATIC_SLEEVES = re.compile(
+    r"\bstored\s+in\s+high\s+quality\s+anti(?:-| )static\s+sleeves?\b"
+    r"(?:\s*[!.,…]+)?",
+    re.IGNORECASE,
+)
+_RE_STORED_HIGH_QUALITY_ANTISTATIC_SLEEVES_UNLESS_SEALED = re.compile(
+    r"\bstored\s+in\s+high\s+quality\s+anti(?:-| )static\s+sleeves?\s+"
+    r"unless\s+sealed\b(?:\s*[!.,…]+)?",
+    re.IGNORECASE,
+)
+
 # ``$N unlimited shipping in usa`` (amount parameterized; ``in the usa`` not matched).
 _RE_MONEY_UNLIMITED_SHIPPING_IN_USA = re.compile(
     r"(?:^|\s)"
@@ -192,6 +238,12 @@ _RE_MONEY_UNLIMITED_UK_SHIPPING = re.compile(
 
 # BLACK STAR (U+2B50) / glowing-star emoji (optional U+FE0F) seller decoration.
 _RE_BLACK_STAR_DECORATION = re.compile("\u2b50\ufe0f?")
+
+# ``still in shrink-wrap`` variants, including common typo ``shriankwrap``.
+_RE_STILL_IN_SHRINK_VARIANTS = re.compile(
+    r"\bstill\s+in\s+(?:shrink|shriank)(?:(?:\s*-\s*|\s+)wrap)?\b(?:\s*[!.,…]+)?",
+    re.IGNORECASE,
+)
 
 # UK bulk-shipping promo (Discogs-style; amounts parameterized).
 _RE_UK_BULK_SHIP_PROMO = re.compile(
@@ -246,10 +298,22 @@ _RE_DEGRITTER_ULTRASONIC_PROMO = re.compile(
     re.IGNORECASE,
 )
 
+_RE_DEGRITTER_MK2_LISTENED_GAUGE_CONDITION = re.compile(
+    r"\bcleaned\s+in\s+a\s+degritter\s+mk\.?\s*ii\s+ultrasonic\s+machine\s+"
+    r"record\s+listened\s+to\s+all\s+the\s+way\s+through\s+to\s+gauge\s+condition\b",
+    re.IGNORECASE,
+)
+
 # ``everything in our inventory is ultrasonically cleaned before shipment``.
 _RE_INVENTORY_ULTRASONIC_CLEANED_BEFORE_SHIPMENT = re.compile(
     r"\beverything\s+in\s+our\s+inventory\s+is\s+ultrasonic(?:ally)?\s+cleaned\s+"
     r"(?:before|prior\s+to)\s+shipment\b(?:\s*[!.,…]+)?",
+    re.IGNORECASE,
+)
+
+# ``record has been ultrasonically cleaned`` boilerplate (non-condition process note).
+_RE_RECORD_HAS_BEEN_ULTRASONICALLY_CLEANED = re.compile(
+    r"\brecord\s+has\s+been\s+ultrasonic(?:ally)?\s+cleaned\b(?:\s*[!.,…]+)?",
     re.IGNORECASE,
 )
 
@@ -301,6 +365,18 @@ _RE_FILL_UP_PARCEL_RECORDS_SLASH_CDS = re.compile(
 # ``ships in N business day(s)`` dispatch blurb.
 _RE_SHIPS_IN_N_BUSINESS_DAYS = re.compile(
     r"\bships?\s+in\s+\d+\s+business\s+days?\b(?:\s*[!.,…]+)?",
+    re.IGNORECASE,
+)
+
+_RE_ALL_ORDERS_SHIP_N_BUSINESS_DAYS_LATER = re.compile(
+    r"\ball\s+orders?\s+sold\s+will\s+ship\s+the\s+\d+\s*[-–]\s*\d+\s+"
+    r"business\s+days?\s+later\b(?:\s*[!.,…]+)?",
+    re.IGNORECASE,
+)
+
+_RE_YOU_PURCHASE_FRIDAY_LATEST_SHIP_TUESDAY = re.compile(
+    r"\(\s*you\s+purchase\s+on\s+friday\s*,?\s*latest\s+ship\s+date\s+tuesday\s*\)"
+    r"(?:\s*[!.,…]+)?",
     re.IGNORECASE,
 )
 
@@ -356,6 +432,19 @@ _RE_WORLDWIDE_DELIVERY_STANDALONE = re.compile(
     re.IGNORECASE,
 )
 
+_RE_CHEAP_SAFE_SHIPPING_FROM_EURO_WORLDWIDE = re.compile(
+    r"\bcheap\s*&\s*safe\s+shipping\s+from\s+\d+(?:[.,]\d+)?\s*€\s+worldwide\b"
+    r"(?:\s*[!.,…]+)?",
+    re.IGNORECASE,
+)
+
+# ``pick up in <city> possible`` where city is one or two words.
+_RE_PICK_UP_IN_ONE_OR_TWO_WORDS_POSSIBLE = re.compile(
+    r"\bpick\s+up\s+in\s+[a-z0-9][a-z0-9'&.\-]*(?:\s+[a-z0-9][a-z0-9'&.\-]*)?\s+"
+    r"possible\b(?:\s*[!.,…]+)?",
+    re.IGNORECASE,
+)
+
 _RE_PRICED_TO_MOVE = re.compile(
     r"\bpriced\s+to\s+move\b(?:\s*[!.,…]+)?",
     re.IGNORECASE,
@@ -401,8 +490,72 @@ _RE_REACH_OUT_ANY_QUESTIONS = re.compile(
     re.IGNORECASE,
 )
 
+_RE_ASK_IF_YOU_HAVE_ANY_QUESTIONS = re.compile(
+    r"\bplease\s+ask\s+if\s+you\s+have\s+any\s+questions\b(?:\s*[!.,…]+)?",
+    re.IGNORECASE,
+)
+
+_RE_CAN_SEND_PICS_IF_WANTED = re.compile(
+    r"\bcan\s+send\s+pics?\s+if\s+wanted\b(?:\s*[!.,…]+)?",
+    re.IGNORECASE,
+)
+
+_RE_ASK_BEFORE_COMMITTING_TO_PURCHASE = re.compile(
+    r"\bplease\s+ask\s+before\s+committing\s+to\s+purchase\b(?:\s*[!.,…]+)?",
+    re.IGNORECASE,
+)
+
+_RE_PLEASE_PAY_AT_CHECKOUT = re.compile(
+    r"\bplease\s+pay\s+at\s+checkout\b(?:\s*[!.,…]+)?",
+    re.IGNORECASE,
+)
+
+_RE_ORDERS_NO_PAYMENT_IN_N_HOURS_CANCELLED = re.compile(
+    r"\borders?\s+with\s+no\s+payment\s+in\s+\d+\s+hours?\s+will\s+be\s+cancelled\b"
+    r"(?:\s*[!.,…]+)?",
+    re.IGNORECASE,
+)
+
+_RE_FLAWED_STOCK_BRAND_NEW_SEALED_DISCLAIMER = re.compile(
+    r"\bplease\s+note\s*,?\s*these\s+albums\s+are\s+brand\s+new\s+and\s+sealed\s*,?\s*"
+    r"but\s+from\s+my\s+flawed\s+stock\s*[-–—]?\s*covers\s+may\s+have\s+"
+    r"shelf\s*/\s*shipping\s+wear\s+that\s+includes\s+creases\s+and\s+corner\s+dings\s*"
+    r"\(\s*the\s+records?\s+themselves\s+are\s+guaranteed\s+to\s+be\s+fine\s*\)\s*"
+    r"sometimes\s+major\s*,?\s*usually\s+minor\s*"
+    r"ask\s+first\s+if\s+big\s+creases\s+would\s+be\s+a\s+big\s+concern\s+for\s+you\s*"
+    r"regardless\s*,?\s*save\s+a\s+little\s+money\b(?:\s*[!.,…]+)?",
+    re.IGNORECASE,
+)
+
+_RE_I_HAVE_EXCELLENT_RATINGS = re.compile(
+    r"\bi\s+have\s+excellent\s+ratings\b(?:\s*[!.,…]+)?",
+    re.IGNORECASE,
+)
+
+_RE_WILL_SHIP_QUICKLY_AND_SECURELY = re.compile(
+    r"\bwill\s+ship\s+quickly\s+and\s+securely\b(?:\s*[!.,…]+)?",
+    re.IGNORECASE,
+)
+
+_RE_THANKS_STANDALONE = re.compile(
+    r"\bthanks\b(?:\s*[!.,…]+)?",
+    re.IGNORECASE,
+)
+
+_RE_WHITE_LABEL_PANDA_RARE_DISCLAIMER = re.compile(
+    r"\bthis\s+is\s+black\s+vinyl\s*,?\s*white\s+label\s*"
+    r"\(\s*not\s+the\s+white\s+vinyl\s+pressing\s+with\s+the\s+panda\s+logo\s*\)\s*"
+    r"[-–—]\s*don['\u2019]?t\s+know\s+if\s+it['\u2019]?s\s+rare\b(?:\s*[!.,…]+)?",
+    re.IGNORECASE,
+)
+
 _RE_US_ORDERS_ONLY = re.compile(
     r"\bus\s+orders\s+only\b(?:\s*[!.,…]+)?",
+    re.IGNORECASE,
+)
+
+_RE_CONTINENTAL_US_ONLY = re.compile(
+    r"\bi\s+ship\s+to\s+the\s+continental\s+u\.?\s*s\.?\s+only\b(?:\s*[!.,…]+)?",
     re.IGNORECASE,
 )
 
@@ -427,6 +580,13 @@ _RE_GET_PCT_OFF_FINAL_PRICE = re.compile(
 
 _RE_SHIPS_IN_PROTECTIVE_BOX = re.compile(
     r"\bships?\s+in\s+(?:a\s+)?protective\s+box(?:es)?\b(?:\s*[!.,…]+)?",
+    re.IGNORECASE,
+)
+
+# ``ship(s) in (…) vinyl cardboard`` mailer wording (articles / ``new``).
+_RE_SHIP_IN_NEW_VINYL_CARDBOARD = re.compile(
+    r"\bships?\s+in\s+(?:a\s+new\s+|the\s+new\s+|(?:a|the|new)\s+)"
+    r"?vinyl\s+cardboard\b(?:\s*[!.,…]+)?",
     re.IGNORECASE,
 )
 
@@ -548,6 +708,15 @@ _RE_FLAT_RATE_SHIPPING_ALL_ORDERS = re.compile(
     r"(?:^|\s)"
     + _MONEY_TOKEN
     + r"\s*flat\s+rate\s+shipping\s+on\s+all\s+orders\b(?:[!.,]+)?",
+    re.IGNORECASE,
+)
+
+# ``$4 flat s&h within the US for unlimited items`` shorthand shipping blurb.
+_RE_FLAT_SH_AND_H_WITHIN_US_UNLIMITED_ITEMS = re.compile(
+    r"(?:^|\s)"
+    + _MONEY_TOKEN
+    + r"\s*flat\s+s\s*(?:&|/)\s*h\s+within\s+the\s+u\.?\s*s\.?\s+for\s+"
+    r"unlimited\s+items?\b(?:\s*[!.,…]+)?",
     re.IGNORECASE,
 )
 
@@ -796,22 +965,38 @@ def strip_listing_promo_noise(
     sealed``, international
     buyer shipping-quote CTAs,     ``international shipping in N kg parcel(s)``,
     ``fill up your parcel with N records / M cds``,
-    ``ships in N business day(s)``, ``usps media mail`` (optional ``with tracking``),
+    ``ships in N business day(s)``,
+    ``all orders sold will ship the N-M business days later``,
+    ``(you purchase on friday, latest ship date tuesday)``,
+    ``usps media mail`` (optional ``with tracking``),
     ``shipped/ships/sent with tracking``, ``$N shipping within the u.s``,
     ``$N unlimited item(s) shipped in the u.s``,
     custom-mailer/corner-padding blurbs, ``low priced quick worldwide delivery``,
     standalone ``low priced`` / ``low-priced`` and ``worldwide delivery``,
+    ``cheap & safe shipping from N € worldwide``,
+    ``pick up in <one/two words> possible``,
     ``priced to move``, ``need to create more storage space``,
     ``ships quickly`` (optional comma and ``same or next day``), standalone
     ``same or next day``,
     ``secure vinyl mailer``, ``pics available`` (optional ``upon request``),
     ``photo(s) on request`` / ``upon request`` (optional ``more``;
     ``on demand`` variant),
-    ``reach out w/ or with any questions``, ``us orders only``,
+    ``reach out w/ or with any questions``,
+    ``please ask if you have any questions``,
+    ``can send pic(s) if wanted``,
+    ``please ask before committing to purchase``,
+    ``please pay at checkout``,
+    ``orders with no payment in N hour(s) will be cancelled``,
+    flawed-stock brand-new/sealed disclaimer blocks,
+    ``i have excellent ratings``, ``will ship quickly and securely``,
+    white-label/panda-logo rarity disclaimers,
+    standalone ``thanks``, ``us orders only``,
+    ``i ship to the continental us only``,
     ``offer for N€ or less`` (``eur`` spelling allowed),
     ``see my shipping policy for correct mail / postal prices``,
     ``get N% off final price`` bundle/checkout blurbs,
-    ``ships in (a) protective box`` / ``boxes``, ``independent start-up in wisconsin``,
+    ``ships in (a) protective box`` / ``boxes``, ``ship(s) in (new/a/the) vinyl cardboard``,
+    ``independent start-up in wisconsin``,
     ``flat rate $N domestic shipping``, ``thanks for supporting (a) small business``,
     ``i generally only grade mint when records are still sealed``,
     ``free over $N`` (not bare ``over $N``), ``usually same day``,
@@ -826,6 +1011,7 @@ def strip_listing_promo_noise(
     ``buy N records and get the cheapest for free`` / ``you will receive N free
     records in the same style`` / ``free shipping: above N euro in europe (eu)``
     promos, ``$N flat shipping!`` / ``$N flat rate shipping on all orders`` /
+    ``$N flat s&h within the u.s for unlimited items`` /
     ``$N shipping in the u.s with tracking packed well and secure in a new``,
     ``cds ship in cardboard!``, ``read seller terms!``,
     Pittsburgh real-record-store blurbs, ``less than half … posted here``
@@ -926,6 +1112,44 @@ def strip_listing_promo_noise(
         s = n
 
     while True:
+        n = _RE_DECIMAL_SHIPPING_UNLIMITED_ITEMS_USA.sub(" ", s, count=1)
+        if n == s:
+            break
+        s = n
+
+    while True:
+        n = _RE_PERCENT_OFF_SELECT_ITEMS.sub(" ", s, count=1)
+        if n == s:
+            break
+        s = n
+
+    while True:
+        n = _RE_CD_LP_BRAND_NEW_FRAGMENT.sub(" ", s, count=1)
+        if n == s:
+            break
+        s = n
+
+    while True:
+        n = _RE_ALL_RECORDS_PROFESSIONALLY_CLEANED.sub(" ", s, count=1)
+        if n == s:
+            break
+        s = n
+
+    while True:
+        n = _RE_STORED_HIGH_QUALITY_ANTISTATIC_SLEEVES_UNLESS_SEALED.sub(
+            " ", s, count=1
+        )
+        if n == s:
+            break
+        s = n
+
+    while True:
+        n = _RE_STORED_HIGH_QUALITY_ANTISTATIC_SLEEVES.sub(" ", s, count=1)
+        if n == s:
+            break
+        s = n
+
+    while True:
         n = _RE_MONEY_UNLIMITED_SHIPPING_IN_USA.sub(" ", s, count=1)
         if n == s:
             break
@@ -990,7 +1214,19 @@ def strip_listing_promo_noise(
         s = n
 
     while True:
+        n = _RE_DEGRITTER_MK2_LISTENED_GAUGE_CONDITION.sub(" ", s, count=1)
+        if n == s:
+            break
+        s = n
+
+    while True:
         n = _RE_INVENTORY_ULTRASONIC_CLEANED_BEFORE_SHIPMENT.sub(" ", s, count=1)
+        if n == s:
+            break
+        s = n
+
+    while True:
+        n = _RE_RECORD_HAS_BEEN_ULTRASONICALLY_CLEANED.sub(" ", s, count=1)
         if n == s:
             break
         s = n
@@ -1033,6 +1269,18 @@ def strip_listing_promo_noise(
 
     while True:
         n = _RE_SHIPS_IN_N_BUSINESS_DAYS.sub(" ", s, count=1)
+        if n == s:
+            break
+        s = n
+
+    while True:
+        n = _RE_ALL_ORDERS_SHIP_N_BUSINESS_DAYS_LATER.sub(" ", s, count=1)
+        if n == s:
+            break
+        s = n
+
+    while True:
+        n = _RE_YOU_PURCHASE_FRIDAY_LATEST_SHIP_TUESDAY.sub(" ", s, count=1)
         if n == s:
             break
         s = n
@@ -1086,6 +1334,18 @@ def strip_listing_promo_noise(
         s = n
 
     while True:
+        n = _RE_CHEAP_SAFE_SHIPPING_FROM_EURO_WORLDWIDE.sub(" ", s, count=1)
+        if n == s:
+            break
+        s = n
+
+    while True:
+        n = _RE_PICK_UP_IN_ONE_OR_TWO_WORDS_POSSIBLE.sub(" ", s, count=1)
+        if n == s:
+            break
+        s = n
+
+    while True:
         n = _RE_PRICED_TO_MOVE.sub(" ", s, count=1)
         if n == s:
             break
@@ -1134,7 +1394,73 @@ def strip_listing_promo_noise(
         s = n
 
     while True:
+        n = _RE_ASK_IF_YOU_HAVE_ANY_QUESTIONS.sub(" ", s, count=1)
+        if n == s:
+            break
+        s = n
+
+    while True:
+        n = _RE_CAN_SEND_PICS_IF_WANTED.sub(" ", s, count=1)
+        if n == s:
+            break
+        s = n
+
+    while True:
+        n = _RE_ASK_BEFORE_COMMITTING_TO_PURCHASE.sub(" ", s, count=1)
+        if n == s:
+            break
+        s = n
+
+    while True:
+        n = _RE_PLEASE_PAY_AT_CHECKOUT.sub(" ", s, count=1)
+        if n == s:
+            break
+        s = n
+
+    while True:
+        n = _RE_ORDERS_NO_PAYMENT_IN_N_HOURS_CANCELLED.sub(" ", s, count=1)
+        if n == s:
+            break
+        s = n
+
+    while True:
+        n = _RE_FLAWED_STOCK_BRAND_NEW_SEALED_DISCLAIMER.sub(" ", s, count=1)
+        if n == s:
+            break
+        s = n
+
+    while True:
+        n = _RE_I_HAVE_EXCELLENT_RATINGS.sub(" ", s, count=1)
+        if n == s:
+            break
+        s = n
+
+    while True:
+        n = _RE_WILL_SHIP_QUICKLY_AND_SECURELY.sub(" ", s, count=1)
+        if n == s:
+            break
+        s = n
+
+    while True:
+        n = _RE_THANKS_STANDALONE.sub(" ", s, count=1)
+        if n == s:
+            break
+        s = n
+
+    while True:
+        n = _RE_WHITE_LABEL_PANDA_RARE_DISCLAIMER.sub(" ", s, count=1)
+        if n == s:
+            break
+        s = n
+
+    while True:
         n = _RE_US_ORDERS_ONLY.sub(" ", s, count=1)
+        if n == s:
+            break
+        s = n
+
+    while True:
+        n = _RE_CONTINENTAL_US_ONLY.sub(" ", s, count=1)
         if n == s:
             break
         s = n
@@ -1159,6 +1485,12 @@ def strip_listing_promo_noise(
 
     while True:
         n = _RE_SHIPS_IN_PROTECTIVE_BOX.sub(" ", s, count=1)
+        if n == s:
+            break
+        s = n
+
+    while True:
+        n = _RE_SHIP_IN_NEW_VINYL_CARDBOARD.sub(" ", s, count=1)
         if n == s:
             break
         s = n
@@ -1278,6 +1610,12 @@ def strip_listing_promo_noise(
         s = n
 
     while True:
+        n = _RE_FLAT_SH_AND_H_WITHIN_US_UNLIMITED_ITEMS.sub(" ", s, count=1)
+        if n == s:
+            break
+        s = n
+
+    while True:
         n = _RE_US_SHIPPING_TRACKING_PACKED_SECURE_NEW.sub(" ", s, count=1)
         if n == s:
             break
@@ -1363,6 +1701,12 @@ def strip_listing_promo_noise(
 
     while True:
         n = _RE_BLACK_STAR_DECORATION.sub(" ", s, count=1)
+        if n == s:
+            break
+        s = n
+
+    while True:
+        n = _RE_STILL_IN_SHRINK_VARIANTS.sub(" ", s, count=1)
         if n == s:
             break
         s = n
