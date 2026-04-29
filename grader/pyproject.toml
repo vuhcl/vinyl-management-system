@@ -39,6 +39,13 @@ serve = [
 data_quality = [
     "cleanlab>=2.1.0",
 ]
+llm_assist = [
+    "google-genai",
+    "openai",
+]
+audit_ui = [
+    "streamlit",
+]
 
 [tool.setuptools.packages.find]
 where = [".."]
