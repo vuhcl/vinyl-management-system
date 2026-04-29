@@ -21,6 +21,23 @@ def builder(test_config):
 
 
 class TestExtractTextStrayDigits:
+    def test_extract_texts_strips_us_shipping_tail_on_raw_text(self, builder):
+        """Parity with preprocess: promo noise runs before leading-digit strip."""
+        raw = (
+            " / $6.40 unlimited us-shipping / free on $100 orders of 3+ items read "
+            "seller terms before paying"
+        )
+        records = [
+            {
+                "text_clean": "",
+                "text": raw,
+                "sleeve_label": "Mint",
+                "media_label": "Mint",
+            }
+        ]
+        texts = builder.extract_texts(records)
+        assert texts[0].strip() == ""
+
     def test_strips_boilerplate_digit_in_text_clean(self, builder):
         records = [
             {
@@ -45,6 +62,23 @@ class TestExtractTextStrayDigits:
         texts = builder.extract_texts(records)
         assert "6" not in texts[0].split()
         assert "sealed" in texts[0]
+
+    def test_extract_texts_preserves_bracket_when_inner_has_protected_token(
+        self, builder
+    ):
+        """Gated ``[]`` stripping matches preprocess (guidelines patterns)."""
+        raw = "before [vg+ with light scratch] after"
+        records = [
+            {
+                "text_clean": "",
+                "text": raw,
+                "sleeve_label": "Mint",
+                "media_label": "Mint",
+            }
+        ]
+        texts = builder.extract_texts(records)
+        assert "scratch" in texts[0]
+        assert "[" in texts[0]
 
 
 class TestVectorizerFitting:

@@ -292,8 +292,9 @@ def run_post_patch_vinyl_filter_from_config(
     If ``vinyl_format_filter_stage`` is ``post_patch``, filter ``discogs_processed`` JSONL.
 
     When ``data.sale_history.run_sale_vinyl_in_post_hook`` is true, also re-filter
-    ``discogs_sale_history`` on disk. Pass ``filter_sale_jsonl=False`` when a sale
-    ingest in the same process will write that file (avoids redundant I/O).
+    ``discogs_sale_history`` on disk when ``filter_sale_jsonl`` is true. The training
+    pipeline passes ``filter_sale_jsonl=True`` after sale-history export and label
+    patches so the hook can drop non-vinyl rows from the patched JSONL.
     """
     stage = str(
         (config.get("data") or {}).get("discogs", {}).get(

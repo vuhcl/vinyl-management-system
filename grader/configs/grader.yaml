@@ -79,10 +79,10 @@ data:
     sql_sample_order: ordered
     # After parse + enrich: cap rows per (sleeve_label, media_label), then optional
     # per sleeve_label, then optional global cap.
-    max_rows_per_joint_grade: 5000
+    max_rows_per_joint_grade: 4000
     joint_sample_seed: 42
     # Cap rows per sleeve_label (aggregated over media); runs after joint cap.
-    max_rows_per_sleeve_grade: 30000
+    max_rows_per_sleeve_grade: 25000
     # Omit or null to use joint_sample_seed + 100003 for the sleeve-stratum shuffle.
     sleeve_stratum_sample_seed: null
     # When the sleeve cap fires: if true, split that sleeve's row budget across
@@ -197,14 +197,96 @@ data:
 preprocessing:
   lowercase:              true
   normalize_whitespace:   true
-  # Strip lone digits from seller text (boilerplate leftovers); also applied
-  # when building TF-IDF inputs so stale splits cannot keep junk terms.
+  # When true, applies _strip_leading_numeric_boilerplate in clean_text and in
+  # TF-IDF extract_texts (catalog index digit before condition words). When
+  # false, that step is skipped.
   strip_stray_numeric_tokens: true
+
+  # Case-insensitive substring removals (longest-first at runtime). Applied
+  # after structural markdown/bracket/US-shipping-regex passes in clean_text.
+  promo_noise_patterns:
+    - "all items sent securely in a double padded mailer with the vinyl separated from the sleeve (unless sealed)"
+    - "**all $1 & $2 items = buy 2 get 1 free !! note: price deduction will be made on the least priced items in the order post-invoice so please refrain from making payment until final subtotal is adjusted**"
+    - "/all sealed items are sold \"one way / as is\" and cannot be returned or exchanged"
+    - "all sealed items are sold \"one way / as is\" and cannot be returned or exchanged"
+    - "if not completely satisfied send back for a full refund at our expense"
+    - "all the products that we sell are 100% guaranteed"
+    - "we have a warehouse full of new cd's, cassettes, lp's, 45's, 12'' singles"
+    - "that are 35 plus years old"
+    - "everything has been marked down 75% for another 24 hours ship up to 20 records in usa for only $5!! all orders over $25 cleaned on vpi!"
+    - "summer sale! all vinyl marked down 20%+ unlimited $5--"
+    - "summer sale 10% off storewide 1 week only!"
+    - "packed safely, shipped promptly! lp's are shipped in custom boxes for reinforced protection"
+    - "customs friendly"
+    - "part of my personal collection"
+    - "warehouse back stock"
+    - "always shipped with domestic tracking"
+    - "full refund"
+    - "post x4 records for the same price as shipping one record"
+    - "100 000+ items in our shop in upminster essex (district line / m25)"
+    - "- 1000's more records & cds at our shop in upminster essex"
+    - "100 000+ items in our shop"
+    - "you can collect in store we buy records!"
+    - "cleaned in a degritter - the best ultrasonic record cleaning"
+    - "disc stored in anti static inner"
+    - "ultrasonic cleaned"
+    - "vpi vacuumed"
+    - "shipped in sturdy whiplash mailer"
+    - "whiplash mailer"
+    - "international buyers message me for your shipping quote"
+    - "qualify for free shipping"
+    - "less than half of our inventory is posted here!"
+    - "we're a real record store near pittsburgh pa"
+    - "read seller terms!"
+    - "cds ship in cardboard!"
+    - "$9 flat shipping!"
+    - "scoop purchase limited time buy 6x12\" singles get 6x12\" singles free ( cheapest free )"
+    - "buy this copy today"
+    - "uk post only"
+    - "uk mainland customers 1-7 lp/12\" or 30 7\" singles same p&p combine & save*"
+    - "* -accurate grading or refund*"
+    - "*buy 5 get cheapest free*"
+    - "jacksonville pressing"
+    - "all fair offers accepted"
+    - "⭐"
+    - "$5 unlimited shipping in usa"
+    - "postal charges reflect quality care and services used"
+    - "we're marrs plectrum records official rsd real world indie shop in peterborough uk"
+    - "we’re marrs plectrum records official rsd real world indie shop in peterborough uk"
+    - "all orders in uk sent first class"
+    - "europe/worldwide with tracking"
+    - "we only use quality mailers"
+    - "ship throughout the week"
+    - "we do this professionally"
+    - "recorded delivery"
+    - "pics available upon request"
+    - "cheapest price"
+    - "accepting paypal credit"
+    - "pay in 3"
+    - "watch my cleaning process here"
+    - "orders over $60 ship for $6"
+    - "free shipping on usa orders over $30"
+    - "flatrate shipping rates to all 6 continents"
+    - "from our us-hub"
+    - "check my other black sabbath records and combine shipping !!!"
+    - "buy 12 records and get the cheapest for free"
+    - "you will receive 2 free records in the same style"
+    - "free shipping: above 145 euro in europe (eu)"
+    - "check out our big stock of house techno trance disco & more"
+    - "pick up in barcelona possible"
+    - "cheap worldwide shipping price"
+    - "regular 1-5lp is the same shipping cost (2lp count as 2) gatefold sleeves is as well"
+    - "*was £295 27th jun '25 reduced 8th jun '25 £282 7th aug '25 £275 22nd aug '25 £269 5th sep '25 reduced 10th oct '25*"
+    - "superlow shipping prices to the europe and the us"
+    - "label variation"
+    - "orders usually processed within 24-48 hours"
+    - "in business since 1979"
 
   # Abbreviation expansion — applied before any feature extraction.
   # Order matters: longest/most specific patterns first to avoid
   # partial matches (e.g. "vg++" must come before "vg+").
-  # Protected terms (see grading_guidelines.yaml) are never stripped.
+  # Protected terms (grading_guidelines.yaml) must survive cleaning; promo
+  # stripping avoids blanket ``**…**`` removal (sellers bold real defects).
   abbreviation_map:
     "m-":     "mint minus"
     "nm":     "near mint"
@@ -218,11 +300,14 @@ preprocessing:
     "ex":     "excellent"
     "e+":     "excellent plus"
     "e-":     "excellent minus"
+    "ois":    "original inner sleeve"
+    "opis":   "original printed inner sleeve"
     "woc":    "writing on cover"
     "wobc":   "writing on back cover"
     "wol":    "writing on label"
     "soc":    "sticker on cover"
     "sol":    "sticker on label"
+    "dnap":   "does not affect play"
 
   # Minimum text length after cleaning — listings below this are dropped.
   # Discogs: 10 chars (seller notes expected to be descriptive)
@@ -285,7 +370,9 @@ preprocessing:
 rules:
   guidelines_path:        grader/configs/grading_guidelines.yaml
   confidence_threshold:   0.85     # global fallback if not set per grade
-  # When false (default), soft overrides never assign Excellent (no gold EX in Discogs eval).
+  # When false (default): (1) soft overrides never assign Excellent; (2) any
+  # model-predicted Excellent is remapped to Near Mint after rules (Discogs
+  # schema treats EX as unused — collector NM for near-perfect copies).
   allow_excellent_soft_override: false
   flag_contradictions:    true
   contradiction_action:   return_model_prediction   # suppress override on contradiction

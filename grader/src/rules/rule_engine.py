@@ -6,7 +6,11 @@ Applies grading rubric rules on top of model predictions.
 
 Rule priority (strictly enforced):
   1. Contradiction detection — flag and suppress all overrides
-  2. Hard signal overrides   — Poor, Generic (unconditional)
+  2. Hard signal overrides   — Poor, Generic (unconditional). On **sleeve**,
+     ``check_hard_override`` evaluates **Poor before Generic** so catastrophic
+     jacket damage outranks generic-housing cues (e.g. a destroyed jacket
+     shipped in a white generic sleeve). Media evaluates only Poor among
+     hard-owned grades (Generic is sleeve-only).
   3. Soft signal overrides   — other grades (confidence-gated)
 
 Operates independently on sleeve and media targets.
@@ -77,6 +81,10 @@ MODEL_ONLY_GRADES = {"Mint"}
 SLEEVE = "sleeve"
 MEDIA = "media"
 
+# Hard-owned grades: evaluate Poor before Generic on sleeve so jacket
+# catastrophe wins over housing-type keywords (see module docstring).
+_HARD_OWNED_ORDER_DEFAULT: tuple[str, ...] = ("Poor", "Generic")
+
 # Per-target hard-signal bifurcation is now driven entirely by YAML keys
 # (``hard_signals_strict_sleeve`` / ``hard_signals_strict_media`` and
 # ``hard_signals_cosignal_sleeve`` / ``hard_signals_cosignal_media``).
@@ -103,9 +111,10 @@ class RuleEngine:
     Args:
         guidelines_path: path to grading_guidelines.yaml
         allow_excellent_soft_override: when False (default), :meth:`check_soft_override`
-            never returns ``Excellent`` — use when eval/training have no gold ``Excellent``
-            and soft EX flips are noisy. Set True to restore prior soft-EX behavior
-            (see ``rules.allow_excellent_soft_override`` in grader.yaml).
+            never returns ``Excellent``, and :meth:`apply` remaps any remaining
+            ``Excellent`` prediction (model or rules) to ``Near Mint``. Set True to
+            keep Excellent as a live grade (see ``rules.allow_excellent_soft_override``
+            in grader.yaml).
     """
 
     def __init__(
@@ -516,8 +525,12 @@ class RuleEngine:
         the sealed/unplayed hard signal fires correctly for a subset of
         listings but causes large-scale harm across the full dataset
         because "sealed" appears in non-Mint descriptions.
+
+        Grades are tried in ``_HARD_OWNED_ORDER_DEFAULT`` (Poor, then
+        Generic) so sleeve **Poor** (catastrophic jacket) wins over
+        **Generic** (housing type) when both could match.
         """
-        for grade in ["Generic", "Poor"]:
+        for grade in _HARD_OWNED_ORDER_DEFAULT:
             grade_def = self.grade_defs.get(grade, {})
             applies_to = grade_def.get("applies_to", [SLEEVE, MEDIA])
             if target not in applies_to:
@@ -722,6 +735,29 @@ class RuleEngine:
 
         return None
 
+    def _collapse_excellent_to_near_mint(self, result: dict) -> None:
+        """
+        When soft EX is disabled, map Excellent → Near Mint on final outputs and
+        fold EX probability mass into NM in confidence dicts (if present).
+        """
+        if self._allow_excellent_soft_override:
+            return
+        collapsed: list[str] = []
+        for target, pred_key in (
+            ("sleeve", "predicted_sleeve_condition"),
+            ("media", "predicted_media_condition"),
+        ):
+            if result.get(pred_key) != "Excellent":
+                continue
+            result[pred_key] = "Near Mint"
+            collapsed.append(target)
+            scores = result.get("confidence_scores", {}).get(target)
+            if isinstance(scores, dict) and "Excellent" in scores:
+                ex_prob = float(scores.pop("Excellent", 0.0))
+                scores["Near Mint"] = float(scores.get("Near Mint", 0.0)) + ex_prob
+        if collapsed:
+            result["metadata"]["excellent_collapsed_to_near_mint"] = collapsed
+
     # -----------------------------------------------------------------------
     # Single prediction application
     # -----------------------------------------------------------------------
@@ -766,6 +802,7 @@ class RuleEngine:
             )
             result["metadata"]["rule_override_applied"] = False
             result["metadata"]["rule_override_target"] = None
+            self._collapse_excellent_to_near_mint(result)
             return result
 
         # Step 2 & 3 — Apply rules per target independently
@@ -848,6 +885,7 @@ class RuleEngine:
             result["metadata"]["rule_override_applied"] = False
             result["metadata"]["rule_override_target"] = None
 
+        self._collapse_excellent_to_near_mint(result)
         return result
 
     def _nm_sleeve_split_override(self, text_lower: str) -> Optional[str]:

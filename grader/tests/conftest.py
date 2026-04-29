@@ -207,6 +207,7 @@ def test_config(tmp_dirs, guidelines_path):
         "preprocessing": {
             "lowercase": True,
             "normalize_whitespace": True,
+            "strip_stray_numeric_tokens": True,
             "abbreviation_map": {
                 "m-": "mint minus",
                 "nm": "near mint",

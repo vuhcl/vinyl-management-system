@@ -322,9 +322,17 @@ class TestRegressionGuidelineFixtures:
             is None
         )
 
+    def test_poor_hyphenated_no_skips_does_not_fire(self, engine):
+        assert engine.check_hard_override("no-skips, plays great", "media") is None
+        assert engine.check_hard_override("no-skip on my deck", "media") is None
+        assert engine.check_hard_override("no–skips, nm", "media") is None
+        assert engine.check_hard_override("no—skips, nm", "media") is None
+
     @pytest.mark.parametrize(
         "text",
         [
+            "no skips",
+            "no skip",
             "it plays without problems (no jump / skip / repeat) some noise",
             "surface marks but no jumps or skips, sides c/d vg+",
             "deeper scuffs on side 3 that do not skip, still plays fine",

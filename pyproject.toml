@@ -17,6 +17,9 @@ dependencies = [
 test = [
     "pytest>=7.4.0",
     "pytest-cov>=4.1.0",
+    # Matches vinyl-grader[data_quality] — keeps cleanlab after `uv sync --extra test`
+    # (plain `uv sync` omits optional extras and will prune it).
+    "cleanlab>=2.1.0",
 ]
 
 [tool.uv.workspace]

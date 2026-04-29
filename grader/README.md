@@ -150,7 +150,7 @@ uv run python -m grader.src.data.ingest_sale_history
 
 Useful flags: `--sale-db`, `--out`, `--limit N`, `--require-fetch-ok` (only releases with `sale_history_fetch_status.status = ok`), `--dry-run`.
 
-The full training pipeline runs the same export after Discogs ingest by default. Use **`python -m grader.src.pipeline train --skip-sale-history`** to skip it (for example if the sale DB is empty or you want a faster train).
+The full training pipeline runs the same export at the **start** of ingest (before Discogs/eBay) so `label_patches` can merge into a fresh `discogs_sale_history.jsonl` after the write. Use **`python -m grader.src.pipeline train --skip-sale-history`** to skip it (for example if the sale DB is empty or you want a faster train).
 
 Run **before** harmonize so `discogs_sale_history.jsonl` exists when `LabelHarmonizer` runs.
 
@@ -231,7 +231,7 @@ uv run python -m grader.src.models.transformer
 
 ## Rule-engine iteration loop (Track B)
 
-`grading_guidelines.yaml` evolves in short, measurable iterations. In `grader/configs/grader.yaml`, **`rules.allow_excellent_soft_override`** defaults to **`false`**, so the post-model rule stack does not assign the **Excellent** grade via soft override unless you opt in (useful when training/eval have no gold Excellent). Each loop has two committed outputs: the **baseline snapshot** (`grader/reports/rule_engine_baseline.json`, which includes per-target `delta_macro_f1` and `delta_accuracy` alongside override stats, also mirrored to MLflow tags under `rule_baseline_*`) and the **override audit / rule-owned slice sections** appended to `grader/reports/grade_analysis_{split}.txt` by `_run_rule_engine_evaluation`.
+`grading_guidelines.yaml` evolves in short, measurable iterations. In `grader/configs/grader.yaml`, **`rules.allow_excellent_soft_override`** defaults to **`false`**, so the post-model rule stack does not assign the **Excellent** grade via soft override unless you opt in (useful when training/eval have no gold Excellent). With that default, the rule engine **remaps any final Excellent sleeve or media grade to Near Mint** (confidence mass folded into Near Mint), including when the model predicted Excellent and on the contradiction early-return path, so shipped labels stay off Excellent. Each loop has two committed outputs: the **baseline snapshot** (`grader/reports/rule_engine_baseline.json`, which includes per-target `delta_macro_f1` and `delta_accuracy` alongside override stats, also mirrored to MLflow tags under `rule_baseline_*`) and the **override audit / rule-owned slice sections** appended to `grader/reports/grade_analysis_{split}.txt` by `_run_rule_engine_evaluation`.
 
 **One iteration:**
 
