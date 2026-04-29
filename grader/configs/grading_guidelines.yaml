@@ -217,7 +217,7 @@ grades:
     supporting_signals:
       - unplayed
       - unopened
-    forbidden_signals:
+    forbidden_signals_sleeve:
       # Boilerplate shrink mention without factory seal (common harmful override)
       - unsealed
       - not sealed
@@ -231,8 +231,6 @@ grades:
       - shrink but opened
       - resealed
       - was sealed
-      - play tested
-      - playtest
       - re-sealed
       - replaced shrink
       - shrink removed
@@ -267,6 +265,35 @@ grades:
       - hole
       - sticker
       - water damage
+    forbidden_signals_media:
+      - scratches
+      - scratch
+      - scuff
+      - scuffs
+      - stain
+      - stains
+      - mark
+      - marks
+      - play tested
+      - playtest
+      - unsealed
+      - not sealed
+      # not "opened" alone — matches "never opened" on sealed listings
+      - opened copy
+      - opened to
+      - does not come sealed
+      - did not come sealed
+      - opened shrink
+      - still in shrink
+      - shrink but opened
+      - resealed
+      - was sealed
+      - re-sealed
+      - replaced shrink
+      - shrink removed
+      - shrink gone
+      - partial shrink
+      - no shrink
     min_supporting: 0
     rule_confidence_threshold: 0.90
 
@@ -649,7 +676,12 @@ grades:
       non-raised scratches, 1–2 small raised scratches with only
       light pops — looks rough but not trashed; noise not through
       the whole record; music still over flaws. Merged Discogs VG
-      in this schema.
+      in this schema. Boundary guardrail: if text explicitly says
+      the disc plays through / plays well / sounds good and does not
+      skip (or has no major pops), treat common wear terms (light
+      scratches, faint scuffs, minor crackle/background noise) as
+      at least Very Good evidence (Very Good or Very Good Plus
+      depending on severity), not automatic Good.
     hard_signals: []
     supporting_signals_sleeve:
       - wrinkle
@@ -755,7 +787,13 @@ grades:
       damage or cover peeling. Also: one or two major sleeve issues
       or many small ones stacking to “pretty rough”; larger stains.
       “Foggy/cloudy/hazy” vinyl stays Good-level (or Poor if
-      catastrophic). Discogs G and G+ both map here.
+      catastrophic). Discogs G and G+ both map here. Boundary
+      guardrail: do not downgrade to Good only from light/faint
+      scratch/scuff wording when playback is explicitly "plays well /
+      sounds good / no skips / no major pops"; such evidence can map
+      to Very Good or Very Good Plus depending on severity. Reserve
+      Good for stronger playback-impact language where noise competes
+      with music, wear is heavy, or defects are substantial.
     hard_signals: []
     supporting_signals_sleeve:
       - seam split
@@ -1061,6 +1099,9 @@ grades:
       sub-note in the seller text (e.g. "generic sleeve, VG+")
       — in that case, Generic is the sleeve grade. The
       condition sub-note is preserved in seller notes only.
+      Guardrail: do not infer Generic from poor-condition wording
+      alone; require explicit missing/no-original/generic/replacement
+      sleeve-type evidence.
       **Precedence vs Poor:** catastrophic jacket (**Poor** sleeve
       signals) wins over generic housing (**Generic**) when both
       apply — see ``check_hard_override`` grade order in
@@ -1077,6 +1118,7 @@ grades:
       - no original cover
       - no original sleeve
       - no original jacket
+      - no sleeve
       - no cover
       - no jacket
       - without cover
@@ -1201,6 +1243,10 @@ contradictions:
   - [sealed, surface noise]
   - [sealed, scratches]
   - [sealed, scratch]
+  # Keep this specific (not bare "opened") because contradiction matching is
+  # plain substring and "not opened" would otherwise false-trigger.
+  - [sealed, opened copy]
+  - [sealed, opened to]
   # Sealed copies cannot be meaningfully defect-graded on playback
   # — added in the contradictions-expansion pass to suppress spurious
   # Poor overrides when the seller describes sealed inventory with a
