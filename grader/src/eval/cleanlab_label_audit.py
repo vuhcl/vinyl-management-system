@@ -53,10 +53,10 @@ def _load_yaml(path: Path) -> dict[str, Any]:
         return yaml.safe_load(f)
 
 
-def _load_train_records(splits_dir: Path) -> list[dict]:
-    path = splits_dir / "train.jsonl"
+def _load_split_records(splits_dir: Path, split: str) -> list[dict]:
+    path = splits_dir / f"{split}.jsonl"
     if not path.is_file():
-        raise FileNotFoundError(f"Missing train split: {path}")
+        raise FileNotFoundError(f"Missing {split} split: {path}")
     rows: list[dict] = []
     with open(path, "r", encoding="utf-8") as f:
         for line in f:
@@ -172,11 +172,12 @@ def _verify_jsonl_y_alignment(
     y_disk: np.ndarray,
     encoder,
     target: str,
+    split: str,
 ) -> None:
     if len(records) != len(y_disk):
         raise ValueError(
-            f"Row count mismatch: train.jsonl has {len(records)} rows but "
-            f"train_{target}_y.npy has {len(y_disk)}."
+            f"Row count mismatch: {split}.jsonl has {len(records)} rows but "
+            f"{split}_{target}_y.npy has {len(y_disk)}."
         )
     field = f"{target}_label"
     bad: list[int] = []
@@ -189,7 +190,7 @@ def _verify_jsonl_y_alignment(
                 break
     if bad:
         raise ValueError(
-            f"Label mismatch vs encoder/y.npy at indices {bad} (target={target}). "
+            f"Label mismatch vs encoder/y.npy at indices {bad} (target={target}, split={split}). "
             "Re-run preprocess + tfidf_features so splits match artifacts."
         )
 
@@ -220,6 +221,7 @@ def run_target_audit(
     n_splits: int,
     random_state: int,
     use_tfidf_fallback: bool,
+    split: str = "train",
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     """
     Returns (meta, rows) where ``rows`` are dicts ready for CSV/DictWriter.
@@ -235,8 +237,8 @@ def run_target_audit(
 
     artifacts_dir = Path(config["paths"]["artifacts"])
     features_dir = artifacts_dir / "features"
-    x_path = features_dir / f"train_{target}_X.npz"
-    y_path = features_dir / f"train_{target}_y.npy"
+    x_path = features_dir / f"{split}_{target}_X.npz"
+    y_path = features_dir / f"{split}_{target}_y.npy"
     feature_source = "disk"
     eng_cfg = config.get("models", {}).get("baseline", {}).get(
         "engineered_features", {}
@@ -250,11 +252,16 @@ def run_target_audit(
         X = sp.load_npz(str(x_path))
         y = np.load(str(y_path))
         encoder = _load_encoder(artifacts_dir, target)
-        _verify_jsonl_y_alignment(records, y, encoder, target)
+        _verify_jsonl_y_alignment(records, y, encoder, target, split)
         baseline_lr = _load_baseline_lr(artifacts_dir, target)
         lr_kwargs = _lr_kwargs_from_fitted(baseline_lr)
         lr_source = "baseline_pickle"
     else:
+        if split != "train":
+            raise FileNotFoundError(
+                f"Missing {x_path} or {y_path} for holdout split={split}. "
+                "Run TF-IDF feature extraction first."
+            )
         if not use_tfidf_fallback:
             raise FileNotFoundError(
                 f"Missing {x_path} or {y_path} and TF-IDF fallback disabled."
@@ -282,14 +289,33 @@ def run_target_audit(
         lr_source = "config_lr_clone"
 
     n_classes = len(encoder.classes_)
-    pred_probs, k_used = oof_pred_proba_lr(
-        X,
-        y,
-        n_classes=n_classes,
-        lr_kwargs=lr_kwargs,
-        n_splits=n_splits,
-        random_state=random_state,
-    )
+    if split == "train":
+        pred_probs, k_used = oof_pred_proba_lr(
+            X,
+            y,
+            n_classes=n_classes,
+            lr_kwargs=lr_kwargs,
+            n_splits=n_splits,
+            random_state=random_state,
+        )
+    else:
+        clf = LogisticRegression(**lr_kwargs)
+        x_train_path = features_dir / f"train_{target}_X.npz"
+        y_train_path = features_dir / f"train_{target}_y.npy"
+        if not x_train_path.is_file() or not y_train_path.is_file():
+            raise FileNotFoundError(
+                f"Holdout split={split} requires train features: "
+                f"{x_train_path} and {y_train_path}."
+            )
+        X_train = sp.load_npz(str(x_train_path))
+        y_train = np.load(str(y_train_path))
+        clf.fit(X_train, y_train.astype(np.int64, copy=False))
+        p_split = clf.predict_proba(X)
+        pred_probs = np.zeros((X.shape[0], n_classes), dtype=np.float64)
+        model_classes = clf.classes_.astype(np.int64, copy=False)
+        for j, c in enumerate(model_classes):
+            pred_probs[:, int(c)] = p_split[:, j]
+        k_used = 0
 
     issues = find_label_issues(y, pred_probs)
     scores = get_label_quality_scores(y, pred_probs, method="self_confidence")
@@ -311,10 +337,14 @@ def run_target_audit(
                 "source": rec.get("source", ""),
                 "label_confidence": rec.get("label_confidence", ""),
                 "target": target,
+                "split": split,
                 "sleeve_label": str(rec.get("sleeve_label", "")),
                 "media_label": str(rec.get("media_label", "")),
                 f"{target}_label": given,
+                "model_pred_label": pred_label,
                 "oof_pred_label": pred_label,
+                "model_pred_proba_max": float(np.max(pred_probs[i])),
+                "model_proba_assigned": float(pred_probs[i, int(y[i])]),
                 "cleanlab_label_issue": bool(issues[i]),
                 "cleanlab_self_confidence": float(scores[i]),
                 "feature_source": feature_source,
@@ -326,6 +356,7 @@ def run_target_audit(
     meta = {
         "target": target,
         "n_rows": len(records),
+        "split": split,
         "n_splits_effective": k_used,
         "feature_source": feature_source,
         "lr_C": lr_kwargs["C"],
@@ -373,6 +404,13 @@ def main(argv: Optional[list[str]] = None) -> int:
         help="Subset of targets (default: sleeve media).",
     )
     parser.add_argument(
+        "--splits",
+        nargs="*",
+        choices=["train", "val", "test"],
+        default=["train"],
+        help="Splits to audit (train uses OOF; val/test use holdout predict_proba).",
+    )
+    parser.add_argument(
         "--no-tfidf-fallback",
         action="store_true",
         help="Fail if train_*_X.npz is missing instead of refitting TF-IDF.",
@@ -382,37 +420,49 @@ def main(argv: Optional[list[str]] = None) -> int:
     cfg_path = Path(args.config)
     config = _load_yaml(cfg_path)
     splits_dir = Path(config["paths"]["splits"])
-    records = _load_train_records(splits_dir)
     out_dir = Path(args.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    for target in args.targets:
-        meta, rows = run_target_audit(
-            config=config,
-            config_path=str(cfg_path),
-            target=target,
-            records=records,
-            n_splits=args.n_splits,
-            random_state=args.random_state,
-            use_tfidf_fallback=not args.no_tfidf_fallback,
-        )
-        out_csv = out_dir / f"cleanlab_label_audit_{target}.csv"
-        if not rows:
-            logger.warning("No rows for target=%s — skipping CSV.", target)
-            continue
-        fieldnames = list(rows[0].keys())
-        with open(out_csv, "w", encoding="utf-8", newline="") as f:
-            w = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
-            w.writeheader()
-            w.writerows(rows)
-        logger.info(
-            "Wrote %s (%d rows, n_splits=%s, feature_source=%s, C=%s).",
-            out_csv,
-            meta["n_rows"],
-            meta["n_splits_effective"],
-            meta["feature_source"],
-            meta["lr_C"],
-        )
+    for split in args.splits:
+        records = _load_split_records(splits_dir, split)
+        for target in args.targets:
+            meta, rows = run_target_audit(
+                config=config,
+                config_path=str(cfg_path),
+                target=target,
+                records=records,
+                n_splits=args.n_splits,
+                random_state=args.random_state,
+                use_tfidf_fallback=not args.no_tfidf_fallback,
+                split=split,
+            )
+            out_name = (
+                f"cleanlab_label_audit_{target}.csv"
+                if split == "train" and len(args.splits) == 1
+                else f"cleanlab_label_audit_{split}_{target}.csv"
+            )
+            out_csv = out_dir / out_name
+            if not rows:
+                logger.warning(
+                    "No rows for split=%s target=%s — skipping CSV.", split, target
+                )
+                continue
+            fieldnames = list(rows[0].keys())
+            with open(out_csv, "w", encoding="utf-8", newline="") as f:
+                w = csv.DictWriter(
+                    f, fieldnames=fieldnames, extrasaction="ignore"
+                )
+                w.writeheader()
+                w.writerows(rows)
+            logger.info(
+                "Wrote %s (%d rows, split=%s, n_splits=%s, feature_source=%s, C=%s).",
+                out_csv,
+                meta["n_rows"],
+                split,
+                meta["n_splits_effective"],
+                meta["feature_source"],
+                meta["lr_C"],
+            )
     return 0
 
 
