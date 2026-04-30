@@ -43,7 +43,6 @@ ENV PIP_NO_CACHE_DIR=1 \
     TRANSFORMERS_CACHE=/root/.cache/huggingface
 
 COPY --from=deps /tmp/requirements.txt /tmp/requirements.txt
-RUN pip install --upgrade pip && pip install -r /tmp/requirements.txt
 
 # Selective runtime source — only what `grader.serving.main` and its transitive
 # imports need. `grader.src.export.coreml_export` lives under `grader/src/`
@@ -59,6 +58,8 @@ COPY grader/__init__.py      ./grader/__init__.py
 COPY grader/src              ./grader/src
 COPY grader/serving          ./grader/serving
 COPY grader/configs          ./grader/configs
+
+RUN pip install --upgrade pip && pip install -r /tmp/requirements.txt
 
 # Pre-cache the DistilBERT base weights so cold start does not have to
 # download them inside the cluster on the first request.
