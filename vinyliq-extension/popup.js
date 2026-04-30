@@ -23,9 +23,23 @@ function fillSelect(id) {
 async function init() {
   fillSelect("media");
   fillSelect("sleeve");
-  const { apiBase = "http://127.0.0.1:8801", apiKey = "" } =
-    await chrome.storage.sync.get(["apiBase", "apiKey"]);
-  document.getElementById("apiBase").value = apiBase;
+
+  // 0.2.0 split a single ``apiBase`` (price-only) into ``priceApiBase`` and
+  // ``graderApiBase``. If only the legacy key exists, fold it into the new
+  // price key so users do not have to re-enter their URL after upgrade.
+  const stored = await chrome.storage.sync.get([
+    "priceApiBase",
+    "graderApiBase",
+    "apiBase",
+    "apiKey",
+  ]);
+  const priceApiBase =
+    stored.priceApiBase || stored.apiBase || "http://127.0.0.1:8801";
+  const graderApiBase = stored.graderApiBase || "http://127.0.0.1:8090";
+  const apiKey = stored.apiKey || "";
+
+  document.getElementById("priceApiBase").value = priceApiBase;
+  document.getElementById("graderApiBase").value = graderApiBase;
   document.getElementById("apiKey").value = apiKey;
 
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
@@ -47,9 +61,14 @@ async function init() {
       err.textContent = "Open a release page first.";
       return;
     }
-    const base = document.getElementById("apiBase").value.trim();
+    const priceBase = document.getElementById("priceApiBase").value.trim();
+    const graderBase = document.getElementById("graderApiBase").value.trim();
     const key = document.getElementById("apiKey").value.trim();
-    await chrome.storage.sync.set({ apiBase: base, apiKey: key });
+    await chrome.storage.sync.set({
+      priceApiBase: priceBase,
+      graderApiBase: graderBase,
+      apiKey: key,
+    });
 
     const body = {
       release_id: releaseId,
@@ -60,7 +79,7 @@ async function init() {
 
     const resp = await chrome.runtime.sendMessage({
       type: "ESTIMATE",
-      apiBase: base,
+      apiBase: priceBase,
       apiKey: key,
       body,
     });
