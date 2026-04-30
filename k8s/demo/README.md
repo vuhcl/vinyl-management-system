@@ -80,8 +80,8 @@ gcloud services enable \
   iam.googleapis.com \
   compute.googleapis.com \
   certificatemanager.googleapis.com \
-  gateway.googleapis.com \
-  networkservices.googleapis.com
+  networkservices.googleapis.com \
+  networksecurity.googleapis.com
 
 gcloud artifacts repositories create "${AR_REPO:-vinyl-images}" \
   --repository-format=docker --location="$GCP_REGION"
