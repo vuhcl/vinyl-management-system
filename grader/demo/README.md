@@ -2,7 +2,7 @@
 
 This folder owns the small "golden" fixture that drives the recorded
 demo and the Playwright spec
-([`tools/vinyliq_demo_playwright/`](../../tools/vinyliq_demo_playwright/)).
+([`demo/vinyliq_demo_playwright/`](../../demo/vinyliq_demo_playwright/)).
 
 ## What's here
 
@@ -14,6 +14,7 @@ demo and the Playwright spec
   grader is expected to predict.
 
 The Playwright spec asserts:
+
 1. `/predict` on `examples[i].text` returns
    `examples[i].expected_media_condition` and
    `examples[i].expected_sleeve_condition` exactly.
@@ -25,7 +26,7 @@ The Playwright spec asserts:
 ## Curation workflow (strict order)
 
 > Run after the GKE deploy (or local services) is up and the grader
-> + price models load cleanly.
+> and price models load cleanly.
 
 1. **Confirm the release works for `/estimate`.**
 
@@ -86,7 +87,7 @@ different price) instead of abstract.
 
 ## Related files
 
-- [`tools/vinyliq_demo_playwright/tests/demo.spec.ts`](../../tools/vinyliq_demo_playwright/tests/demo.spec.ts)
+- [`demo/vinyliq_demo_playwright/tests/demo.spec.ts`](../../demo/vinyliq_demo_playwright/tests/demo.spec.ts)
   — consumes this file via the `GOLDEN_FILE` env var.
 - [`vinyliq-extension/seller-grade.js`](../../vinyliq-extension/seller-grade.js)
   — the production code path the recorded demo exercises.

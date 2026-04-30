@@ -6,7 +6,7 @@ A monorepo for vinyl collection tooling: **Discogs integration**, **data ingest*
 
 <!--
   REPLACE the src below with the GitHub user-attachments URL produced
-  by following tools/vinyliq_demo_playwright/RECORDING.md. Drag the
+  by following demo/vinyliq_demo_playwright/RECORDING.md. Drag the
   generated demo.mp4 into a GitHub issue/PR comment box, copy the
   https://github.com/user-attachments/assets/<id>/demo.mp4 URL, and
   paste it here. The width=720 + controls reflow nicely on github.com.
@@ -15,7 +15,7 @@ A monorepo for vinyl collection tooling: **Discogs integration**, **data ingest*
        controls
        width="720"></video>
 
-End-to-end demo: a seller pastes condition notes into a Discogs sell-listing form, the VinylIQ Chrome extension calls the **grader API** to predict media + sleeve grades and updates the dropdowns, then on the matching release page the same extension calls the **price API** and renders an estimate that varies meaningfully with the predicted condition. Full deploy is on GKE Autopilot — see [`k8s/demo/README.md`](k8s/demo/README.md) for the runbook and [`tools/vinyliq_demo_playwright/RECORDING.md`](tools/vinyliq_demo_playwright/RECORDING.md) for the recording flow.
+End-to-end demo: a seller pastes condition notes into a Discogs sell-listing form, the VinylIQ Chrome extension calls the **grader API** to predict media + sleeve grades and updates the dropdowns, then on the matching release page the same extension calls the **price API** and renders an estimate that varies meaningfully with the predicted condition. Full deploy is on GKE Autopilot — see [`k8s/demo/README.md`](k8s/demo/README.md) for the runbook and [`demo/vinyliq_demo_playwright/RECORDING.md`](demo/vinyliq_demo_playwright/RECORDING.md) for the recording flow.
 
 ---
 
@@ -197,7 +197,7 @@ The recommender can use **Album of the Year** user ratings and album metadata fo
 | Web app | [web/README.md](web/README.md) |
 | AOTY scrapers (personal) | [scrapers/aoty/README.md](scrapers/aoty/README.md) |
 | GKE demo deploy runbook | [k8s/demo/README.md](k8s/demo/README.md) |
-| Demo automation (Playwright) | [tools/vinyliq_demo_playwright/README.md](tools/vinyliq_demo_playwright/README.md) |
+| Demo automation (Playwright) | [demo/vinyliq_demo_playwright/README.md](demo/vinyliq_demo_playwright/README.md) |
 | Demo golden file | [grader/demo/README.md](grader/demo/README.md) |
 | Structure & coordination | [PROJECT_STRUCTURE.md](PROJECT_STRUCTURE.md) |
 
