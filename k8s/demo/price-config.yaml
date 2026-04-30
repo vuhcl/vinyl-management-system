@@ -1,0 +1,20 @@
+# Price API config override mounted at /etc/vinyliq/config.yaml.
+#
+# The Deployment sets VINYLIQ_CONFIG=/etc/vinyliq/config.yaml so
+# price_estimator.src.inference.service.load_yaml_config picks this up
+# instead of the package-relative configs/base.yaml. Paths point at the
+# PVC mount (`/data`), populated during Phase 4 bootstrap.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: price-config
+  namespace: vinyl-demo
+data:
+  config.yaml: |
+    inherits: configs/base.yaml
+    vinyliq:
+      paths:
+        feature_store_db: /data/feature_store.sqlite
+        marketplace_db: /data/cache/marketplace_stats.sqlite
+        sale_history_db: /data/cache/sale_history.sqlite
+        model_dir: /data/artifacts/vinyliq

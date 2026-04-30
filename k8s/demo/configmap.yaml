@@ -1,0 +1,19 @@
+# Cluster-wide non-secret tunables for both APIs.
+#
+# MLflow URIs are not strictly secret (they are public per the demo
+# system-design slide), but the bootstrap runbook stores MLFLOW_TRACKING_URI
+# / MLFLOW_MODEL_URI in the `vinyl-mlflow` Secret to keep all imperative
+# `kubectl create secret` steps in one place. This ConfigMap holds knobs
+# that change behavior, not URLs.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: vinyl-config
+  namespace: vinyl-demo
+data:
+  # Memorystore TTL: 30 days (matches the demo system-design slide and the
+  # default in price_estimator.src.storage.redis_stats_cache).
+  REDIS_TTL_SECONDS: "2592000"
+  REDIS_PORT: "6379"
+  REDIS_DB: "0"
+  LOG_LEVEL: "INFO"
