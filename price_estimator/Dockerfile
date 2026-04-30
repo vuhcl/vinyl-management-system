@@ -1,37 +1,75 @@
 # Build from repository root:
 #   docker build -f price_estimator/Dockerfile -t vinyl-price-estimator:latest .
+#
+# Two-stage build (matches grader/Dockerfile):
+#   - deps:    stub pyproject.toml for every workspace member; `uv export`
+#              writes a lean requirements.txt (no full source needed thanks
+#              to --frozen).
+#   - runtime: pip install + selective source COPY. Drops `core/`, `grader/`,
+#              `recommender/`, `web/`, plus `price_estimator/{scripts,tests,
+#              data,artifacts}/` — none of which the API serves from.
+#
+# The price API loads its trained model from the local filesystem at
+# `vinyliq.paths.model_dir`. In the GKE deploy the path is overridden to
+# `/data/artifacts/vinyliq` via a ConfigMap-mounted YAML and the trained
+# model lives on a PVC alongside the SQLite databases.
 
-FROM python:3.12-slim
+FROM python:3.12-slim AS deps
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential \
-    curl \
+    build-essential curl \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 
-WORKDIR /app
-
-ENV UV_COMPILE_BYTECODE=1 \
-    UV_LINK_MODE=copy \
-    UV_PROJECT_ENVIRONMENT=/app/.venv
+WORKDIR /workspace
 
 COPY pyproject.toml uv.lock ./
 COPY repo_meta ./repo_meta
-COPY shared ./shared
-COPY core ./core
-COPY grader ./grader
-COPY recommender ./recommender
-COPY web ./web
-COPY price_estimator ./price_estimator
+COPY shared/pyproject.toml          ./shared/
+COPY core/pyproject.toml            ./core/
+COPY grader/pyproject.toml          ./grader/
+COPY recommender/pyproject.toml     ./recommender/
+COPY web/pyproject.toml             ./web/
+COPY price_estimator/pyproject.toml ./price_estimator/
 
+RUN uv export --package vinyl-price-estimator --frozen --no-hashes \
+    -o /tmp/requirements.txt
+
+FROM python:3.12-slim AS runtime
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+ENV PIP_NO_CACHE_DIR=1
+
+COPY --from=deps /tmp/requirements.txt /tmp/requirements.txt
+RUN pip install --upgrade pip && pip install -r /tmp/requirements.txt
+
+# Selective runtime source. `vinyl-price-estimator` only depends on
+# `vinyl-shared` in the workspace (see price_estimator/pyproject.toml),
+# so `core/` is intentionally omitted. The package code grep confirms
+# the API + inference + storage paths only `from shared.*` and
+# `from price_estimator.src.*`.
+#
+# `price_estimator/pyproject.toml` is copied because `requirements.txt`
+# contains `-e ./price_estimator` and `-e ./shared`; pip needs each
+# package's pyproject.toml at install time to resolve the editable
+# installs.
+COPY shared                            ./shared
+COPY price_estimator/pyproject.toml    ./price_estimator/pyproject.toml
+COPY price_estimator/__init__.py       ./price_estimator/__init__.py
+COPY price_estimator/src               ./price_estimator/src
+COPY price_estimator/configs           ./price_estimator/configs
+
+# Root-level configs/base.yaml is `inherits:`-referenced by
+# price_estimator/configs/base.yaml; ship it so the default config
+# resolves cleanly (the GKE deploy overrides it via VINYLIQ_CONFIG anyway).
 COPY configs ./configs
 
-RUN uv sync --package vinyl-price-estimator --frozen --no-dev --no-install-project
-
-ENV PATH="/app/.venv/bin:$PATH" \
-    PYTHONPATH=/app
-
-# VinylIQ HTTP API (override for training: docker run ... python -m price_estimator.src.training.train_vinyliq)
+EXPOSE 8801
 ENTRYPOINT ["uvicorn", "price_estimator.src.api.main:app", "--host", "0.0.0.0", "--port", "8801"]
 CMD []

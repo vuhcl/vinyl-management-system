@@ -27,6 +27,7 @@ from ..models.fitted_regressor import (
 )
 from ..storage.feature_store import FeatureStoreDB
 from ..storage.marketplace_db import MarketplaceStatsDB
+from ..storage.redis_stats_cache import RedisStatsCache
 
 
 def _repo_root() -> Path:
@@ -109,6 +110,7 @@ class InferenceService:
         model_dir: Path,
         discogs_token: str | None = None,
         genre_encoder_path: Path | None = None,
+        redis_cache: RedisStatsCache | None = None,
     ) -> None:
         self.marketplace = MarketplaceStatsDB(marketplace_db)
         self.features = FeatureStoreDB(feature_store_db)
@@ -122,6 +124,10 @@ class InferenceService:
             self.model_dir,
             encoder_path=Path(ge) if ge else None,
         )
+        # Optional L1 read cache. Construction never raises; caller may pass
+        # ``RedisStatsCache()`` and the host comes from REDIS_HOST. Disabled
+        # cache is a no-op fallthrough to SQLite (the existing behavior).
+        self.redis_cache = redis_cache if redis_cache is not None else RedisStatsCache()
 
     def _get_discogs_client(self):
         _ensure_shared_path()
@@ -147,24 +153,42 @@ class InferenceService:
         use_cache: bool = True,
         refresh: bool = False,
     ) -> dict[str, Any]:
+        """Read-through cache: Redis -> SQLite -> Discogs API.
+
+        Cache-hit response shape is preserved exactly as before this layer
+        existed: ``{release_lowest_price, num_for_sale, source}``. Redis
+        stores the same two fields keyed by release id; misses fall through
+        to SQLite (still the persistent source of truth) and then to live
+        Discogs. Live fetches write through to both Redis and SQLite.
+        """
         rid = str(release_id).strip()
         if use_cache and not refresh:
+            cached = self.redis_cache.get(rid)
+            if cached is not None:
+                return {
+                    "release_lowest_price": cached.get("release_lowest_price"),
+                    "num_for_sale": cached.get("num_for_sale"),
+                    "source": "cache_redis",
+                }
             row = self.marketplace.get(rid)
             if row:
-                return {
+                payload = {
                     "release_lowest_price": row.get("release_lowest_price"),
                     "num_for_sale": row["num_for_sale"],
-                    "source": "cache",
                 }
+                # Backfill Redis from SQLite so the next hit is warm.
+                self.redis_cache.set(rid, payload)
+                return {**payload, "source": "cache"}
         client = self._get_discogs_client()
         if not client:
             row = self.marketplace.get(rid)
             if row:
-                return {
+                payload = {
                     "release_lowest_price": row.get("release_lowest_price"),
                     "num_for_sale": row["num_for_sale"],
-                    "source": "cache",
                 }
+                self.redis_cache.set(rid, payload)
+                return {**payload, "source": "cache"}
             return {
                 "release_lowest_price": None,
                 "num_for_sale": 0,
@@ -185,6 +209,16 @@ class InferenceService:
             release_payload=release_pl,
         )
         row = self.marketplace.get(rid) or {}
+        # Cache only the minimal projection (matches cache-hit shape) but
+        # return the full live shape so the model sees community + listing
+        # depth signals on fresh fetches (existing behavior).
+        self.redis_cache.set(
+            rid,
+            {
+                "release_lowest_price": row.get("release_lowest_price"),
+                "num_for_sale": row.get("num_for_sale"),
+            },
+        )
         return {
             "release_lowest_price": row.get("release_lowest_price"),
             "num_for_sale": row.get("num_for_sale"),

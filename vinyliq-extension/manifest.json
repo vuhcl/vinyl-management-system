@@ -1,14 +1,14 @@
 {
   "manifest_version": 3,
-  "name": "VinylIQ Price",
-  "version": "0.1.0",
-  "description": "ML-assisted price estimates on Discogs release pages (VinylIQ API)",
+  "name": "VinylIQ",
+  "version": "0.2.0",
+  "description": "ML-assisted price estimates and condition grading on Discogs (VinylIQ APIs)",
   "permissions": ["storage", "activeTab", "scripting"],
   "host_permissions": [
     "https://www.discogs.com/*",
     "http://127.0.0.1/*",
     "http://localhost/*",
-    "https://*/*"
+    "https://*.nip.io/*"
   ],
   "action": {
     "default_popup": "popup.html",
@@ -21,6 +21,11 @@
     {
       "matches": ["https://www.discogs.com/release/*"],
       "js": ["content.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": ["https://www.discogs.com/sell/post/*"],
+      "js": ["seller-grade.js"],
       "run_at": "document_idle"
     }
   ]

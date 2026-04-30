@@ -3,21 +3,30 @@
 <head>
   <meta charset="utf-8" />
   <style>
-    body { width: 300px; font-family: system-ui, sans-serif; font-size: 13px; padding: 10px; }
+    body { width: 320px; font-family: system-ui, sans-serif; font-size: 13px; padding: 10px; }
     label { display: block; margin-top: 8px; font-weight: 600; }
     select, input[type="text"] { width: 100%; margin-top: 4px; box-sizing: border-box; }
     button { margin-top: 12px; width: 100%; padding: 8px; cursor: pointer; }
     .hint { font-size: 11px; color: #666; margin-top: 6px; }
     .err { color: #b00; font-size: 12px; margin-top: 8px; }
+    h4 { margin: 8px 0 0 0; font-size: 12px; color: #444; }
   </style>
 </head>
 <body>
   <strong>VinylIQ</strong>
   <p class="hint" id="release-line">Release: —</p>
-  <label for="apiBase">API base URL</label>
-  <input type="text" id="apiBase" placeholder="http://127.0.0.1:8801" />
-  <label for="apiKey">API key (optional)</label>
+
+  <h4>Price API</h4>
+  <label for="priceApiBase">Price API base URL</label>
+  <input type="text" id="priceApiBase" placeholder="http://127.0.0.1:8801" />
+
+  <h4>Grader API</h4>
+  <label for="graderApiBase">Grader API base URL</label>
+  <input type="text" id="graderApiBase" placeholder="http://127.0.0.1:8090" />
+
+  <label for="apiKey">API key (optional, sent to both)</label>
   <input type="text" id="apiKey" placeholder="if VINYLIQ_API_KEY set on server" />
+
   <label for="media">Media condition</label>
   <select id="media"></select>
   <label for="sleeve">Sleeve condition</label>
