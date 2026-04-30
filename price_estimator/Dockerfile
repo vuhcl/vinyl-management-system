@@ -47,7 +47,6 @@ WORKDIR /app
 ENV PIP_NO_CACHE_DIR=1
 
 COPY --from=deps /tmp/requirements.txt /tmp/requirements.txt
-RUN pip install --upgrade pip && pip install -r /tmp/requirements.txt
 
 # Selective runtime source. `vinyl-price-estimator` only depends on
 # `vinyl-shared` in the workspace (see price_estimator/pyproject.toml),
@@ -69,6 +68,8 @@ COPY price_estimator/configs           ./price_estimator/configs
 # price_estimator/configs/base.yaml; ship it so the default config
 # resolves cleanly (the GKE deploy overrides it via VINYLIQ_CONFIG anyway).
 COPY configs ./configs
+
+RUN pip install --upgrade pip && pip install -r /tmp/requirements.txt
 
 EXPOSE 8801
 ENTRYPOINT ["uvicorn", "price_estimator.src.api.main:app", "--host", "0.0.0.0", "--port", "8801"]
