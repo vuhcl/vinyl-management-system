@@ -290,6 +290,39 @@ Defaults write feature + marketplace SQLite under **`price_estimator/data/`**. U
 | `PRICE_SERVICE_URL` | Web monolith proxies `/api/price/...` here when set |
 | `MLFLOW_TRACKING_URI` | MLflow server URL |
 | `GOOGLE_APPLICATION_CREDENTIALS` | GCS artifact upload (optional) |
+| `REDIS_HOST` | Optional Memorystore (or local Redis) host for the L1 stats cache; unset = SQLite-only |
+| `REDIS_PORT` | Defaults to `6379` |
+| `REDIS_DB` | Defaults to `0` |
+| `REDIS_TTL_SECONDS` | Defaults to `2592000` (30 days); matches the demo system-design slide |
+
+When `REDIS_HOST` is set, `InferenceService.fetch_stats` reads through
+Redis -> SQLite -> Discogs (write-through on live fetches). The
+[`RedisStatsCache`](src/storage/redis_stats_cache.py) gracefully
+degrades to a no-op if Redis is unreachable or the `redis` package is
+missing — local dev keeps working without any Redis at all.
+
+---
+
+## GKE / containerized deployment
+
+For the demo deploy on GKE Autopilot (Memorystore Redis, GCS, MLflow,
+Workload Identity, GitHub Actions Workload Identity Federation), see
+[`k8s/demo/README.md`](../k8s/demo/README.md). Highlights specific to
+this package:
+
+- The price API loads its model from a local filesystem path
+  (`vinyliq.paths.model_dir`), not MLflow. In the GKE deploy, the
+  trained `xgb_model.joblib` and friends live on a `ReadWriteOnce`
+  PersistentVolumeClaim populated from
+  [`price_estimator/artifacts/vinyliq/`](artifacts/vinyliq/) at
+  bootstrap time.
+- A `ConfigMap` mounted at `/etc/vinyliq/config.yaml` overrides
+  `vinyliq.paths.*` to point at the PVC mount; the Deployment sets
+  `VINYLIQ_CONFIG=/etc/vinyliq/config.yaml`.
+- The image is built by
+  [`.github/workflows/demo-deploy.yml`](../.github/workflows/demo-deploy.yml)
+  via [`price_estimator/Dockerfile`](Dockerfile) (two-stage,
+  selective-COPY, `uv export` deps stage).
 
 ---
 
