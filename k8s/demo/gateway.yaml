@@ -1,0 +1,36 @@
+# External GKE Gateway terminating HTTPS at the global L7 load balancer.
+#
+# - `addresses` references the named static IP `vinyl-demo-ip` reserved
+#   in Phase 0 (`gcloud compute addresses create vinyl-demo-ip --global`).
+# - `networking.gke.io/certmap` references a CertificateMap created via
+#   gcloud (see k8s/demo/README.md, "TLS / certificate" section). On GKE
+#   Gateway API, the legacy `ManagedCertificate` k8s resource does NOT
+#   apply — CertificateMap is the supported path.
+# - HTTPRoute (httproute.yaml) attaches per service with `URLRewrite`
+#   filters that strip the `/grader` and `/price` prefixes before
+#   forwarding to the upstream FastAPI services.
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: vinyl-demo-gw
+  namespace: vinyl-demo
+  annotations:
+    networking.gke.io/certmap: vinyl-demo-certmap
+spec:
+  gatewayClassName: gke-l7-global-external-managed
+  addresses:
+    - type: NamedAddress
+      value: vinyl-demo-ip
+  listeners:
+    - name: https
+      protocol: HTTPS
+      port: 443
+      allowedRoutes:
+        namespaces:
+          from: Same
+    - name: http
+      protocol: HTTP
+      port: 80
+      allowedRoutes:
+        namespaces:
+          from: Same

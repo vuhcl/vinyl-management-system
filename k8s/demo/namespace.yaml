@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: vinyl-demo
+  labels:
+    app.kubernetes.io/part-of: vinyl-management-system
+    environment: demo

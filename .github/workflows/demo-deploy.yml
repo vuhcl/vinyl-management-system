@@ -1,0 +1,108 @@
+# GKE demo image pipeline.
+#
+# Builds + pushes both service images to Artifact Registry on every push
+# to `deploy/demo-wave1` (or any of its three feature branches) and on
+# manual `workflow_dispatch`. Each image is tagged with the commit SHA
+# and re-aliased as `:demo` so the Deployments (which use IMAGE_TAG=demo
+# by default) roll forward without manifest edits.
+#
+# Authentication uses GitHub Actions Workload Identity Federation — no
+# long-lived JSON SA keys live in the repo. WIF setup is one-time and
+# documented in k8s/demo/README.md ("CI auth: WIF" section).
+#
+# Required repository secrets:
+#   GCP_PROJECT_ID         - target project for the AR push
+#   GCP_REGION             - e.g. us-central1; matches the AR repo region
+#   AR_REPO                - Artifact Registry repo name (default vinyl-images)
+#   WIF_PROVIDER           - full provider resource name
+#                            (projects/<num>/locations/global/workloadIdentityPools/<pool>/providers/<provider>)
+#   WIF_SERVICE_ACCOUNT    - vinyl-demo-ci@PROJECT.iam.gserviceaccount.com
+#                            (granted roles/artifactregistry.writer)
+
+name: demo-deploy
+
+on:
+  push:
+    branches:
+      - deploy/demo-wave1
+      - deploy/demo-wave1-app
+      - deploy/demo-wave1-infra
+      - deploy/demo-wave1-verify
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: "Override demo alias (defaults to 'demo')"
+        required: false
+        default: "demo"
+
+permissions:
+  contents: read
+  id-token: write    # required for WIF (google-github-actions/auth)
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - service: grader
+            dockerfile: grader/Dockerfile
+          - service: price
+            dockerfile: price_estimator/Dockerfile
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud (WIF)
+        id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
+          service_account: ${{ secrets.WIF_SERVICE_ACCOUNT }}
+
+      - name: Set up gcloud
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure Docker for Artifact Registry
+        run: |
+          gcloud auth configure-docker \
+            "${{ secrets.GCP_REGION }}-docker.pkg.dev" \
+            --quiet
+
+      - name: Set image refs
+        id: refs
+        run: |
+          REPO="${{ secrets.AR_REPO }}"
+          REPO="${REPO:-vinyl-images}"
+          BASE="${{ secrets.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${REPO}/${{ matrix.service }}"
+          DEMO_TAG="${{ github.event.inputs.image_tag || 'demo' }}"
+          echo "image_sha=${BASE}:${{ github.sha }}"   >> "$GITHUB_OUTPUT"
+          echo "image_demo=${BASE}:${DEMO_TAG}"        >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push (linux/amd64)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          platforms: linux/amd64
+          push: true
+          tags: |
+            ${{ steps.refs.outputs.image_sha }}
+            ${{ steps.refs.outputs.image_demo }}
+          # GHA cache keeps the deps stage warm between runs; cache scope
+          # per service so grader's heavy torch layers don't fight the
+          # price image's xgboost/catboost layers.
+          cache-from: type=gha,scope=${{ matrix.service }}
+          cache-to: type=gha,scope=${{ matrix.service }},mode=max
+
+      - name: Summary
+        run: |
+          {
+            echo "### ${{ matrix.service }} pushed"
+            echo
+            echo "- \`${{ steps.refs.outputs.image_sha }}\`"
+            echo "- \`${{ steps.refs.outputs.image_demo }}\`"
+          } >> "$GITHUB_STEP_SUMMARY"

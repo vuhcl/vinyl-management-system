@@ -1,0 +1,65 @@
+# Grader API (DistilBERT pyfunc loaded from MLflow at startup).
+#
+# Cold start can take 60-120 s on the first pod (DistilBERT base weights
+# are pre-cached at image-build time, but mlflow.pyfunc.load_model still
+# has to pull the full registered artifact and warm the inference path).
+# startupProbe gives 5 minutes of leeway; readiness flips ON only after
+# /health returns 200 with model_loaded:true.
+#
+# Render via: envsubst < grader-deployment.yaml | kubectl apply -f -
+# Required env: GCP_REGION, GCP_PROJECT_ID, AR_REPO (default vinyl-images),
+# IMAGE_TAG (default :demo).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: grader-api
+  namespace: vinyl-demo
+  labels:
+    app: grader-api
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: grader-api
+  template:
+    metadata:
+      labels:
+        app: grader-api
+    spec:
+      serviceAccountName: vinyl-runtime
+      containers:
+        - name: grader
+          image: ${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT_ID}/${AR_REPO}/grader:${IMAGE_TAG}
+          imagePullPolicy: Always
+          ports:
+            - name: http
+              containerPort: 8080
+          envFrom:
+            - secretRef:
+                name: vinyl-mlflow
+            - configMapRef:
+                name: vinyl-config
+          startupProbe:
+            httpGet:
+              path: /health
+              port: http
+            failureThreshold: 30
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 15
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 30
+            failureThreshold: 5
+          resources:
+            requests:
+              cpu: "1"
+              memory: "3Gi"
+            limits:
+              memory: "6Gi"
