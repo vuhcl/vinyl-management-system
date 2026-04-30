@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: grader-api
+  namespace: vinyl-demo
+  labels:
+    app: grader-api
+spec:
+  type: ClusterIP
+  selector:
+    app: grader-api
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http

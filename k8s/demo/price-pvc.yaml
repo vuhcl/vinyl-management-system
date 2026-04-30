@@ -1,0 +1,22 @@
+# Price API persistent volume.
+#
+# Holds three artifacts that the API needs at runtime but that we
+# intentionally do NOT bake into the Docker image:
+#   - /data/feature_store.sqlite               (catalog encoders + features)
+#   - /data/cache/marketplace_stats.sqlite     (Discogs cache + training labels)
+#   - /data/artifacts/vinyliq/                 (xgb_model.joblib + companions)
+#
+# 5 Gi is generous; trim or bump in `price-pvc.yaml` if your local SQLite
+# files exceed that. Autopilot defaults to a balanced PD-SSD storage class
+# which is fine for SQLite read traffic.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: vinyl-price-data
+  namespace: vinyl-demo
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 5Gi

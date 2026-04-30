@@ -2,6 +2,21 @@
 
 A monorepo for vinyl collection tooling: **Discogs integration**, **data ingest**, and **three ML components**—recommender, vinyl condition grader, and price estimator—plus a **web interface** to log in with Discogs and sync your data.
 
+## Demo
+
+<!--
+  REPLACE the src below with the GitHub user-attachments URL produced
+  by following demo/vinyliq_demo_playwright/RECORDING.md. Drag the
+  generated demo.mp4 into a GitHub issue/PR comment box, copy the
+  https://github.com/user-attachments/assets/<id>/demo.mp4 URL, and
+  paste it here. The width=720 + controls reflow nicely on github.com.
+-->
+<video src="https://github.com/user-attachments/assets/REPLACE_WITH_DEMO_VIDEO_ID/demo.mp4"
+       controls
+       width="720"></video>
+
+End-to-end demo: a seller pastes condition notes into a Discogs sell-listing form, the VinylIQ Chrome extension calls the **grader API** to predict media + sleeve grades and updates the dropdowns, then on the matching release page the same extension calls the **price API** and renders an estimate that varies meaningfully with the predicted condition. Full deploy is on GKE Autopilot — see [`k8s/demo/README.md`](k8s/demo/README.md) for the runbook and [`demo/vinyliq_demo_playwright/RECORDING.md`](demo/vinyliq_demo_playwright/RECORDING.md) for the recording flow.
+
 ---
 
 ## Features
@@ -11,8 +26,8 @@ A monorepo for vinyl collection tooling: **Discogs integration**, **data ingest*
 | **Web app** | Log in with your Discogs token, sync collection & wantlist to the app, and call ML APIs (recommendations, condition, price). |
 | **Recommender** | Hybrid (ALS + content-based) recommendations using your Discogs collection/wantlist and optional AOTY ratings; optional learned reranker. |
 | **Vinyl condition grader** | Predicts sleeve and media condition from seller notes (e.g. Discogs listings). |
-| **Price estimator (VinylIQ)** | Marketplace stats, feature store, gradient-boosting stack; FastAPI microservice. |
-| **VinylIQ Chrome extension** | Thin client for the price API on Discogs release pages. |
+| **Price estimator (VinylIQ)** | Marketplace stats, feature store, gradient-boosting stack; FastAPI microservice with Memorystore (Redis) cache in front of SQLite + Discogs. |
+| **VinylIQ Chrome extension** | Two-surface client on Discogs: condition grading on the seller listing form (`/sell/post/*`) plus price estimates on release pages (`/release/*`). |
 
 Shared infrastructure: **`shared.discogs_api`** for Discogs HTTP and **`shared.aoty`** for loading scraped Album of the Year CSVs when present.
 
@@ -181,6 +196,9 @@ The recommender can use **Album of the Year** user ratings and album metadata fo
 | VinylIQ Chrome extension | [vinyliq-extension/README.md](vinyliq-extension/README.md) |
 | Web app | [web/README.md](web/README.md) |
 | AOTY scrapers (personal) | [scrapers/aoty/README.md](scrapers/aoty/README.md) |
+| GKE demo deploy runbook | [k8s/demo/README.md](k8s/demo/README.md) |
+| Demo automation (Playwright) | [demo/vinyliq_demo_playwright/README.md](demo/vinyliq_demo_playwright/README.md) |
+| Demo golden file | [grader/demo/README.md](grader/demo/README.md) |
 | Structure & coordination | [PROJECT_STRUCTURE.md](PROJECT_STRUCTURE.md) |
 
 ---

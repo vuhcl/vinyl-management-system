@@ -20,6 +20,9 @@ configs/*.local.yaml
 coverage.xml
 htmlcov/
 
+# Test code (not needed in production images)
+**/tests
+
 # VinylIQ local data and trained models (large; rebuild from pipelines)
 price_estimator/data/cache
 price_estimator/data/dumps

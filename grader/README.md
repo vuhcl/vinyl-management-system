@@ -268,7 +268,26 @@ uv run python -m grader.src.models.transformer
    - every rule-owned `by_after` bucket's `override_precision` is non-decreasing (2 pp slack on small splits),
    - global rule-adjusted macro-F1 is within 1 pp of the prior iteration.
 
-The written plan [`rule-owned_eval_reporting_afdea43a.plan.md`](../.cursor/plans/rule-owned_eval_reporting_afdea43a.plan.md) (§9–§16) enumerates the classification rubric (false hard / missing exception / contradiction candidate / ambiguous) used to categorize each harmful row, and documents why we rejected adding negation-aware contradiction scanning this iteration.
+Each harmful row is categorized using a four-class rubric:
+
+- **False hard** — the rule fired and forced a hard override but the row was actually fine; usually a `forbidden_signals` term that needs demoting to `hard_signals_cosignal` (evidence-required) or removing.
+- **Missing exception** — the rule fired correctly but the row had a legitimate exception that should have suppressed the override; widen `safe_signals` or `cosignal_keywords` rather than narrowing the trigger.
+- **Contradiction candidate** — both pro- and anti-condition signals are present in the same comment; current heuristic suppresses overrides on these rather than scanning for negation.
+- **Ambiguous** — the gold label itself is unclear; flag for label audit (see below) rather than tuning the rule.
+
+We deliberately do not run negation-aware contradiction scanning at this iteration — the precision/recall trade-off is unfavorable on the current label distribution, and label-quality work via the audit pipeline subsumes most of the same wins.
+
+### LLM label-audit workflow
+
+For systematically improving the training label quality, the canonical pipeline is:
+
+1. [`grader/src/eval/label_audit_queue_build.py`](src/eval/label_audit_queue_build.py) — build a candidate review queue from disagreements between baseline / transformer / rules and from cleanlab signals.
+2. [`grader/src/eval/label_audit_run_llm.py`](src/eval/label_audit_run_llm.py) — score each candidate with an LLM using the same grading guidelines the rules use.
+3. [`grader/src/eval/annotation_review_app.py`](src/eval/annotation_review_app.py) — Streamlit UI for human review on top of the LLM proposals (`uv run streamlit run grader/src/eval/annotation_review_app.py`).
+4. [`grader/src/eval/label_audit_export_reviewed.py`](src/eval/label_audit_export_reviewed.py) — export reviewed rows back to a label-patch CSV.
+5. [`grader/src/eval/label_audit_commit_patches.py`](src/eval/label_audit_commit_patches.py) — apply the patches to the training SQLite, with idempotency guards so re-runs are safe.
+
+Calibration metrics for the LLM critic itself live in [`label_audit_calibrate_policy.py`](src/eval/label_audit_calibrate_policy.py) and [`label_audit_eval_critic.py`](src/eval/label_audit_eval_critic.py); rerun those after any prompt or model swap before trusting fresh patches.
 
 ---
 
