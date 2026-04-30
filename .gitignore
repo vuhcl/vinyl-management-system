@@ -107,6 +107,7 @@ scripts/mlflow_retention/
 scripts/generate_notes_directory_structure.py
 scripts/push-to-github.sh
 scripts/verify_api_connections.py
+scripts/print_github_wif_secrets.sh
 
 # Price estimator one-off analysis (not pipeline)
 price_estimator/scripts/spot_check_median_ape_slices.py
