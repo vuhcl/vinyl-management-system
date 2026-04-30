@@ -17,8 +17,7 @@ release ID.
 
 ## Why this is its own project
 
-It lives under `tools/` (per repo hygiene rules — `scripts/` is reserved
-for actual pipelines) and uses npm rather than uv because Playwright
+It lives under `demo/` and uses npm rather than uv because Playwright
 itself is a Node ecosystem tool. No Python is involved here.
 
 ## Prerequisites
@@ -34,7 +33,7 @@ itself is a Node ecosystem tool. No Python is involved here.
 ## Setup
 
 ```bash
-cd tools/vinyliq_demo_playwright
+cd demo/vinyliq_demo_playwright
 npm install
 npm run install-browsers      # downloads Playwright's chromium build
 ```

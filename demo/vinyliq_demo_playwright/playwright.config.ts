@@ -6,7 +6,7 @@ import { defineConfig } from "@playwright/test";
 //
 // `outputDir` collects the .webm files Playwright generates per test;
 // the recording runbook (k8s/demo/README.md does not own this — see
-// tools/vinyliq_demo_playwright/README.md) converts the chosen .webm
+// demo/vinyliq_demo_playwright/README.md) converts the chosen .webm
 // to .mp4 with ffmpeg before uploading to GitHub.
 export default defineConfig({
   testDir: "./tests",

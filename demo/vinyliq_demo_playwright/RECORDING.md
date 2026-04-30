@@ -86,7 +86,7 @@ file before recording.
 ## 2. Record
 
 ```bash
-cd tools/vinyliq_demo_playwright
+cd demo/vinyliq_demo_playwright
 set -a && source ../../.env && set +a
 npm test
 ```
