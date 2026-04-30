@@ -97,6 +97,8 @@ htmlcov/
 
 # Local tooling (scrapers / helpers under repo root; not shipped)
 tools/*
+# vinyliq_demo_playwright is part of the demo deliverable, not a local helper.
+!tools/vinyliq_demo_playwright/
 
 # Root scripts/ helpers (not ingest or train pipeline; keep locally; see .cursorrules)
 scripts/baseline_ndcg.py
