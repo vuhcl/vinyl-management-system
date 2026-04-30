@@ -1,0 +1,16 @@
+{
+  "name": "vinyliq-demo-playwright",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Playwright TypeScript spec that drives the vinyl management system demo (release-page price estimate + seller-page condition grading) and records a 2-minute video.",
+  "scripts": {
+    "test": "playwright test",
+    "test:show": "playwright test --headed",
+    "install-browsers": "playwright install chromium"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.55.0",
+    "@types/node": "^22.0.0",
+    "typescript": "^5.5.0"
+  }
+}

@@ -1,0 +1,22 @@
+{
+  "demo_release_id": 456663,
+  "release_description": "Beatles, The - The Beatles (UK original mono first pressing, 1968 / 'misprint' / true first issue)",
+  "sell_post_url": "https://www.discogs.com/sell/post/REPLACE_WITH_PROJECT_LISTING_ID",
+  "min_price_delta_usd": 100,
+  "examples": [
+    {
+      "id": "A",
+      "text": "REPLACE_AT_CURATION_TIME_LOWER_GRADE_NARRATIVE",
+      "expected_media_condition": "REPLACE_AT_CURATION_TIME",
+      "expected_sleeve_condition": "REPLACE_AT_CURATION_TIME",
+      "notes": "After curation: paste actual P1 from twin estimate; e.g. 'P1=$148 against VG sleeve baseline'."
+    },
+    {
+      "id": "B",
+      "text": "REPLACE_AT_CURATION_TIME_HIGHER_GRADE_NARRATIVE",
+      "expected_media_condition": "REPLACE_AT_CURATION_TIME",
+      "expected_sleeve_condition": "REPLACE_AT_CURATION_TIME",
+      "notes": "After curation: paste actual P2; B must differ from A on at least one of media/sleeve."
+    }
+  ]
+}

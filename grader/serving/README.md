@@ -142,7 +142,33 @@ docker tag vinyl-grader-api:latest YOUR_REGISTRY/vinyl-grader-api:latest
 docker push YOUR_REGISTRY/vinyl-grader-api:latest
 ```
 
-The final image includes `shared/`, `grader/` (including `grader/configs` for the rule engine), and dependencies from `uv export --package vinyl-grader --extra serve`.
+The final image includes `shared/`, `grader/` (including `grader/configs` for the rule engine), and dependencies from `uv export --package vinyl-grader --extra serve`. The Dockerfile uses a two-stage build with a stub-pyproject deps stage so non-target workspace members are not copied into the build context — see [`grader/Dockerfile`](../Dockerfile).
+
+---
+
+## GKE / containerized deployment
+
+The demo deploy on GKE Autopilot is documented in
+[`k8s/demo/README.md`](../../k8s/demo/README.md). Highlights specific
+to the grader:
+
+- The image is published by
+  [`.github/workflows/demo-deploy.yml`](../../.github/workflows/demo-deploy.yml)
+  (Workload Identity Federation auth, no JSON SA keys in the repo) to
+  Artifact Registry under
+  `<region>-docker.pkg.dev/<project>/vinyl-images/grader:demo`.
+- Routing: the GKE Gateway forwards `https://<host>/grader/*` to this
+  Service after a `URLRewrite` filter strips the `/grader` prefix —
+  the routes here (`/`, `/health`, `/predict`) match unchanged. See
+  [`k8s/demo/httproute.yaml`](../../k8s/demo/httproute.yaml).
+- `MLFLOW_TRACKING_URI` and `MLFLOW_MODEL_URI` are injected via the
+  `vinyl-mlflow` Secret (created imperatively from `.env` at
+  bootstrap; see Phase 4 in the runbook).
+- Pod-level GCS auth uses **Workload Identity** (KSA `vinyl-runtime`
+  bound to `RUNTIME_GSA`); no `GOOGLE_APPLICATION_CREDENTIALS` mount.
+- The startup probe gives 5 minutes (`failureThreshold=30,
+  periodSeconds=10`) to let `mlflow.pyfunc.load_model` complete on
+  cold start.
 
 ---
 
