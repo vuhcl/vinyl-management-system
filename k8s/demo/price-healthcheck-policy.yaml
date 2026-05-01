@@ -1,0 +1,29 @@
+# GKE Gateway programs GCP HTTP(S) LB health checks separately from Kubernetes
+# readiness probes. Default request path is "/", which returns 404 for the
+# price FastAPI app → backends stay UNHEALTHY → curl gets 503 despite pods 2/2.
+#
+# Apply after price-service.yaml exists:
+#   kubectl apply -f k8s/demo/price-healthcheck-policy.yaml
+#
+# Docs: https://cloud.google.com/kubernetes-engine/docs/how-to/configure-gateway-resources#configure_health_checks
+apiVersion: networking.gke.io/v1
+kind: HealthCheckPolicy
+metadata:
+  name: price-api-health-check
+  namespace: vinyl-demo
+spec:
+  default:
+    checkIntervalSec: 10
+    timeoutSec: 10
+    healthyThreshold: 1
+    unhealthyThreshold: 3
+    config:
+      type: HTTP
+      httpHealthCheck:
+        portSpecification: USE_FIXED_PORT
+        port: 8801
+        requestPath: /health
+  targetRef:
+    group: ""
+    kind: Service
+    name: price-api
