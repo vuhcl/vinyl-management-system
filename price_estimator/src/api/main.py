@@ -7,6 +7,7 @@ Run from repository root:
 from __future__ import annotations
 
 import os
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, Header, HTTPException
@@ -23,10 +24,20 @@ from price_estimator.src.inference.service import load_service_from_config
 _cfg = os.environ.get("VINYLIQ_CONFIG")
 CONFIG_PATH = Path(_cfg) if _cfg else None
 
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Load model + stores before accepting traffic so /health stays fast under
+    # single-worker uvicorn (probes were timing out during cold get_service()).
+    get_service()
+    yield
+
+
 app = FastAPI(
     title="VinylIQ Price API",
     description="ML-assisted vinyl price estimates for Discogs releases",
     version="0.1.0",
+    lifespan=lifespan,
 )
 
 _svc = None
@@ -53,11 +64,12 @@ def _check_api_key(x_api_key: str | None) -> None:
 async def health(x_api_key: str | None = Header(None, alias="X-API-Key")):
     _check_api_key(x_api_key)
     svc = get_service()
-    n = svc.features.count()
+    # COUNT(*) can exceed kube probes on multi-million-row Postgres; ping only.
+    svc.features.ping()
     loaded = (svc.model_dir / "xgb_model.joblib").exists()
     return HealthResponse(
         status="ok",
-        feature_store_count=n,
+        feature_store_count=None,
         model_loaded=loaded,
     )
 

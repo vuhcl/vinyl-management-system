@@ -1,7 +1,7 @@
 # GKE Autopilot demo runbook (`vinyl-demo` namespace)
 
 End-to-end runbook for the **demo wave 1** deploy: GCP bootstrap, CI auth
-(WIF), Workload Identity, secrets, PVC populate, deploy + smoke. Sibling
+(WIF), Workload Identity, Cloud SQL + slim PVC for models, deploy + smoke. Sibling
 to the application code (`deploy/demo-wave1-app`) and verification
 (`deploy/demo-wave1-verify`) branches.
 
@@ -16,9 +16,16 @@ flowchart LR
     subgraph GKE [GKE Autopilot us-central1]
         Gateway[gke-l7-global-external-managed Gateway] --> Grader[grader-api Pod]
         Gateway --> Price[price-api Pod]
-        Price --> PVC[(PVC /data SQLite + xgb_model.joblib)]
-        Price --> Redis[(Memorystore Redis Basic)]
+        subgraph price_pod [price-api Pod]
+            App[price container]
+            Proxy[cloudsql-proxy sidecar]
+        end
+        App -->|127.0.0.1:5432| Proxy
+        Proxy --> CloudSQL[(Cloud SQL Postgres)]
+        App --> PVC[(PVC model artifacts)]
+        App --> Redis[(Memorystore Redis Basic)]
     end
+    Workstation -->|loader psycopg| CloudSQL
     Grader -->|mlflow.pyfunc.load_model| MLflow[MLflow tracking URI public]
     Price -->|cache miss| Discogs[Discogs API]
 ```
@@ -37,12 +44,17 @@ below.
 ```dotenv
 GCP_PROJECT_ID=...
 GCP_REGION=us-central1
-GCS_BUCKET=...
 
 MLFLOW_TRACKING_URI=https://mlflow.your-host
 MLFLOW_MODEL_URI=models:/VinylGrader/latest
 
 DISCOGS_USER_TOKEN=...
+```
+
+After **Phase 0e** (Cloud SQL bootstrap), append:
+
+```dotenv
+DATABASE_URL=postgresql://vinyl_app:<hex-password>@127.0.0.1:5432/vinyliq
 ```
 
 **Optional overrides (defaults are fine):**
@@ -81,15 +93,26 @@ gcloud services enable \
   compute.googleapis.com \
   certificatemanager.googleapis.com \
   networkservices.googleapis.com \
-  networksecurity.googleapis.com
+  networksecurity.googleapis.com \
+  sqladmin.googleapis.com
 
 gcloud artifacts repositories create "${AR_REPO:-vinyl-images}" \
   --repository-format=docker --location="$GCP_REGION"
 
 gcloud container clusters create-auto "${GKE_CLUSTER:-vinyl-demo}" \
+  --region="$GCP_REGION"
+
+# Newer gcloud versions no longer accept --gateway-api / --workload-pool on
+# create-auto; enable both via cluster update. Run two updates: some CLI
+# versions reject combining --gateway-api and --workload-pool in one
+# command (`Exactly one of (...) must be specified`).
+gcloud container clusters update "${GKE_CLUSTER:-vinyl-demo}" \
   --region="$GCP_REGION" \
-  --gateway-api=standard \
   --workload-pool="$GCP_PROJECT_ID.svc.id.goog"
+
+gcloud container clusters update "${GKE_CLUSTER:-vinyl-demo}" \
+  --region="$GCP_REGION" \
+  --gateway-api=standard
 
 gcloud redis instances create "${REDIS_INSTANCE:-vinyl-demo-redis}" \
   --size=1 --region="$GCP_REGION" --tier=basic --network=default
@@ -188,6 +211,11 @@ gcloud projects add-iam-policy-binding "$GCP_PROJECT_ID" \
   --member="serviceAccount:vinyl-demo-runtime@${GCP_PROJECT_ID}.iam.gserviceaccount.com" \
   --role="roles/storage.objectViewer"
 
+# Cloud SQL Auth Proxy + IAM DB auth path uses cloudsql.client on the runtime GSA
+gcloud projects add-iam-policy-binding "$GCP_PROJECT_ID" \
+  --member="serviceAccount:vinyl-demo-runtime@${GCP_PROJECT_ID}.iam.gserviceaccount.com" \
+  --role="roles/cloudsql.client"
+
 # Bind KSA `vinyl-demo/vinyl-runtime` to this GSA
 gcloud iam service-accounts add-iam-policy-binding \
   "vinyl-demo-runtime@${GCP_PROJECT_ID}.iam.gserviceaccount.com" \
@@ -198,7 +226,52 @@ echo "RUNTIME_GSA=vinyl-demo-runtime@${GCP_PROJECT_ID}.iam.gserviceaccount.com" 
 set -a && source .env && set +a
 ```
 
-## Phase 4 — Apply manifests, create secrets, populate PVC
+## Phase 0e — Cloud SQL for Postgres (feature store + marketplace_stats)
+
+Workstation one-time tools (macOS):
+
+```bash
+brew install libpq cloud-sql-proxy
+brew link --force libpq   # puts psql on PATH
+```
+
+Provision instance + DB user (hex password stays URL-safe in `DATABASE_URL`):
+
+```bash
+set -a && source .env && set +a
+
+# Shared-core tier db-g1-small requires Enterprise edition (not Enterprise Plus).
+# Without --edition=ENTERPRISE, gcloud may default to ENTERPRISE_PLUS, which
+# needs tiers like db-perf-optimized-N-* instead.
+gcloud sql instances create vinyl-demo-db \
+  --database-version=POSTGRES_16 \
+  --edition=ENTERPRISE \
+  --tier=db-g1-small \
+  --region="$GCP_REGION" \
+  --storage-size=10GB \
+  --storage-type=HDD \
+  --storage-auto-increase \
+  --backup-start-time=03:00
+
+gcloud sql databases create vinyliq --instance=vinyl-demo-db
+
+DB_PASSWORD=$(openssl rand -hex 32)
+gcloud sql users create vinyl_app \
+  --instance=vinyl-demo-db \
+  --password="$DB_PASSWORD"
+
+echo "DATABASE_URL=postgresql://vinyl_app:${DB_PASSWORD}@127.0.0.1:5432/vinyliq" >> .env
+set -a && source .env && set +a
+```
+
+Pods and your workstation both use `127.0.0.1:5432`: in-cluster via the
+`cloudsql-proxy` sidecar; locally via `cloud-sql-proxy
+"${GCP_PROJECT_ID}:${GCP_REGION}:vinyl-demo-db" --port=5432`.
+
+Cost tip: pause billing-ish idle state with
+`gcloud sql instances patch vinyl-demo-db --activation-policy=NEVER` between demos.
+
+## Phase 4 — Apply manifests, create secrets, populate data + PVC
 
 ### 1. Namespace + ServiceAccount (templated)
 
@@ -219,6 +292,9 @@ kubectl -n vinyl-demo create secret generic vinyl-redis \
 
 kubectl -n vinyl-demo create secret generic vinyl-discogs \
   --from-literal=DISCOGS_USER_TOKEN="$DISCOGS_USER_TOKEN"
+
+kubectl -n vinyl-demo create secret generic vinyl-cloudsql \
+  --from-literal=DATABASE_URL="$DATABASE_URL"
 ```
 
 `secrets.example.yaml` documents the expected key inventory but is
@@ -232,53 +308,76 @@ kubectl apply -f k8s/demo/price-config.yaml
 kubectl apply -f k8s/demo/price-pvc.yaml
 ```
 
-### 4. Populate the PVC (one-time, before the price-api Deployment rolls)
+`vinyl-cloudsql` must exist **before** `price-deployment.yaml` is applied (Phase 5).
 
-Spin up an idle alpine pod that mounts the PVC, then `kubectl cp` the
-local SQLite + trained model files into it.
+### 4. Schema + Postgres load + model PVC (before Phase 5 deploy)
+
+Apply ConfigMaps + PVC first (§3). Then load **Cloud SQL** from your workstation
+SQLite sources and copy **only** `artifacts/vinyliq` onto the PVC. Run this **before**
+rolling `price-api` so `/health` sees rows + `model_loaded=true`.
 
 ```bash
-# Sanity checks before copying — the demo release_id is 456663 (Beatles
-# White Album original mono first pressing).
+set -a && source .env && set +a
+
+# Local proxy (terminal 1 or background)
+cloud-sql-proxy "${GCP_PROJECT_ID}:${GCP_REGION}:vinyl-demo-db" --port=5432 &
+PROXY_PID=$!
+until pg_isready -h 127.0.0.1 -p 5432 -U vinyl_app -d vinyliq; do sleep 1; done
+
+# Sanity — demo release_id 456663 (Beatles White Album mono first press).
 sqlite3 price_estimator/data/cache/marketplace_stats.sqlite \
   "SELECT release_id FROM marketplace_stats WHERE release_id='456663';"
 ls price_estimator/artifacts/vinyliq/xgb_model.joblib
 
-# Optional: shrink SQLite before transfer
-sqlite3 price_estimator/data/feature_store.sqlite "VACUUM;"
-sqlite3 price_estimator/data/cache/marketplace_stats.sqlite "VACUUM;"
+# Schema (idempotent)
+psql "$DATABASE_URL" -f k8s/demo/schema.sql
 
-# Loader pod
-cat <<'EOF' | kubectl -n vinyl-demo apply -f -
+# Bulk load (~10–30 min on db-g1-small for large SQLite files). Features load
+# uses chunked COPY with commits (default 50k rows) so long runs survive proxy
+# blips; tune with --copy-chunk-rows (smaller = more checkpoints, slower).
+uv run python price_estimator/scripts/sqlite_to_cloudsql_loader.py \
+  --feature-store price_estimator/data/feature_store.sqlite \
+  --marketplace-db price_estimator/data/cache/marketplace_stats.sqlite \
+  --database-url "$DATABASE_URL" \
+  --batch-size 1000 \
+  --copy-chunk-rows 50000
+
+# If features died mid-load with duplicate-key errors on retry:
+#   psql "$DATABASE_URL" -c "TRUNCATE releases_features;"
+# then re-run the loader (use --skip-marketplace if marketplace_stats finished).
+
+psql "$DATABASE_URL" -c "SELECT COUNT(*) FROM releases_features;"
+psql "$DATABASE_URL" -c "SELECT COUNT(*) FROM marketplace_stats;"
+
+kill "$PROXY_PID"
+
+# Slim PVC: copy trained model assets only (~kubectl cp is fine at this size)
+cat <<'PODEOF' | kubectl -n vinyl-demo apply -f -
 apiVersion: v1
 kind: Pod
 metadata:
   name: pvc-loader
+  namespace: vinyl-demo
 spec:
   restartPolicy: Never
   containers:
     - name: loader
       image: alpine:3
-      command: ["sleep", "3600"]
+      command: ["sleep", "600"]
       volumeMounts:
-        - { name: data, mountPath: /data }
+        - { name: data, mountPath: /data/artifacts }
   volumes:
     - name: data
       persistentVolumeClaim: { claimName: vinyl-price-data }
-EOF
+PODEOF
 kubectl -n vinyl-demo wait --for=condition=Ready pod/pvc-loader --timeout=2m
-
-kubectl -n vinyl-demo exec pvc-loader -- mkdir -p /data/cache /data/artifacts/vinyliq
-
-kubectl -n vinyl-demo cp price_estimator/data/feature_store.sqlite \
-  pvc-loader:/data/
-kubectl -n vinyl-demo cp price_estimator/data/cache/marketplace_stats.sqlite \
-  pvc-loader:/data/cache/
-kubectl -n vinyl-demo cp price_estimator/artifacts/vinyliq \
-  pvc-loader:/data/artifacts/
-
-kubectl -n vinyl-demo delete pod pvc-loader
+kubectl -n vinyl-demo exec pvc-loader -- mkdir -p /data/artifacts
+kubectl -n vinyl-demo cp price_estimator/artifacts/vinyliq pvc-loader:/data/artifacts/
+kubectl -n vinyl-demo delete pod pvc-loader --ignore-not-found=true
 ```
+
+If your workstation already runs Postgres on port **5432**, run `cloud-sql-proxy`
+on another port and adjust `DATABASE_URL` accordingly for local commands only.
 
 ## Phase 5 — Deploy and smoke
 
@@ -299,7 +398,7 @@ kubectl apply -f k8s/demo/gateway.yaml
 
 # Wait for rollout
 kubectl -n vinyl-demo rollout status deploy/grader-api --timeout=10m
-kubectl -n vinyl-demo rollout status deploy/price-api  --timeout=5m
+kubectl -n vinyl-demo rollout status deploy/price-api  --timeout=10m
 
 # Verify Gateway picked up the static IP
 kubectl -n vinyl-demo get gateway vinyl-demo-gw \
@@ -345,8 +444,11 @@ kubectl -n vinyl-demo run redis-cli --rm -it --restart=Never \
 | --- | --- | --- |
 | `grader` pod stuck in `CrashLoopBackOff` | MLflow URI unreachable from cluster | `kubectl logs -n vinyl-demo <pod>` for `ConnectionError` |
 | `price` pod 503 with `model_loaded=false` | PVC populate skipped or wrong path | `kubectl -n vinyl-demo exec deploy/price-api -- ls /data/artifacts/vinyliq` |
-| `price` `/estimate` returns the same number for any condition | Feature store missing the release_id | `sqlite3 .../feature_store.sqlite "SELECT * FROM ... WHERE release_id='456663'"` |
+| `price` `/estimate` flat wrong / missing ladder | Feature row missing or marketplace ladder empty | `psql "$DATABASE_URL" -c "SELECT release_id FROM releases_features WHERE release_id='456663'"`; same for `marketplace_stats` |
+| `price` pod `CrashLoop`; proxy errors | Missing `roles/cloudsql.client`, wrong instance connection string, or secret `DATABASE_URL` | `kubectl logs -n vinyl-demo deploy/price-api -c cloudsql-proxy`; IAM bindings Phase 0d |
+| `kubectl cp` **broken pipe** (artifacts only now) | Unstable API/network | Retry `kubectl cp`; artifacts dir should be small (~MB–low GB) |
 | Cert never goes ACTIVE | Static IP not yet attached, or DNS not resolving | `dig "$DEMO_HOSTNAME"` should return `$STATIC_IP` |
+| `gcloud sql instances create` **Invalid Tier … ENTERPRISE_PLUS** | Default edition is Enterprise Plus; `db-g1-small` is Enterprise-only | Add `--edition=ENTERPRISE`, or switch tier to `db-perf-optimized-N-*` for Plus |
 | GHA push fails with 403 | WIF provider attribute_condition mismatch | check `attribute.repository` exactly matches `<owner>/<repo>` |
 
 ## Tear down
@@ -360,6 +462,7 @@ gcloud certificate-manager certificates delete vinyl-demo-cert
 
 gcloud compute addresses delete vinyl-demo-ip --global
 gcloud redis instances delete "${REDIS_INSTANCE:-vinyl-demo-redis}" --region="$GCP_REGION"
+gcloud sql instances delete vinyl-demo-db --quiet || true
 gcloud container clusters delete "${GKE_CLUSTER:-vinyl-demo}" --region="$GCP_REGION"
 gcloud artifacts repositories delete "${AR_REPO:-vinyl-images}" --location="$GCP_REGION"
 ```

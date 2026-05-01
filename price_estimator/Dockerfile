@@ -11,8 +11,8 @@
 #
 # The price API loads its trained model from the local filesystem at
 # `vinyliq.paths.model_dir`. In the GKE deploy the path is overridden to
-# `/data/artifacts/vinyliq` via a ConfigMap-mounted YAML and the trained
-# model lives on a PVC alongside the SQLite databases.
+# `/data/artifacts/vinyliq` via ConfigMap; trained assets live on a small PVC.
+# Feature/marketplace data use Postgres (Cloud SQL) when `postgres_dsn_env` is set.
 
 FROM python:3.12-slim AS deps
 

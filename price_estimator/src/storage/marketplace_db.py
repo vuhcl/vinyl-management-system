@@ -159,6 +159,101 @@ def normalize_marketplace_stats(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def compute_marketplace_upsert_values(
+    release_id: str,
+    payload: dict[str, Any],
+    prev: dict[str, Any],
+    *,
+    raw_json: str | None = None,
+    release_payload: dict[str, Any] | None = None,
+    release_raw_json: str | None = None,
+    price_suggestions_payload: dict[str, Any] | None = None,
+    price_suggestions_json: str | None = None,
+    fetched_at: str | None = None,
+) -> dict[str, Any]:
+    """
+    Pure merge/coalesce logic shared by SQLite ``MarketplaceStatsDB`` and
+    ``PostgresMarketplaceStats``. ``prev`` is an empty dict on insert.
+
+    Returns a dict with DB column keys plus ``norm`` (the return value contract
+    of ``MarketplaceStatsDB.upsert``).
+    """
+    rid = str(release_id).strip()
+    now = fetched_at or datetime.now(timezone.utc).isoformat()
+
+    norm = normalize_marketplace_stats(payload)
+    norm = merge_release_listing_into_norm(norm, payload, release_payload)
+    stats_body = raw_json if raw_json is not None else json.dumps(payload)
+
+    rel_raw = release_raw_json
+    if release_payload is not None and rel_raw is None:
+        rel_raw = json.dumps(release_payload, ensure_ascii=False)
+    rel_ext = (
+        extract_release_listing_fields(release_payload)
+        if isinstance(release_payload, dict)
+        else {}
+    )
+
+    ps_raw = price_suggestions_json
+    if price_suggestions_payload is not None and ps_raw is None:
+        new_ps = (
+            price_suggestions_payload
+            if isinstance(price_suggestions_payload, dict)
+            else {}
+        )
+        # Discogs returns {} when seller settings are incomplete; do not wipe a
+        # previously stored full per-condition ladder (used for condition rules).
+        if len(new_ps) == 0:
+            prev_psj = prev.get("price_suggestions_json")
+            if prev_psj and str(prev_psj).strip() not in ("", "{}"):
+                try:
+                    prev_obj = json.loads(prev_psj)
+                    if isinstance(prev_obj, dict) and len(prev_obj) > 0:
+                        ps_raw = prev_psj
+                except json.JSONDecodeError:
+                    pass
+        if ps_raw is None:
+            ps_raw = json.dumps(new_ps, ensure_ascii=False, separators=(",", ":"))
+
+    def _coalesce(new: Any, old_key: str) -> Any:
+        if new is not None:
+            return new
+        return prev.get(old_key)
+
+    rlj = rel_raw if rel_raw is not None else prev.get("release_raw_json")
+    psj = ps_raw if ps_raw is not None else prev.get("price_suggestions_json")
+
+    rlp = rel_ext.get("release_lowest_price")
+    rns = rel_ext.get("release_num_for_sale")
+    cw = rel_ext.get("community_want")
+    ch = rel_ext.get("community_have")
+    if release_payload is None:
+        rlp = _coalesce(None, "release_lowest_price")
+        rns = _coalesce(None, "release_num_for_sale")
+        cw = _coalesce(None, "community_want")
+        ch = _coalesce(None, "community_have")
+    else:
+        rlp = rlp if rlp is not None else prev.get("release_lowest_price")
+        rns = rns if rns is not None else prev.get("release_num_for_sale")
+        cw = cw if cw is not None else prev.get("community_want")
+        ch = ch if ch is not None else prev.get("community_have")
+
+    return {
+        "norm": norm,
+        "release_id": rid,
+        "fetched_at": now,
+        "num_for_sale": norm["num_for_sale"],
+        "blocked_from_sale": norm["blocked_from_sale"],
+        "raw_json": stats_body,
+        "release_raw_json": rlj,
+        "price_suggestions_json": psj,
+        "release_lowest_price": rlp,
+        "release_num_for_sale": rns,
+        "community_want": cw,
+        "community_have": ch,
+    }
+
+
 _MARKETPLACE_MIGRATIONS: list[tuple[str, str]] = [
     ("blocked_from_sale", "INTEGER"),
     ("release_raw_json", "TEXT"),
@@ -267,7 +362,6 @@ class MarketplaceStatsDB:
         full per-condition ladder is not lost on transient API gaps.
         """
         rid = str(release_id).strip()
-        now = datetime.now(timezone.utc).isoformat()
         with self._connect() as conn:
             cur = conn.execute(
                 "SELECT * FROM marketplace_stats WHERE release_id = ?",
@@ -276,64 +370,17 @@ class MarketplaceStatsDB:
             prev_row = cur.fetchone()
             prev = self._row_to_dict(prev_row) if prev_row else {}
 
-            norm = normalize_marketplace_stats(payload)
-            norm = merge_release_listing_into_norm(norm, payload, release_payload)
-            stats_body = raw_json if raw_json is not None else json.dumps(payload)
-
-            rel_raw = release_raw_json
-            if release_payload is not None and rel_raw is None:
-                rel_raw = json.dumps(release_payload, ensure_ascii=False)
-            rel_ext = (
-                extract_release_listing_fields(release_payload)
-                if isinstance(release_payload, dict)
-                else {}
+            comp = compute_marketplace_upsert_values(
+                rid,
+                payload,
+                prev,
+                raw_json=raw_json,
+                release_payload=release_payload,
+                release_raw_json=release_raw_json,
+                price_suggestions_payload=price_suggestions_payload,
+                price_suggestions_json=price_suggestions_json,
             )
-
-            ps_raw = price_suggestions_json
-            if price_suggestions_payload is not None and ps_raw is None:
-                new_ps = (
-                    price_suggestions_payload
-                    if isinstance(price_suggestions_payload, dict)
-                    else {}
-                )
-                # Discogs returns {} when seller settings are incomplete; do not wipe a
-                # previously stored full per-condition ladder (used for condition rules).
-                if len(new_ps) == 0:
-                    prev_psj = prev.get("price_suggestions_json")
-                    if prev_psj and str(prev_psj).strip() not in ("", "{}"):
-                        try:
-                            prev_obj = json.loads(prev_psj)
-                            if isinstance(prev_obj, dict) and len(prev_obj) > 0:
-                                ps_raw = prev_psj
-                        except json.JSONDecodeError:
-                            pass
-                if ps_raw is None:
-                    ps_raw = json.dumps(
-                        new_ps, ensure_ascii=False, separators=(",", ":")
-                    )
-
-            def _coalesce(new: Any, old_key: str) -> Any:
-                if new is not None:
-                    return new
-                return prev.get(old_key)
-
-            rlj = rel_raw if rel_raw is not None else prev.get("release_raw_json")
-            psj = ps_raw if ps_raw is not None else prev.get("price_suggestions_json")
-
-            rlp = rel_ext.get("release_lowest_price")
-            rns = rel_ext.get("release_num_for_sale")
-            cw = rel_ext.get("community_want")
-            ch = rel_ext.get("community_have")
-            if release_payload is None:
-                rlp = _coalesce(None, "release_lowest_price")
-                rns = _coalesce(None, "release_num_for_sale")
-                cw = _coalesce(None, "community_want")
-                ch = _coalesce(None, "community_have")
-            else:
-                rlp = rlp if rlp is not None else prev.get("release_lowest_price")
-                rns = rns if rns is not None else prev.get("release_num_for_sale")
-                cw = cw if cw is not None else prev.get("community_want")
-                ch = ch if ch is not None else prev.get("community_have")
+            norm = comp["norm"]
 
             conn.execute(
                 """
@@ -356,17 +403,17 @@ class MarketplaceStatsDB:
                     community_have = excluded.community_have
                 """,
                 (
-                    rid,
-                    now,
-                    norm["num_for_sale"],
-                    norm["blocked_from_sale"],
-                    stats_body,
-                    rlj,
-                    psj,
-                    rlp,
-                    rns,
-                    cw,
-                    ch,
+                    comp["release_id"],
+                    comp["fetched_at"],
+                    comp["num_for_sale"],
+                    comp["blocked_from_sale"],
+                    comp["raw_json"],
+                    comp["release_raw_json"],
+                    comp["price_suggestions_json"],
+                    comp["release_lowest_price"],
+                    comp["release_num_for_sale"],
+                    comp["community_want"],
+                    comp["community_have"],
                 ),
             )
             conn.commit()

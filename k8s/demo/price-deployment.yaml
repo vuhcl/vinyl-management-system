@@ -1,8 +1,11 @@
 # Price API (XGBoost FittedVinylIQRegressor + Memorystore Redis cache).
 #
 # Mounts:
-#   - /data           PVC (vinyl-price-data) with SQLite + trained model
-#   - /etc/vinyliq    ConfigMap (price-config) overriding vinyliq.paths
+#   - /data/artifacts PVC (vinyl-price-data): xgb_model.joblib + encoders only
+#   - /etc/vinyliq    ConfigMap (price-config): postgres_dsn_env + model_dir
+#
+# Cloud SQL: cloudsql-proxy sidecar on 127.0.0.1:5432; DATABASE_URL from
+# vinyl-cloudsql secret (must match proxy port).
 #
 # VINYLIQ_CONFIG is hard-coded to the ConfigMap mount path so the API does
 # not have to be invoked with a flag and the path stays out of the image.
@@ -18,6 +21,7 @@ metadata:
   labels:
     app: price-api
 spec:
+  progressDeadlineSeconds: 900
   replicas: 1
   selector:
     matchLabels:
@@ -43,11 +47,13 @@ spec:
                 name: vinyl-redis
             - secretRef:
                 name: vinyl-discogs
+            - secretRef:
+                name: vinyl-cloudsql
             - configMapRef:
                 name: vinyl-config
           volumeMounts:
             - name: data
-              mountPath: /data
+              mountPath: /data/artifacts
             - name: price-config
               mountPath: /etc/vinyliq
               readOnly: true
@@ -55,18 +61,22 @@ spec:
             httpGet:
               path: /health
               port: http
-            failureThreshold: 12
-            periodSeconds: 5
+            # First request loads model + pools; default 1s probe timeout is too tight.
+            timeoutSeconds: 120
+            failureThreshold: 30
+            periodSeconds: 10
           readinessProbe:
             httpGet:
               path: /health
               port: http
+            timeoutSeconds: 10
             periodSeconds: 15
             failureThreshold: 3
           livenessProbe:
             httpGet:
               path: /health
               port: http
+            timeoutSeconds: 10
             periodSeconds: 30
             failureThreshold: 5
           resources:
@@ -75,6 +85,26 @@ spec:
               memory: "1Gi"
             limits:
               memory: "3Gi"
+
+        - name: cloudsql-proxy
+          image: gcr.io/cloud-sql-connectors/cloud-sql-proxy:2.13.0
+          args:
+            - "--structured-logs"
+            - "--port=5432"
+            - "${GCP_PROJECT_ID}:${GCP_REGION}:vinyl-demo-db"
+          securityContext:
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "64Mi"
+            limits:
+              memory: "128Mi"
+
       volumes:
         - name: data
           persistentVolumeClaim:

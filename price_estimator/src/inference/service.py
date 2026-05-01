@@ -105,15 +105,29 @@ class InferenceService:
     def __init__(
         self,
         *,
-        marketplace_db: Path,
-        feature_store_db: Path,
         model_dir: Path,
+        marketplace_db: Path | None = None,
+        feature_store_db: Path | None = None,
+        marketplace_store: Any | None = None,
+        feature_store: Any | None = None,
         discogs_token: str | None = None,
         genre_encoder_path: Path | None = None,
         redis_cache: RedisStatsCache | None = None,
     ) -> None:
-        self.marketplace = MarketplaceStatsDB(marketplace_db)
-        self.features = FeatureStoreDB(feature_store_db)
+        if marketplace_store is not None:
+            self.marketplace = marketplace_store
+        elif marketplace_db is not None:
+            self.marketplace = MarketplaceStatsDB(marketplace_db)
+        else:
+            raise ValueError("InferenceService requires marketplace_store or marketplace_db")
+
+        if feature_store is not None:
+            self.features = feature_store
+        elif feature_store_db is not None:
+            self.features = FeatureStoreDB(feature_store_db)
+        else:
+            raise ValueError("InferenceService requires feature_store or feature_store_db")
+
         self.model_dir = Path(model_dir)
         self._discogs_token_explicit = (
             str(discogs_token).strip() if discogs_token else None
@@ -153,13 +167,13 @@ class InferenceService:
         use_cache: bool = True,
         refresh: bool = False,
     ) -> dict[str, Any]:
-        """Read-through cache: Redis -> SQLite -> Discogs API.
+        """Read-through cache: Redis -> persistent store (Postgres/SQLite) -> Discogs API.
 
         Cache-hit response shape is preserved exactly as before this layer
         existed: ``{release_lowest_price, num_for_sale, source}``. Redis
         stores the same two fields keyed by release id; misses fall through
-        to SQLite (still the persistent source of truth) and then to live
-        Discogs. Live fetches write through to both Redis and SQLite.
+        to the backing database and then to live Discogs. Live fetches write
+        through to Redis and the persistent store.
         """
         rid = str(release_id).strip()
         if use_cache and not refresh:
@@ -176,7 +190,7 @@ class InferenceService:
                     "release_lowest_price": row.get("release_lowest_price"),
                     "num_for_sale": row["num_for_sale"],
                 }
-                # Backfill Redis from SQLite so the next hit is warm.
+                # Backfill Redis from DB so the next hit is warm.
                 self.redis_cache.set(rid, payload)
                 return {**payload, "source": "cache"}
         client = self._get_discogs_client()
@@ -366,17 +380,32 @@ def load_service_from_config(config_path: Path | None = None) -> InferenceServic
     root = _repo_root()
     v = cfg.get("vinyliq") or {}
     paths = v.get("paths") or {}
-    mp = Path(paths.get("marketplace_db", root / "data" / "cache" / "marketplace_stats.sqlite"))
-    fs = Path(paths.get("feature_store_db", root / "data" / "feature_store.sqlite"))
     md = Path(paths.get("model_dir", root / "artifacts" / "vinyliq"))
-    if not mp.is_absolute():
-        mp = root / mp
-    if not fs.is_absolute():
-        fs = root / fs
     if not md.is_absolute():
         md = root / md
     key = v.get("discogs_token_env", "DISCOGS_USER_TOKEN")
     explicit = (os.environ.get(key) or "").strip() if key else ""
+
+    dsn_key = paths.get("postgres_dsn_env")
+    if dsn_key:
+        dsn = (os.environ.get(str(dsn_key).strip()) or "").strip()
+        if dsn:
+            from ..storage.postgres_feature_store import PostgresFeatureStore
+            from ..storage.postgres_marketplace_stats import PostgresMarketplaceStats
+
+            return InferenceService(
+                model_dir=md,
+                marketplace_store=PostgresMarketplaceStats(dsn),
+                feature_store=PostgresFeatureStore(dsn),
+                discogs_token=explicit or None,
+            )
+
+    mp = Path(paths.get("marketplace_db", root / "data" / "cache" / "marketplace_stats.sqlite"))
+    fs = Path(paths.get("feature_store_db", root / "data" / "feature_store.sqlite"))
+    if not mp.is_absolute():
+        mp = root / mp
+    if not fs.is_absolute():
+        fs = root / fs
     return InferenceService(
         marketplace_db=mp,
         feature_store_db=fs,
