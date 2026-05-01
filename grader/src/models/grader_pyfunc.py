@@ -26,6 +26,11 @@ Output schema (pd.DataFrame):
     sleeve_confidence           — softmax probability of top class (0-1)
     media_confidence            — softmax probability of top class (0-1)
 
+Optional inference calibration (does not change labels unless logits are nearly tied):
+    GRADER_SOFTMAX_TEMPERATURE — divisor applied to logits before softmax on both heads (default 1.0).
+    GRADER_SLEEVE_SOFTMAX_TEMPERATURE — overrides sleeve head only (falls back to shared/default).
+    GRADER_MEDIA_SOFTMAX_TEMPERATURE — overrides media head only (falls back to shared/default).
+
 Usage:
     # Serve registered model version 3:
     mlflow models serve -m "models:/VinylGrader/3" --port 5001
@@ -40,6 +45,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import pickle
 from pathlib import Path
@@ -55,6 +61,33 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_BATCH_SIZE = 32
 _DEFAULT_MAX_LENGTH = 128
+
+
+def softmax_with_temperature(logits: torch.Tensor, temperature: float) -> torch.Tensor:
+    """
+    Softmax(logits / T). T > 1 spreads mass (lower peak confidence); T == 1 is standard softmax.
+
+    Invalid or non-positive T is treated as 1.0 for backward-compatible behavior.
+    """
+    t = float(temperature)
+    if not math.isfinite(t) or t <= 0.0:
+        t = 1.0
+    return torch.softmax(logits / t, dim=-1)
+
+
+def _temperature_from_env(specific_key: str, shared_key: str) -> float:
+    """Prefer head-specific env, then GRADER_SOFTMAX_TEMPERATURE, then 1.0."""
+    for key in (specific_key, shared_key):
+        raw = os.environ.get(key)
+        if raw is None or str(raw).strip() == "":
+            continue
+        try:
+            v = float(raw)
+        except ValueError:
+            continue
+        if math.isfinite(v) and v > 0.0:
+            return v
+    return 1.0
 
 
 def _torch_load_state_dict_cpu(path: str) -> Any:
@@ -178,12 +211,23 @@ class VinylGraderModel(mlflow.pyfunc.PythonModel):
         self.model.load_state_dict(state)
         self.model.to(self.device)
         self.model.eval()
+        self._temp_sleeve = _temperature_from_env(
+            "GRADER_SLEEVE_SOFTMAX_TEMPERATURE",
+            "GRADER_SOFTMAX_TEMPERATURE",
+        )
+        self._temp_media = _temperature_from_env(
+            "GRADER_MEDIA_SOFTMAX_TEMPERATURE",
+            "GRADER_SOFTMAX_TEMPERATURE",
+        )
         logger.info(
             "VinylGraderModel loaded — device=%s "
-            "sleeve_classes=%d media_classes=%d",
+            "sleeve_classes=%d media_classes=%d "
+            "softmax_temperature sleeve=%.4f media=%.4f",
             self.device,
             cfg["n_sleeve_classes"],
             cfg["n_media_classes"],
+            self._temp_sleeve,
+            self._temp_media,
         )
 
     def predict(
@@ -218,8 +262,12 @@ class VinylGraderModel(mlflow.pyfunc.PythonModel):
                 attention_mask = enc["attention_mask"].to(self.device)
 
                 out = self.model(input_ids, attention_mask)
-                s_proba = torch.softmax(out[0], dim=-1).cpu().numpy()
-                m_proba = torch.softmax(out[1], dim=-1).cpu().numpy()
+                s_proba = softmax_with_temperature(
+                    out[0], self._temp_sleeve
+                ).cpu().numpy()
+                m_proba = softmax_with_temperature(
+                    out[1], self._temp_media
+                ).cpu().numpy()
 
                 all_sleeve_preds.extend(s_proba.argmax(axis=1).tolist())
                 all_sleeve_conf.extend(s_proba.max(axis=1).tolist())
