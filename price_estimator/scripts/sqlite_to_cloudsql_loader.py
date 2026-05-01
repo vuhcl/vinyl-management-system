@@ -74,6 +74,7 @@ def load_releases_features(
     pg_conn: psycopg.Connection,
     *,
     log_every: int,
+    copy_chunk_rows: int,
 ) -> int:
     cols = RELEASES_FEATURES_COLUMNS
     src = sqlite3.connect(str(sqlite_path))
@@ -90,19 +91,37 @@ def load_releases_features(
         sel_cols = ", ".join(c for c in cols if c in existing)
         q = f"SELECT {sel_cols} FROM releases_features"
 
+        stmt = f"COPY releases_features ({cols_csv}) FROM STDIN"
         n = 0
-        with pg_conn.cursor() as cur:
-            stmt = f"COPY releases_features ({cols_csv}) FROM STDIN"
-            with cur.copy(stmt) as copy:
-                for row in src.execute(q):
-                    rd = {str(k): row[k] for k in row.keys()}
-                    copy.write_row(tuple(rd.get(c) for c in cols))
-                    n += 1
-                    if log_every > 0 and n % log_every == 0:
-                        logging.info(
-                            "releases_features COPY progress: %s rows",
-                            n,
-                        )
+        chunk: list[tuple] = []
+        chunk_cap = max(1, int(copy_chunk_rows))
+
+        def flush_chunk() -> None:
+            if not chunk:
+                return
+            with pg_conn.cursor() as cur:
+                with cur.copy(stmt) as copy:
+                    for t in chunk:
+                        copy.write_row(t)
+            pg_conn.commit()
+            chunk.clear()
+
+        try:
+            for row in src.execute(q):
+                rd = {str(k): row[k] for k in row.keys()}
+                chunk.append(tuple(rd.get(c) for c in cols))
+                n += 1
+                if len(chunk) >= chunk_cap:
+                    flush_chunk()
+                if log_every > 0 and n % log_every == 0:
+                    logging.info(
+                        "releases_features COPY progress: %s rows",
+                        n,
+                    )
+            flush_chunk()
+        finally:
+            chunk.clear()
+
         logging.info("releases_features loaded: %s rows", n)
         return n
     finally:
@@ -148,6 +167,7 @@ def load_marketplace_stats(
                     cur.executemany(_INSERT_MARKETPLACE_SQL, batch)
                     n += len(batch)
                     batch.clear()
+                    pg_conn.commit()
                     if log_every > 0 and n % log_every == 0:
                         logging.info(
                             "marketplace_stats upsert progress: %s rows",
@@ -156,6 +176,7 @@ def load_marketplace_stats(
             if batch:
                 cur.executemany(_INSERT_MARKETPLACE_SQL, batch)
                 n += len(batch)
+                pg_conn.commit()
         logging.info("marketplace_stats loaded: %s rows", n)
         return n
     finally:
@@ -178,6 +199,25 @@ def main(argv: list[str] | None = None) -> int:
         default=100_000,
         help="Progress log interval (0 disables)",
     )
+    p.add_argument(
+        "--copy-chunk-rows",
+        type=int,
+        default=50_000,
+        help=(
+            "Commit after this many releases_features rows per COPY "
+            "(smaller = safer over flaky proxy / long loads)"
+        ),
+    )
+    p.add_argument(
+        "--skip-features",
+        action="store_true",
+        help="Skip releases_features (e.g. after partial load + TRUNCATE retry)",
+    )
+    p.add_argument(
+        "--skip-marketplace",
+        action="store_true",
+        help="Skip marketplace_stats load",
+    )
     args = p.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
@@ -192,15 +232,33 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     with psycopg.connect(args.database_url) as conn:
-        load_releases_features(fs_path, conn, log_every=args.log_every)
+        # Avoid server-side timeouts during multi-hour bulk loads.
+        conn.execute("SET statement_timeout = 0")
+        try:
+            conn.execute("SET idle_in_transaction_session_timeout = 0")
+        except psycopg.Error as e:
+            logging.warning("idle_in_transaction_session_timeout unset: %s", e)
         conn.commit()
-        load_marketplace_stats(
-            mp_path,
-            conn,
-            batch_size=max(1, args.batch_size),
-            log_every=args.log_every,
-        )
-        conn.commit()
+
+        if not args.skip_features:
+            load_releases_features(
+                fs_path,
+                conn,
+                log_every=args.log_every,
+                copy_chunk_rows=args.copy_chunk_rows,
+            )
+        else:
+            logging.info("Skipping releases_features (--skip-features)")
+
+        if not args.skip_marketplace:
+            load_marketplace_stats(
+                mp_path,
+                conn,
+                batch_size=max(1, args.batch_size),
+                log_every=args.log_every,
+            )
+        else:
+            logging.info("Skipping marketplace_stats (--skip-marketplace)")
 
     logging.info("Done.")
     return 0
