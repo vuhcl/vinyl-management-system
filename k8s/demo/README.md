@@ -240,8 +240,12 @@ Provision instance + DB user (hex password stays URL-safe in `DATABASE_URL`):
 ```bash
 set -a && source .env && set +a
 
+# Shared-core tier db-g1-small requires Enterprise edition (not Enterprise Plus).
+# Without --edition=ENTERPRISE, gcloud may default to ENTERPRISE_PLUS, which
+# needs tiers like db-perf-optimized-N-* instead.
 gcloud sql instances create vinyl-demo-db \
   --database-version=POSTGRES_16 \
+  --edition=ENTERPRISE \
   --tier=db-g1-small \
   --region="$GCP_REGION" \
   --storage-size=10GB \
@@ -328,12 +332,19 @@ ls price_estimator/artifacts/vinyliq/xgb_model.joblib
 # Schema (idempotent)
 psql "$DATABASE_URL" -f k8s/demo/schema.sql
 
-# Bulk load (~10–30 min on db-g1-small for large SQLite files)
+# Bulk load (~10–30 min on db-g1-small for large SQLite files). Features load
+# uses chunked COPY with commits (default 50k rows) so long runs survive proxy
+# blips; tune with --copy-chunk-rows (smaller = more checkpoints, slower).
 uv run python price_estimator/scripts/sqlite_to_cloudsql_loader.py \
   --feature-store price_estimator/data/feature_store.sqlite \
   --marketplace-db price_estimator/data/cache/marketplace_stats.sqlite \
   --database-url "$DATABASE_URL" \
-  --batch-size 1000
+  --batch-size 1000 \
+  --copy-chunk-rows 50000
+
+# If features died mid-load with duplicate-key errors on retry:
+#   psql "$DATABASE_URL" -c "TRUNCATE releases_features;"
+# then re-run the loader (use --skip-marketplace if marketplace_stats finished).
 
 psql "$DATABASE_URL" -c "SELECT COUNT(*) FROM releases_features;"
 psql "$DATABASE_URL" -c "SELECT COUNT(*) FROM marketplace_stats;"
@@ -387,7 +398,7 @@ kubectl apply -f k8s/demo/gateway.yaml
 
 # Wait for rollout
 kubectl -n vinyl-demo rollout status deploy/grader-api --timeout=10m
-kubectl -n vinyl-demo rollout status deploy/price-api  --timeout=5m
+kubectl -n vinyl-demo rollout status deploy/price-api  --timeout=10m
 
 # Verify Gateway picked up the static IP
 kubectl -n vinyl-demo get gateway vinyl-demo-gw \
@@ -437,6 +448,7 @@ kubectl -n vinyl-demo run redis-cli --rm -it --restart=Never \
 | `price` pod `CrashLoop`; proxy errors | Missing `roles/cloudsql.client`, wrong instance connection string, or secret `DATABASE_URL` | `kubectl logs -n vinyl-demo deploy/price-api -c cloudsql-proxy`; IAM bindings Phase 0d |
 | `kubectl cp` **broken pipe** (artifacts only now) | Unstable API/network | Retry `kubectl cp`; artifacts dir should be small (~MB–low GB) |
 | Cert never goes ACTIVE | Static IP not yet attached, or DNS not resolving | `dig "$DEMO_HOSTNAME"` should return `$STATIC_IP` |
+| `gcloud sql instances create` **Invalid Tier … ENTERPRISE_PLUS** | Default edition is Enterprise Plus; `db-g1-small` is Enterprise-only | Add `--edition=ENTERPRISE`, or switch tier to `db-perf-optimized-N-*` for Plus |
 | GHA push fails with 403 | WIF provider attribute_condition mismatch | check `attribute.repository` exactly matches `<owner>/<repo>` |
 
 ## Tear down
