@@ -36,3 +36,9 @@ class PostgresFeatureStore:
                 cur.execute("SELECT COUNT(*) FROM releases_features")
                 out = cur.fetchone()
                 return int(out[0]) if out else 0
+
+    def ping(self) -> None:
+        """Cheap DB connectivity check for probes (avoid COUNT on huge tables)."""
+        with self._pool.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT 1")

@@ -268,6 +268,11 @@ class FeatureStoreDB:
             cur = conn.execute("SELECT COUNT(*) FROM releases_features")
             return int(cur.fetchone()[0])
 
+    def ping(self) -> None:
+        """Cheap DB connectivity check for probes (avoid COUNT on huge tables)."""
+        with self._connect() as conn:
+            conn.execute("SELECT 1")
+
     def iter_release_ids(
         self,
         *,
