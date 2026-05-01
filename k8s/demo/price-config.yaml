@@ -3,7 +3,7 @@
 # The Deployment sets VINYLIQ_CONFIG=/etc/vinyliq/config.yaml so
 # price_estimator.src.inference.service.load_yaml_config picks this up
 # instead of the package-relative configs/base.yaml. Paths point at the
-# PVC mount (`/data`), populated during Phase 4 bootstrap.
+# PVC mount (`/data/artifacts`) for model files; Postgres via DATABASE_URL.
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -14,7 +14,5 @@ data:
     inherits: configs/base.yaml
     vinyliq:
       paths:
-        feature_store_db: /data/feature_store.sqlite
-        marketplace_db: /data/cache/marketplace_stats.sqlite
-        sale_history_db: /data/cache/sale_history.sqlite
+        postgres_dsn_env: DATABASE_URL
         model_dir: /data/artifacts/vinyliq

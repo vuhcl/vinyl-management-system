@@ -1,14 +1,11 @@
-# Price API persistent volume.
+# Price API persistent volume (model artifacts only).
 #
-# Holds three artifacts that the API needs at runtime but that we
-# intentionally do NOT bake into the Docker image:
-#   - /data/feature_store.sqlite               (catalog encoders + features)
-#   - /data/cache/marketplace_stats.sqlite     (Discogs cache + training labels)
-#   - /data/artifacts/vinyliq/                 (xgb_model.joblib + companions)
+# Feature store + marketplace_stats live in Cloud SQL. This PVC mounts at
+# `/data/artifacts` and holds only trained VinylIQ assets:
+#   - /data/artifacts/vinyliq/   (xgb_model.joblib, encoders, grade deltas)
 #
-# 5 Gi is generous; trim or bump in `price-pvc.yaml` if your local SQLite
-# files exceed that. Autopilot defaults to a balanced PD-SSD storage class
-# which is fine for SQLite read traffic.
+# 5 Gi is enough for typical joblib + JSON; bump if needed. Existing clusters
+# cannot shrink PVC in-place — a previously expanded PVC keeps its size.
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
