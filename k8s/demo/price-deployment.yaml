@@ -21,6 +21,7 @@ metadata:
   labels:
     app: price-api
 spec:
+  progressDeadlineSeconds: 900
   replicas: 1
   selector:
     matchLabels:
@@ -60,18 +61,22 @@ spec:
             httpGet:
               path: /health
               port: http
-            failureThreshold: 12
-            periodSeconds: 5
+            # First request loads model + pools; default 1s probe timeout is too tight.
+            timeoutSeconds: 120
+            failureThreshold: 30
+            periodSeconds: 10
           readinessProbe:
             httpGet:
               path: /health
               port: http
+            timeoutSeconds: 10
             periodSeconds: 15
             failureThreshold: 3
           livenessProbe:
             httpGet:
               path: /health
               port: http
+            timeoutSeconds: 10
             periodSeconds: 30
             failureThreshold: 5
           resources:
