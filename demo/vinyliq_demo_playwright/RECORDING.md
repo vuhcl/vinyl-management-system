@@ -104,7 +104,7 @@ Expected output:
 
 - A new **`.webm`** under **`recordings/`** (from Chromium **`launchPersistentContext`** **`recordVideo`** — see **`fixtures/extension.ts`** and **`fixtures/demo_video_ann.ts`**). Filename is opaque until the context closes cleanly. **The video is real-time:** **`slowMo`** and **`DEMO_COMMENT_TYPING_DELAY_MS`** are baked into each frame (`ffmpeg` mp4 stays **1×** unless you stretch the timeline in post).
 - `showActions`: lower-right overlays label each atomic Playwright action (fills, navigations).
-- Scripted chapter cards (`DEMO_VIDEO_CHAPTERS` default `1`; disable with `0`) blur the viewport for ~`DEMO_VIDEO_CHAPTER_MS` (default **12400** ms) so viewers can read setup narration; seller-beat strips use **`DEMO_SELLER_STRIP_READ_MS`** / **`DEMO_SELLER_STRIP_MS`** (**`fixtures/demo_video_ann.ts`** defaults ~**7200** / ~**26000** ms); segues use **`DEMO_SEGUE_STRIP_MS`** / **`DEMO_SEGUE_STRIP_READ_MS`**; bare dwell after Copy 1 estimate: **`DEMO_AFTER_FIRST_ESTIMATE_BARE_MS`** (default **19000**).
+- Scripted chapter cards (`DEMO_VIDEO_CHAPTERS` default `1`; disable with `0`) blur the viewport for ~`DEMO_VIDEO_CHAPTER_MS` (default **12400** ms) so viewers can read setup narration; seller-beat strips use **`DEMO_SELLER_STRIP_READ_MS`** / **`DEMO_SELLER_STRIP_MS`** (**`fixtures/demo_video_ann.ts`** defaults ~**7200** / ~**26000** ms); segues use **`DEMO_SEGUE_STRIP_MS`** / **`DEMO_SEGUE_STRIP_READ_MS`**; after each estimate overlay + Copy A/B seller estimate strips: **`DEMO_AFTER_FIRST_ESTIMATE_BARE_MS`** (default **9800**) before **`after_first_estimate`** or session outro (raise e.g. **19000** for a lazier Copy B outro).
 - The test passes (the `expect(|p1-p2| >= MIN_PRICE_DELTA_USD)` assert).
 
 ### Hybrid operator mode (`DEMO_HYBRID=1`)
@@ -126,11 +126,11 @@ video. Pick the cleanest take.
 | 2 | Typed rough seller note → **Grade condition** | — |
 | 3 | Short **`hold`** (~**0.5s**) after first grade (+ optional **`after_first_grade`** strip when **`DEMO_VIDEO_CHAPTERS=1`**) | Tweak **`hold.ms`** |
 | 4 | Replace note → **Grade condition** (stronger copy) | — |
-| 5 | **`hold`** (~**1.1s**) after second grade | — |
+| 5 | Optional **`after_second_grade`** segue when **`DEMO_VIDEO_CHAPTERS=1`** (same pacing as **`after_first_grade`**), then **`hold`** (~**1.1s**) | — |
 | 6 | **Get estimate** (rough-copy grades) → overlay (+ seller strip timings) | — |
-| 7 | First-estimate linger: **`DEMO_AFTER_FIRST_ESTIMATE_BARE_MS`** (**~19000 ms**) + **`after_first_estimate`** strip when chapters on + tiny scripted **`hold`** (~**400 ms**) | See **`fixtures/demo_video_ann.ts`** defaults |
-| 8 | **Get estimate** (second grade pair) | — |
-| 9 | **`hold`** (~**1.6s**) — comparison beat | — |
+| 7 | After Copy **A** seller estimate strip **read lead** (trimmed vs generic seller strip): **`DEMO_AFTER_FIRST_ESTIMATE_BARE_MS`** (**~9800 ms** default) → **`after_first_estimate`** + tiny scripted **`hold`** (~**400 ms**) | **`fixtures/demo_video_ann.ts`** (+ **`DEMO_SEGUE_AFTER_FIRST_ESTIMATE_MS`** for that segue’s on-screen time) |
+| 8 | **Get estimate** (second grades) → overlay + estimate insight strip (mirror of scene **6**) | — |
+| 9 | Second-estimate **`DEMO_AFTER_FIRST_ESTIMATE_BARE_MS`** + session **outro** when chapters on (mirror of **7**, outro replaces **`after_first_estimate`**) + **`hold`** (~**1.6s**) | — |
 | 10 | Assert price wedge + tail space | — |
 
 If a take feels slack or long, shorten **`hold.ms`** in

@@ -50,7 +50,7 @@
       "title": "Market check vs strong-copy grades",
       "example_index": 1
     },
-    { "kind": "hold", "title": "Hold final overlay", "ms": 1600 },
+    { "kind": "hold", "title": "Hold final overlay", "ms": 2600 },
     {
       "kind": "assert_min_price_delta",
       "title": "Assert wedge between both estimates"

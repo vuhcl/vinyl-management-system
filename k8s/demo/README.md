@@ -432,7 +432,7 @@ curl "https://${DEMO_HOSTNAME}/price/health"
 
 curl -sX POST "https://${DEMO_HOSTNAME}/grader/predict" \
   -H 'Content-Type: application/json' \
-  -d '{"text":"The vinyl is in great condition with original gloss and only a few hairlines. The jacket is pristine, complete with poster NM & 4 photos Mint, as well as original back inners. An exceptional copy of a Beatles classic."}' | jq .
+  -d '{"text":"The vinyl is in perfect condition with original gloss and no marks. The jacket has minor edge wear, complete with poster NM & 4 photos Mint, as well as original back inners. An exceptional copy of a Beatles classic."}' | jq .
 
 # Twin price check (minimal body; Redis/Postgres-backed stats only).
 curl -sX POST "https://${DEMO_HOSTNAME}/price/estimate" \

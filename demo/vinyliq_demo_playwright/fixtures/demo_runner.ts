@@ -12,20 +12,36 @@ import {
   gotoSellerViaDiscogsUx,
   runHybridCatalogReleasePageNarration,
 } from "./discogs_navigation";
+import type { GoldenExample, GoldenPredictDemoJson } from "./golden";
+import {
+  readListingPriceFingerprintExtensionOrder,
+  visibleMediaConditionSelect,
+  visibleSleeveConditionSelect,
+} from "./seller_listing_locators";
+
+export {
+  defaultSellerSelectors,
+  listingPriceInputCompareKey,
+  readListingPriceFingerprintExtensionOrder,
+  visibleMediaConditionSelect,
+  visibleSellerPriceInput,
+  visibleSleeveConditionSelect,
+} from "./seller_listing_locators";
+
 import {
   afterFirstEstimateNarrativeDwell,
+  afterSecondEstimateNarrativeDwell,
+  demoScriptExampleIndex,
   demoVideoChaptersDisabledFromEnv,
   maybeShowDemoChapter,
+  removeVinyliqEstimateOverlay,
+  runCopyBEstimateNarrativeWhenListingPriceUpdates,
   showDemoCatalogReleaseConfirmedChapter,
   showDemoCatalogReleaseUncertaintyChapter,
   showDemoCatalogSearchIntroChapter,
-  showDemoGradesDifferNarrationStrip,
-  showDemoPreSecondEstimateNarrationStrip,
   showDemoSellLandingDeepLinkChapter,
-  showDemoSessionOutroStrip,
-  showNarrativeTransitionStrip,
+  showPostGradeLadderUpdatedStrip,
 } from "./demo_video_ann";
-import type { GoldenExample, GoldenPredictDemoJson } from "./golden";
 
 export type DemoScriptStep =
   | { kind: "inject_extension_storage"; title?: string }
@@ -124,35 +140,6 @@ export function commentFieldLocator(page: Page) {
     '#comments, textarea[name="comments"], input[name="comments"], input[id="comments"], ' +
     'textarea[id*="comment" i], textarea[name="release_comments"], textarea[name="description"]';
   return page.locator(chain).filter({ visible: true }).first();
-}
-
-/**
- * Visible **Media** / **Sleeve** controls only — Discogs often renders duplicate
- * hidden ``<select>`` shells; the extension grades the live control
- * (**``listing_dom.js``** ``findFirstUsableSelect``). Playwright must read the
- * same node or assertions hang and the demo appears to stop after **Grade**.
- */
-export function visibleMediaConditionSelect(page: Page) {
-  const s = defaultSellerSelectors();
-  return page.locator(s.mediaSelector).filter({ visible: true }).first();
-}
-
-export function visibleSleeveConditionSelect(page: Page) {
-  const s = defaultSellerSelectors();
-  return page.locator(s.sleeveSelector).filter({ visible: true }).first();
-}
-
-export function defaultSellerSelectors() {
-  return {
-    /** Deprecated for comment entry — use ``commentFieldLocator`` (visible-first, includes ``#comments``). */
-    commentSelector:
-      '#comments, textarea[name="comments"], input[name="comments"], input[id="comments"], ' +
-      'textarea[id*="comment" i], textarea[name="release_comments"], textarea[name="description"]',
-    mediaSelector:
-      'select#media_condition, select[name="media_condition"], select[name="condition"], select#condition, select[id*="media" i]',
-    sleeveSelector:
-      'select#sleeve_condition, select[name="sleeve_condition"], select[id*="sleeve" i]',
-  };
 }
 
 /** Sellers’ comments render legibly in **`recordVideo`**; tune with **`DEMO_COMMENT_TYPING_DELAY_MS`**. */
@@ -379,9 +366,10 @@ export async function runDemoScript(
           }
           break;
         case "grade_golden_example": {
-          const ex = ctx.examples[step.example_index];
+          const ix = demoScriptExampleIndex(step.example_index);
+          const ex = ctx.examples[ix];
           if (!ex) {
-            throw new Error(`No golden example index ${step.example_index}`);
+            throw new Error(`No golden example index ${ix}`);
           }
           const commentEl = commentFieldLocator(ctx.seller);
           await commentEl.waitFor({ state: "visible", timeout: 120_000 });
@@ -389,7 +377,7 @@ export async function runDemoScript(
           await maybeShowDemoChapter(
             ctx.seller,
             step.kind,
-            step.example_index,
+            ix,
           );
           await focusAndTypeSellerComment(commentEl, ex.text);
           if (
@@ -398,20 +386,27 @@ export async function runDemoScript(
           ) {
             await ctx.seller.pause();
           }
-          await dock
-            .getByRole("button", { name: /^Grade condition$/i })
-            .waitFor({ state: "visible", timeout: 120_000 });
-          await expect(
-            dock.getByRole("button", { name: /^Grade condition$/i }),
-          ).toBeEnabled({ timeout: 120_000 });
-          if (!demoHybridOperatorMode()) {
-            await dock
-              .getByRole("button", { name: /^Grade condition$/i })
-              .click({ timeout: 120_000 });
-          }
+          const gradeBtn = dock.getByRole("button", {
+            name: /^Grade condition$/i,
+          });
+          await gradeBtn.waitFor({ state: "visible", timeout: 120_000 });
+          await expect(gradeBtn).toBeEnabled({ timeout: 120_000 });
 
           const mediaLoc = visibleMediaConditionSelect(ctx.seller);
           const sleeveLoc = visibleSleeveConditionSelect(ctx.seller);
+          await mediaLoc.waitFor({ state: "visible", timeout: 120_000 });
+          await sleeveLoc.waitFor({ state: "visible", timeout: 120_000 });
+          const preMedia = ladderLabelForGoldenCompare(
+            await mediaLoc.inputValue(),
+          );
+          const preSleeve = ladderLabelForGoldenCompare(
+            await sleeveLoc.inputValue(),
+          );
+
+          if (!demoHybridOperatorMode()) {
+            await gradeBtn.click({ timeout: 120_000 });
+          }
+
           const gradeDeadline = automatedGradePollTimeoutMs();
           await expect
             .poll(
@@ -427,28 +422,32 @@ export async function runDemoScript(
               { timeout: gradeDeadline },
             )
             .toBe(ex.expected_sleeve_condition);
+
+          // Copy B narration must not depend on selects changing vs golden: Discogs/extension
+          // can already show VG+/NM before **Grade**, so **pre === golden** and the old gate hid all strips.
+          const ladderMovedOrCopyB =
+            ix === 1 ||
+            preMedia !== ex.expected_media_condition ||
+            preSleeve !== ex.expected_sleeve_condition;
           if (
-            step.example_index === 0 &&
+            ladderMovedOrCopyB &&
             !demoVideoChaptersDisabledFromEnv()
           ) {
-            await showNarrativeTransitionStrip(
-              ctx.seller,
-              "after_first_grade",
-            );
+            await showPostGradeLadderUpdatedStrip(ctx.seller, ix);
           }
           break;
         }
         case "price_estimate_via_sw": {
-          if (
-            step.example_index === 1 &&
-            !demoVideoChaptersDisabledFromEnv()
-          ) {
-            await showDemoPreSecondEstimateNarrationStrip(ctx.seller);
-          }
-          await maybeShowDemoChapter(ctx.seller, step.kind, step.example_index);
-          const ex = ctx.examples[step.example_index];
+          await removeVinyliqEstimateOverlay(ctx.seller);
+          const ix = demoScriptExampleIndex(step.example_index);
+          const ex = ctx.examples[ix];
           if (!ex) {
-            throw new Error(`No golden example index ${step.example_index}`);
+            throw new Error(`No golden example index ${ix}`);
+          }
+          let listingPriceFingerprint = "";
+          if (ix === 1) {
+            listingPriceFingerprint =
+              await readListingPriceFingerprintExtensionOrder(ctx.seller);
           }
           const p = demoHybridOperatorMode()
             ? await pollOverlayEstimateUsd(overlayPollTimeoutMs())
@@ -456,22 +455,37 @@ export async function runDemoScript(
                 ex.expected_media_condition,
                 ex.expected_sleeve_condition,
               );
+          if (ix === 0) {
+            await maybeShowDemoChapter(
+              ctx.seller,
+              step.kind,
+              ix,
+            );
+          } else if (demoVideoChaptersDisabledFromEnv()) {
+            await maybeShowDemoChapter(
+              ctx.seller,
+              step.kind,
+              ix,
+            );
+          } else {
+            await runCopyBEstimateNarrativeWhenListingPriceUpdates(
+              ctx.seller,
+              listingPriceFingerprint,
+            );
+          }
           priceCall++;
           if (priceCall === 1) {
             p1 = p;
             await afterFirstEstimateNarrativeDwell(ctx.seller);
           } else if (priceCall === 2) {
             p2 = p;
-            if (!demoVideoChaptersDisabledFromEnv()) {
-              await showDemoSessionOutroStrip(ctx.seller);
+            if (demoVideoChaptersDisabledFromEnv()) {
+              await afterSecondEstimateNarrativeDwell(ctx.seller);
             }
           }
           break;
         }
         case "assert_expected_grades_differ": {
-          if (!demoVideoChaptersDisabledFromEnv()) {
-            await showDemoGradesDifferNarrationStrip(ctx.seller);
-          }
           const [a0, b0] = ctx.examples;
           expect(
             `${a0.expected_media_condition}|${a0.expected_sleeve_condition}`,

@@ -1,4 +1,276 @@
-import type { Page } from "@playwright/test";
+import { expect } from "@playwright/test";
+import type { Frame, Page } from "@playwright/test";
+
+import {
+  readListingPriceFingerprintExtensionOrder,
+  visibleMediaConditionSelect,
+} from "./seller_listing_locators";
+
+/**
+ * **``demoVideoChaptersDisabledFromEnv()``** — narration **off** only when **`DEMO_VIDEO_CHAPTERS`** is **`0`/`false`/`no`/`off`**
+ * (unset ⇒ **`1`**, **`npm run test:ci`** forces **`0`**). Ignore this when diagnosing **partial** narration (same setting for every step).
+ *
+ * **Injection frame:** prefer the **visible Media condition** **`select`** (**same node** as grade polls in **`demo_runner`**) →
+ * **`elementHandle.ownerFrame()`**; then **`#vinyliq-sell-dock`**; else main. The dock can sit in a different embedding than the form.
+ *
+ * In **hybrid** runs, post-grade overlays require **`expect.poll`** on golden ladder dropdowns — stalled grading never reaches the narrator.
+ */
+
+/** SYNC: **`vinyliq-extension`** sell dock **`id`** (see **`demo_runner.vinyliqSellDockSelector`**). */
+const VINYLIQ_SELL_DOCK_SELECTOR = "#vinyliq-sell-dock";
+
+/**
+ * Locate the **same** **`Frame`** Discogs+VinylIQ use for **`vinyliq-sell-dock`**, using **`elementHandle.ownerFrame()`**
+ * ( **`Frame.evaluate(fn, payload)`** does **not** inject an extra **`Element`** arg — unlike **`locator.evaluate`** ).
+ */
+async function sellDockOwnerFrame(page: Page, timeoutMs: number): Promise<Frame | null> {
+  const dockLoc = page.locator(VINYLIQ_SELL_DOCK_SELECTOR).first();
+  try {
+    await dockLoc.waitFor({ state: "attached", timeout: timeoutMs });
+  } catch {
+    return null;
+  }
+  const handle = await dockLoc.elementHandle({ timeout: 10_000 });
+  if (!handle) {
+    return null;
+  }
+  const owner = await handle.ownerFrame();
+  await handle.dispose();
+  return owner;
+}
+
+/** Frame that owns the live **Media condition** row (what **`expect.poll`** reads after **Grade**). */
+async function sellFormOwnerFrameFromMediaSelect(
+  page: Page,
+  timeoutMs: number,
+): Promise<Frame | null> {
+  const ml = visibleMediaConditionSelect(page);
+  try {
+    await ml.waitFor({ state: "attached", timeout: timeoutMs });
+  } catch {
+    return null;
+  }
+  const handle = await ml.elementHandle({ timeout: 10_000 });
+  if (!handle) {
+    return null;
+  }
+  const owner = await handle.ownerFrame();
+  await handle.dispose();
+  return owner;
+}
+
+async function resolveSellerNarrationInjectionFrame(
+  page: Page,
+  opts: { mediaAttachTimeoutMs: number; dockFallbackTimeoutMs: number },
+): Promise<Frame> {
+  const fromForm = await sellFormOwnerFrameFromMediaSelect(
+    page,
+    opts.mediaAttachTimeoutMs,
+  );
+  if (fromForm) {
+    return fromForm;
+  }
+  const fromDock = await sellDockOwnerFrame(page, opts.dockFallbackTimeoutMs);
+  if (fromDock) {
+    return fromDock;
+  }
+  return page.mainFrame();
+}
+
+/** Drop demo narrator DOM in every reachable frame. Mixing ``page.evaluate`` (top) vs dock ``evaluate`` (iframe) leaves orphaned segues/stacking-context winners — the next strip renders “under” the old copy. */
+async function purgeDemoFloatingOverlaysInAllFrames(page: Page): Promise<void> {
+  const purge = (): void => {
+    document.getElementById("__vinyliq_demo_chapter_ann")?.remove();
+    document.getElementById("__vinyliq_demo_seller_strip")?.remove();
+    document
+      .querySelectorAll('[id^="__vinyliq_demo_segue_"]')
+      .forEach((el) => el.remove());
+    document
+      .querySelectorAll('[id^="__vinyliq_demo_aux_"]')
+      .forEach((el) => el.remove());
+  };
+  for (const frame of page.frames()) {
+    try {
+      await frame.evaluate(purge);
+    } catch {
+      /* detached frame or cross-origin */
+    }
+  }
+}
+
+type ChapterInjectPayloadBrowser = {
+  headline: string;
+  subtitle: string;
+  durationMs: number;
+};
+
+/** Serialized into the sell/catalog document via **`Frame.evaluate`**. */
+function demoChapterInjectorInBrowser(p: ChapterInjectPayloadBrowser): void {
+  const h = p.headline;
+  const s = p.subtitle;
+  const ms = p.durationMs;
+  const clearPrior = (): void => {
+    document.getElementById("__vinyliq_demo_chapter_ann")?.remove();
+    document.getElementById("__vinyliq_demo_seller_strip")?.remove();
+    document
+      .querySelectorAll('[id^="__vinyliq_demo_segue_"]')
+      .forEach((el) => el.remove());
+    document
+      .querySelectorAll('[id^="__vinyliq_demo_aux_"]')
+      .forEach((el) => el.remove());
+  };
+  clearPrior();
+  const nid = "__vinyliq_demo_chapter_ann";
+  const root = document.createElement("div");
+  root.id = nid;
+  Object.assign(root.style, {
+    position: "fixed",
+    inset: "0",
+    zIndex: "2147483647",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    flexDirection: "column",
+    background: "rgba(8,10,14,0.58)",
+    backdropFilter: "blur(6px)",
+    WebkitBackdropFilter: "blur(6px)",
+    fontFamily:
+      'system-ui,-apple-system,"Segoe UI",Roboto,sans-serif',
+    color: "#f6f8fc",
+    pointerEvents: "none",
+    padding: "24px",
+    boxSizing: "border-box",
+  });
+  const card = document.createElement("div");
+  Object.assign(card.style, {
+    maxWidth: "min(920px, 92vw)",
+    textAlign: "center",
+  });
+  const t = document.createElement("div");
+  t.textContent = h;
+  Object.assign(t.style, {
+    fontSize: "28px",
+    fontWeight: "700",
+    lineHeight: "1.25",
+    marginBottom: s ? "12px" : "0",
+    textShadow: "0 2px 12px rgba(0,0,0,0.45)",
+  });
+  card.appendChild(t);
+  if (s) {
+    const d = document.createElement("div");
+    d.textContent = s;
+    Object.assign(d.style, {
+      fontSize: "16px",
+      lineHeight: "1.55",
+      opacity: "0.95",
+      fontWeight: "400",
+      textShadow: "0 2px 8px rgba(0,0,0,0.5)",
+    });
+    card.appendChild(d);
+  }
+  root.appendChild(card);
+  (document.documentElement ?? document.body).appendChild(root);
+  window.setTimeout(() => root.remove(), ms);
+}
+
+type SellerStripInjectPayloadBrowser = {
+  headline: string;
+  body: string;
+  stripId: string;
+  ttl: number;
+  dockGapPx: number;
+};
+
+/** Serialized into the sell-listing **`Frame`** via **`frame.evaluate`** (single **`payload`** arg only). */
+function sellerInsightStripInjectorInBrowser(p: SellerStripInjectPayloadBrowser): void {
+  const hl = p.headline;
+  const bd = p.body;
+  const stripId = p.stripId;
+  const ttl = p.ttl;
+  const dockGapPx = p.dockGapPx;
+  const clearPrior = (): void => {
+    document.getElementById("__vinyliq_demo_chapter_ann")?.remove();
+    document.getElementById("__vinyliq_demo_seller_strip")?.remove();
+    document
+      .querySelectorAll('[id^="__vinyliq_demo_segue_"]')
+      .forEach((el) => el.remove());
+    document
+      .querySelectorAll('[id^="__vinyliq_demo_aux_"]')
+      .forEach((el) => el.remove());
+  };
+  clearPrior();
+  const root = document.createElement("div");
+  root.id = stripId;
+  const dock = document.getElementById("vinyliq-sell-dock");
+  let bottomPx = 88;
+  if (dock) {
+    const rect = dock.getBoundingClientRect();
+    const dockBottomCss = Number.parseFloat(
+      getComputedStyle(dock).bottom || "20",
+    );
+    const edge =
+      Number.isFinite(dockBottomCss) && dockBottomCss >= 0
+        ? dockBottomCss
+        : 20;
+    bottomPx = Math.ceil(rect.height + edge + dockGapPx);
+  }
+  Object.assign(root.style, {
+    position: "fixed",
+    left: "0",
+    right: "0",
+    bottom: `${bottomPx}px`,
+    zIndex: "2147483647",
+    pointerEvents: "none",
+    boxSizing: "border-box",
+    padding: "20px clamp(14px, 3vw, 28px)",
+    paddingBottom: "max(20px, env(safe-area-inset-bottom))",
+    background:
+      "linear-gradient(to top, rgba(6,8,14,0.92) 0%, rgba(6,8,14,0.78) 70%, transparent 100%)",
+    fontFamily:
+      'system-ui,-apple-system,"Segoe UI",Roboto,sans-serif',
+    color: "#f8fafc",
+    textShadow: "0 1px 12px rgba(0,0,0,0.55)",
+  });
+  const h = document.createElement("div");
+  h.textContent = hl;
+  Object.assign(h.style, {
+    fontWeight: "700",
+    fontSize: "clamp(17px, 2.25vw, 22px)",
+    lineHeight: "1.35",
+    marginBottom: bd ? "8px" : "0",
+    maxWidth: "960px",
+    marginInline: "auto",
+  });
+  root.appendChild(h);
+  if (bd) {
+    const pr = document.createElement("div");
+    pr.textContent = bd;
+    Object.assign(pr.style, {
+      fontSize: "clamp(14px, 1.95vw, 17px)",
+      lineHeight: "1.52",
+      opacity: "0.96",
+      maxWidth: "960px",
+      marginInline: "auto",
+    });
+    root.appendChild(pr);
+  }
+  const mountEl = document.body ?? document.documentElement;
+  mountEl.appendChild(root);
+  const observer = new MutationObserver(() => {
+    if (!root.isConnected && mountEl.isConnected) {
+      try {
+        mountEl.appendChild(root);
+      } catch {
+        /* document tearing down */
+      }
+    }
+  });
+  observer.observe(mountEl, { childList: true, subtree: false });
+  window.setTimeout(() => {
+    observer.disconnect();
+    root.remove();
+  }, ttl);
+}
 
 /** Action highlights baked into Chromium recordVideo frames (persistent launch path). */
 export const DEMO_RECORD_VIDEO = {
@@ -11,6 +283,36 @@ export const DEMO_RECORD_VIDEO = {
     fontSize: 17,
   },
 } as const;
+
+/** Copy A seller estimate headline strip — mounted lifetime (distinct from generic ``DEMO_SELLER_STRIP_MS``). */
+const COPY_A_ESTIMATE_STRIP_SCREEN_MS = 12_000;
+
+/** Trim applied to Copy A seller estimate **readLead** vs ``DEMO_SELLER_STRIP_READ_MS``. */
+const COPY_A_ESTIMATE_STRIP_TRIM_MS = 2000;
+
+function copyAEstimateStripReadLeadMs(): number {
+  return Math.max(400, sellerInsightStripLeadMs() - COPY_A_ESTIMATE_STRIP_TRIM_MS);
+}
+
+function coerceScriptExampleIndex(raw: unknown): number | undefined {
+  if (typeof raw === "number" && Number.isFinite(raw)) {
+    return Number.isInteger(raw) ? raw : Math.trunc(raw);
+  }
+  if (typeof raw === "string") {
+    const v = Number.parseInt(raw.trim(), 10);
+    return Number.isFinite(v) ? v : undefined;
+  }
+  return undefined;
+}
+
+/** Normalizes JSON/script ``example_index`` (handles stringly-typed scripts). */
+export function demoScriptExampleIndex(raw: unknown): number {
+  const ix = coerceScriptExampleIndex(raw);
+  if (ix === undefined) {
+    throw new Error(`Invalid demo example_index: ${JSON.stringify(raw)}`);
+  }
+  return ix;
+}
 
 /**
  * Full-frame chapter overlays (see ``showDemoChapterCard``).
@@ -76,16 +378,21 @@ export type SellerInsightStripOpts = {
   stripElementId?: string;
 };
 
-/** Skip bottom ``after_first_grade`` / ``after_first_estimate`` segue strips (chapter recording still honors bare dwell timings). */
+/** Skip **post–Copy A estimate** segue and Copy B **outro** (**``DEMO_SKIP_SEGUES``**). Grade segues (**``after_first_grade``**, **``after_second_grade``**) still run when **`DEMO_VIDEO_CHAPTERS=1`**. */
 export function demoSkipNarrativeSegues(): boolean {
   const v = (process.env.DEMO_SKIP_SEGUES ?? "").trim().toLowerCase();
   return ["1", "true", "yes"].includes(v);
 }
 
-/** Bare UI dwell after Copy 1's estimate clears (recording only; gated by chapters on). */
+/**
+ * Bare dwell (chapters on): after Copy A estimate seller strip, before **`after_first_estimate`**; and
+ * after Copy B estimate seller strip, before session **outro** — same **`DEMO_AFTER_FIRST_ESTIMATE_BARE_MS`** knob.
+ * Default **`9800`** approximates **(Copy A **12 s** strip TTL − trimmed readLead) + 3 s** at stock tuning;
+ * lengthen (e.g. **`19000`**) when you want more silence before the Copy **B** outro.
+ */
 export function afterFirstEstimateDwellBareMs(): number {
   const raw = Number.parseInt(process.env.DEMO_AFTER_FIRST_ESTIMATE_BARE_MS ?? "", 10);
-  return Number.isFinite(raw) && raw >= 0 && raw <= 72_000 ? raw : 19_000;
+  return Number.isFinite(raw) && raw >= 0 && raw <= 72_000 ? raw : 9800;
 }
 
 function narrativeTransitionScreenMs(): number {
@@ -98,10 +405,22 @@ function narrativeTransitionReadLeadMs(): number {
   return Number.isFinite(raw) && raw >= 700 && raw <= 28_000 ? raw : 7600;
 }
 
-/** “That's Copy A's number — hold onto it” segue-only (generic segues use ``DEMO_SEGUE_STRIP_*``). */
+/** Copy A estimate segue hold — ``DEMO_SEGUE_AFTER_FIRST_ESTIMATE_MS``. Closing outro — ``DEMO_SESSION_OUTRO_STRIP_MS``. */
 function afterFirstEstimateSegueHoldMs(): number {
   const raw = Number.parseInt(process.env.DEMO_SEGUE_AFTER_FIRST_ESTIMATE_MS ?? "", 10);
-  return Number.isFinite(raw) && raw >= 900 && raw <= 30_000 ? raw : 5000;
+  return Number.isFinite(raw) && raw >= 900 && raw <= 30_000 ? raw : 8000;
+}
+
+/** Final “two copies…” strip — **`screenMs`/`readLeadMs` paired** so the harness waits through the closing copy before the JSON tail **`hold`. */
+function sessionOutroStripHoldMs(): number {
+  const raw = Number.parseInt(process.env.DEMO_SESSION_OUTRO_STRIP_MS ?? "", 10);
+  return Number.isFinite(raw) && raw >= 6000 && raw <= 52_000 ? raw : 14_000;
+}
+
+/** Trims timed segues **after_first_grade** and **after_second_grade** vs generic ``DEMO_SEGUE_STRIP_*`` (`0` = no trim). */
+function afterFirstGradeSegueTrimMs(): number {
+  const raw = Number.parseInt(process.env.DEMO_SEGUE_AFTER_FIRST_GRADE_TRIM_MS ?? "", 10);
+  return Number.isFinite(raw) && raw >= 0 && raw <= 12_000 ? raw : 0;
 }
 
 /** Extra clearance (px) between sell-dock top and narration strip bottom. */
@@ -122,7 +441,7 @@ function setupChapterHeadline(kind: string): string {
 function setupChapterSubtitle(kind: string): string {
   switch (kind) {
     case "inject_extension_storage":
-      return `First edition, numbered, Apple label — and missing the "E.M.I. Recording" text that got fixed almost immediately. These could be worth serious money, but condition is everything on a record this old. We're not experts, so we'll describe what we see, let VinylIQ grade each copy, and trust the market data before we put a price on anything.`;
+      return `First edition, numbered, Apple label — and missing the "E.M.I. Recording" text that should have been on the label. EMI caught it quickly and issued a corrected pressing almost immediately after. These could be worth serious money, but condition is everything on a record this old. We're not experts, so we'll describe what we see, let VinylIQ grade each copy, and trust the market data before we put a price on anything.`;
     default:
       return "";
   }
@@ -156,7 +475,7 @@ function sellerEstimateInsight(exampleIndex: number): {
   }
   return {
     headline: "Same rare pressing — better condition — what does the market say?",
-    body: "This is where it gets interesting. Discogs's suggestion is already high — but watch VinylIQ go significantly above it. Copy B's grades are genuinely strong, and precise grading on a record this rare earns a real premium. That's a gap worth knowing about before you publish.",
+    body: "Discogs's suggested price is the highest this record has ever sold for — a ceiling, not a realistic target. VinylIQ factors in that the sleeve is grading VG+, not NM, and pulls the estimate back accordingly. That all-time high was someone's perfect copy. This isn't quite that — and pricing it honestly is how you earn a buyer's trust.",
   };
 }
 
@@ -164,6 +483,10 @@ const NARRATIVE_SEGUES = {
   after_first_grade: {
     headline: "Grades are in for Copy A — now the important question",
     body: "We know what condition it's in. But what does that actually mean for the price? A rare misprinted pressing in rough shape is a very different conversation to one in good nick. Let's find out where Copy A lands.",
+  },
+  after_second_grade: {
+    headline: "VinylIQ graded them differently — and the gap matters",
+    body: "Same pressing, same attic, two very different grades. That's not a small thing on a record like this — condition is what separates a serious sale from leaving money on the table.",
   },
   after_first_estimate: {
     headline: "That's Copy A's number — hold onto it",
@@ -181,99 +504,59 @@ function narrativeSegueCopy(key: NarrativeSegueKey): {
 }
 
 /**
+ * Clears **`#vinyliq-overlay`** in **every** same-origin frame (**extension** attaches beside the dock).
+ */
+export async function removeVinyliqEstimateOverlay(page: Page): Promise<void> {
+  const remover = (): void => {
+    document.getElementById("vinyliq-overlay")?.remove();
+  };
+  for (const frame of page.frames()) {
+    try {
+      await frame.evaluate(remover);
+    } catch {
+      //
+    }
+  }
+}
+
+/**
  * Blurred fullscreen card (captures inside recordVideo from the active tab).
  * Used only for onboarding-style beats (inject + navigation setup).
+ *
+ * **`injectionTarget`:** **`main`** skip slow sell-form detection (no media row/dock on
+ * Discogs `/`, `/release/…`, popup) — **`auto`** probes media **`select`** **Frame** then dock
+ * (**`/sell/post/…`**).
  */
 export async function showDemoChapterCard(
   page: Page,
   headline: string,
   subtitle: string,
   overlayDurationMs?: number,
+  injectionTarget: "auto" | "main" = "auto",
 ): Promise<void> {
   if (demoVideoChaptersDisabledFromEnv()) {
     return;
   }
+  await purgeDemoFloatingOverlaysInAllFrames(page);
   const durationMs =
     overlayDurationMs != null &&
     Number.isFinite(overlayDurationMs) &&
     overlayDurationMs >= 0
       ? Math.min(Math.max(Math.floor(overlayDurationMs), 0), 120_000)
       : demoChapterOverlayMs();
-  await page.evaluate(
-    ({
-      headline: h,
-      subtitle: s,
-      durationMs: ms,
-    }: {
-      headline: string;
-      subtitle: string;
-      durationMs: number;
-    }) => {
-      const clearPrior = (): void => {
-        document.getElementById("__vinyliq_demo_chapter_ann")?.remove();
-        document.getElementById("__vinyliq_demo_seller_strip")?.remove();
-        document
-          .querySelectorAll('[id^="__vinyliq_demo_segue_"]')
-          .forEach((el) => el.remove());
-        document
-          .querySelectorAll('[id^="__vinyliq_demo_aux_"]')
-          .forEach((el) => el.remove());
-      };
-      clearPrior();
-      const nid = "__vinyliq_demo_chapter_ann";
-      const root = document.createElement("div");
-      root.id = nid;
-      Object.assign(root.style, {
-        position: "fixed",
-        inset: "0",
-        zIndex: "2147483647",
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        flexDirection: "column",
-        background: "rgba(8,10,14,0.58)",
-        backdropFilter: "blur(6px)",
-        WebkitBackdropFilter: "blur(6px)",
-        fontFamily:
-          'system-ui,-apple-system,"Segoe UI",Roboto,sans-serif',
-        color: "#f6f8fc",
-        pointerEvents: "none",
-        padding: "24px",
-        boxSizing: "border-box",
-      });
-      const card = document.createElement("div");
-      Object.assign(card.style, {
-        maxWidth: "min(920px, 92vw)",
-        textAlign: "center",
-      });
-      const t = document.createElement("div");
-      t.textContent = h;
-      Object.assign(t.style, {
-        fontSize: "28px",
-        fontWeight: "700",
-        lineHeight: "1.25",
-        marginBottom: s ? "12px" : "0",
-        textShadow: "0 2px 12px rgba(0,0,0,0.45)",
-      });
-      card.appendChild(t);
-      if (s) {
-        const d = document.createElement("div");
-        d.textContent = s;
-        Object.assign(d.style, {
-          fontSize: "16px",
-          lineHeight: "1.55",
-          opacity: "0.95",
-          fontWeight: "400",
-          textShadow: "0 2px 8px rgba(0,0,0,0.5)",
+  const chapterPayload: ChapterInjectPayloadBrowser = {
+    headline,
+    subtitle,
+    durationMs,
+  };
+  const host =
+    injectionTarget === "main"
+      ? page.mainFrame()
+      : await resolveSellerNarrationInjectionFrame(page, {
+          mediaAttachTimeoutMs: 120_000,
+          dockFallbackTimeoutMs: 8000,
         });
-        card.appendChild(d);
-      }
-      root.appendChild(card);
-      (document.documentElement ?? document.body).appendChild(root);
-      window.setTimeout(() => root.remove(), ms);
-    },
-    { headline, subtitle, durationMs },
-  );
+  await host.evaluate(demoChapterInjectorInBrowser, chapterPayload);
   await page.waitForTimeout(durationMs);
 }
 
@@ -290,105 +573,141 @@ export async function showSellerInsightStrip(
     await page.waitForTimeout(readLead);
     return;
   }
+  await purgeDemoFloatingOverlaysInAllFrames(page);
   const screenMs = opts?.screenMs ?? sellerInsightStripScreenMs();
   const nid = opts?.stripElementId ?? "__vinyliq_demo_seller_strip";
-  await page.evaluate(
-    ({
-      headline: hl,
-      body: bd,
-      stripId,
-      ttl,
-      dockGapPx,
-    }: {
-      headline: string;
-      body: string;
-      stripId: string;
-      ttl: number;
-      dockGapPx: number;
-    }) => {
-      const clearPrior = (): void => {
-        document.getElementById("__vinyliq_demo_chapter_ann")?.remove();
-        document.getElementById("__vinyliq_demo_seller_strip")?.remove();
-        document
-          .querySelectorAll('[id^="__vinyliq_demo_segue_"]')
-          .forEach((el) => el.remove());
-        document
-          .querySelectorAll('[id^="__vinyliq_demo_aux_"]')
-          .forEach((el) => el.remove());
-      };
-      clearPrior();
-      const root = document.createElement("div");
-      root.id = stripId;
-      const dock = document.getElementById("vinyliq-sell-dock");
-      let bottomPx = 88;
-      if (dock) {
-        const rect = dock.getBoundingClientRect();
-        const dockBottomCss = Number.parseFloat(
-          getComputedStyle(dock).bottom || "20",
-        );
-        const edge =
-          Number.isFinite(dockBottomCss) && dockBottomCss >= 0
-            ? dockBottomCss
-            : 20;
-        bottomPx = Math.ceil(rect.height + edge + dockGapPx);
-      }
-      Object.assign(root.style, {
-        position: "fixed",
-        left: "0",
-        right: "0",
-        bottom: `${bottomPx}px`,
-        zIndex: "2147483644",
-        pointerEvents: "none",
-        boxSizing: "border-box",
-        padding: "20px clamp(14px, 3vw, 28px)",
-        paddingBottom: "max(20px, env(safe-area-inset-bottom))",
-        background:
-          "linear-gradient(to top, rgba(6,8,14,0.92) 0%, rgba(6,8,14,0.78) 70%, transparent 100%)",
-        fontFamily:
-          'system-ui,-apple-system,"Segoe UI",Roboto,sans-serif',
-        color: "#f8fafc",
-        textShadow: "0 1px 12px rgba(0,0,0,0.55)",
-      });
-      const h = document.createElement("div");
-      h.textContent = hl;
-      Object.assign(h.style, {
-        fontWeight: "700",
-        fontSize: "clamp(17px, 2.25vw, 22px)",
-        lineHeight: "1.35",
-        marginBottom: bd ? "8px" : "0",
-        maxWidth: "960px",
-        marginInline: "auto",
-      });
-      root.appendChild(h);
-      if (bd) {
-        const p = document.createElement("div");
-        p.textContent = bd;
-        Object.assign(p.style, {
-          fontSize: "clamp(14px, 1.95vw, 17px)",
-          lineHeight: "1.52",
-          opacity: "0.96",
-          maxWidth: "960px",
-          marginInline: "auto",
-        });
-        root.appendChild(p);
-      }
-      document.body.appendChild(root);
-      window.setTimeout(() => document.getElementById(stripId)?.remove(), ttl);
-    },
-    { headline: insight.headline, body: insight.body, stripId: nid, ttl: screenMs, dockGapPx: sellerStripAboveDockGapPx() },
-  );
-
+  const stripPayload: SellerStripInjectPayloadBrowser = {
+    headline: insight.headline,
+    body: insight.body,
+    stripId: nid,
+    ttl: screenMs,
+    dockGapPx: sellerStripAboveDockGapPx(),
+  };
+  const host = await resolveSellerNarrationInjectionFrame(page, {
+    mediaAttachTimeoutMs: 120_000,
+    dockFallbackTimeoutMs: 8000,
+  });
+  await host.evaluate(sellerInsightStripInjectorInBrowser, stripPayload);
   await page.waitForTimeout(readLead);
 }
 
 /**
- * Short bridge beats between scripted sections (recording / ``DEMO_VIDEO_CHAPTERS=1``).
+ * Post-**Grade** strips (**demo_runner**): **Copy A** only when the ladder **changed** toward golden;
+ * **Copy B** runs after each successful Grade (chapters on) even if selects already matched — autofill can
+ * hide a **pre ≠ golden** delta. **Copy B:** two strips **12 s** / **10 s**; **Copy A:** single strip (**env**-tuned).
  */
+export async function showPostGradeLadderUpdatedStrip(
+  page: Page,
+  exampleIndex: number,
+): Promise<void> {
+  if (demoVideoChaptersDisabledFromEnv()) {
+    return;
+  }
+  if (exampleIndex === 1) {
+    const { body } = narrativeSegueCopy("after_second_grade");
+    await showSellerInsightStrip(
+      page,
+      {
+        headline: "VinylIQ graded them differently — and the gap matters",
+        body,
+      },
+      {
+        stripElementId: "__vinyliq_demo_segue_after_second_grade_gap",
+        screenMs: 12_000,
+        readLeadMs: 12_000,
+      },
+    );
+    await showSellerInsightStrip(
+      page,
+      {
+        headline:
+          "Grades locked — now let's see what Copy B is actually worth",
+        body: "The ladder matches what VinylIQ read from your notes — next we ask the market what this copy should list for.",
+      },
+      {
+        stripElementId: "__vinyliq_demo_segue_after_second_grade_locked",
+        screenMs: 10_000,
+        readLeadMs: 10_000,
+      },
+    );
+    return;
+  }
+  const { body } = narrativeSegueCopy("after_first_grade");
+  const slug = "after_first_grade_ladder_snap";
+  const trim = afterFirstGradeSegueTrimMs();
+  const screen = narrativeTransitionScreenMs();
+  const lead = narrativeTransitionReadLeadMs();
+  await showSellerInsightStrip(
+    page,
+    {
+      headline: "VinylIQ graded them differently — and the gap matters",
+      body,
+    },
+    {
+      screenMs: Math.max(4500, screen - trim),
+      readLeadMs: Math.max(700, lead - trim),
+      stripElementId: `__vinyliq_demo_segue_${slug}`,
+    },
+  );
+}
+
+/** Timeout for listing **price** field to change after **Copy B** estimate — **`DEMO_COPY_B_PRICE_FIELD_POLL_MS`**. */
+function copyBListingPricePollTimeoutMs(): number {
+  const raw = Number.parseInt(
+    process.env.DEMO_COPY_B_PRICE_FIELD_POLL_MS ?? "",
+    10,
+  );
+  return Number.isFinite(raw) && raw >= 3000 && raw <= 360_000 ? raw : 120_000;
+}
+
+/**
+ * **Copy B** estimate beat: wait until **`readListingPriceFingerprintExtensionOrder`**
+ * (same selector order as **`fillListingSuggestedPrice`**) **≠** pre-estimate snapshot,
+ * then **`sellerEstimateInsight(1)`** for **12 s**, then session **outro** (unless **`DEMO_SKIP_SEGUES`**).
+ * If price **DOM** drifts from the SW target, the poll may time out — the strip still mounts so the viewer is not left with a blank beat.
+ */
+export async function runCopyBEstimateNarrativeWhenListingPriceUpdates(
+  page: Page,
+  listingPriceFingerprintBeforeEstimate: string,
+): Promise<void> {
+  if (demoVideoChaptersDisabledFromEnv()) {
+    return;
+  }
+  const deadline = copyBListingPricePollTimeoutMs();
+  try {
+    await expect
+      .poll(
+        async () => readListingPriceFingerprintExtensionOrder(page),
+        { timeout: deadline },
+      )
+      .not.toBe(listingPriceFingerprintBeforeEstimate);
+  } catch {
+    /* narrate anyway — see module doc above */
+  }
+
+  await showSellerInsightStrip(page, sellerEstimateInsight(1), {
+    stripElementId: "__vinyliq_demo_aux_estimate_1",
+    screenMs: 12_000,
+    readLeadMs: 12_000,
+  });
+
+  if (!demoSkipNarrativeSegues()) {
+    await showDemoSessionOutroStrip(page);
+  }
+}
+
 export async function showNarrativeTransitionStrip(
   page: Page,
   key: NarrativeSegueKey,
 ): Promise<void> {
-  if (demoVideoChaptersDisabledFromEnv() || demoSkipNarrativeSegues()) {
+  if (demoVideoChaptersDisabledFromEnv()) {
+    return;
+  }
+  if (
+    demoSkipNarrativeSegues() &&
+    key !== "after_first_grade" &&
+    key !== "after_second_grade"
+  ) {
     return;
   }
   const insight = narrativeSegueCopy(key);
@@ -402,6 +721,17 @@ export async function showNarrativeTransitionStrip(
     });
     return;
   }
+  if (key === "after_first_grade" || key === "after_second_grade") {
+    const trim = afterFirstGradeSegueTrimMs();
+    const screen = narrativeTransitionScreenMs();
+    const lead = narrativeTransitionReadLeadMs();
+    await showSellerInsightStrip(page, insight, {
+      screenMs: Math.max(4500, screen - trim),
+      readLeadMs: Math.max(700, lead - trim),
+      stripElementId: `__vinyliq_demo_segue_${slug}`,
+    });
+    return;
+  }
   await showSellerInsightStrip(page, insight, {
     screenMs: narrativeTransitionScreenMs(),
     readLeadMs: narrativeTransitionReadLeadMs(),
@@ -409,9 +739,7 @@ export async function showNarrativeTransitionStrip(
   });
 }
 
-/**
- * After Copy 1's estimate: linger on the untouched UI, then segue strip into Copy B.
- */
+/** After Copy 1's seller estimate overlay beat: **`DEMO_AFTER_FIRST_ESTIMATE_BARE_MS`**, then **That's Copy A's number…**. */
 export async function afterFirstEstimateNarrativeDwell(page: Page): Promise<void> {
   if (demoVideoChaptersDisabledFromEnv()) {
     return;
@@ -419,6 +747,20 @@ export async function afterFirstEstimateNarrativeDwell(page: Page): Promise<void
   await page.waitForTimeout(afterFirstEstimateDwellBareMs());
   if (!demoSkipNarrativeSegues()) {
     await showNarrativeTransitionStrip(page, "after_first_estimate");
+  }
+}
+
+/**
+ * After Copy B's estimate-insight strip: bare UI dwell (**``afterFirstEstimateDwellBareMs``**),
+ * then session outro (same role as **`after_first_estimate`** after Copy A's estimate).
+ */
+export async function afterSecondEstimateNarrativeDwell(page: Page): Promise<void> {
+  if (demoVideoChaptersDisabledFromEnv()) {
+    return;
+  }
+  await page.waitForTimeout(afterFirstEstimateDwellBareMs());
+  if (!demoSkipNarrativeSegues()) {
+    await showDemoSessionOutroStrip(page);
   }
 }
 
@@ -434,6 +776,7 @@ export async function showDemoCatalogSearchIntroChapter(
     "Let's find the right release on Discogs and get these listed",
     "Search, into Masters, down to the pressing — let's make sure we're looking at the right one before we do anything else.",
     catalogSearchIntroChapterOverlayMs(),
+    "main",
   );
 }
 
@@ -446,6 +789,7 @@ export async function showDemoCatalogReleaseUncertaintyChapter(
     "Hmm — is this actually the right release?",
     "",
     releaseUncertaintyChapterOverlayMs(),
+    "main",
   );
 }
 
@@ -458,6 +802,7 @@ export async function showDemoCatalogReleaseConfirmedChapter(
     "The details match — this is the one",
     "Numbered gatefold, dark green Apple label, misprint confirmed. Both copies are this pressing. Let's open the Sell page and get started.",
     catalogReleaseConfirmedChapterOverlayMs(),
+    "main",
   );
 }
 
@@ -470,43 +815,20 @@ export async function showDemoSellLandingDeepLinkChapter(page: Page): Promise<vo
   );
 }
 
-/** ``assert_expected_grades_differ`` beat. */
-export async function showDemoGradesDifferNarrationStrip(
-  page: Page,
-): Promise<void> {
-  await showSellerInsightStrip(
-    page,
-    {
-      headline: "VinylIQ graded them differently — and the gap matters",
-      body: "Same pressing, same attic, two very different grades. That's not a small thing on a record like this — condition is what separates a serious sale from leaving money on the table.",
-    },
-    { stripElementId: "__vinyliq_demo_aux_grades_diff" },
-  );
-}
-
-/** Before Copy B estimate strip. */
-export async function showDemoPreSecondEstimateNarrationStrip(
-  page: Page,
-): Promise<void> {
-  await showSellerInsightStrip(
-    page,
-    {
-      headline: "Grades locked — now let's see what Copy B is actually worth",
-      body: "Better condition on a rare pressing should move the number. Let's find out by how much.",
-    },
-    { stripElementId: "__vinyliq_demo_aux_pre_est_b" },
-  );
-}
-
-/** After Copy B overlay estimate — end of scripted pricing. */
+/** After Copy B overlay estimate — end of scripted pricing (long **`readLead`** + **`screenMs`** pair so “till the end” reads cleanly). */
 export async function showDemoSessionOutroStrip(page: Page): Promise<void> {
+  const hold = sessionOutroStripHoldMs();
   await showSellerInsightStrip(
     page,
     {
       headline: "Two copies, two honest prices — no guessing",
       body: "We described what we saw, VinylIQ graded each copy and checked the comps, and now we've got a number we can actually stand behind for both. That's the whole session.",
     },
-    { stripElementId: "__vinyliq_demo_aux_outro" },
+    {
+      stripElementId: "__vinyliq_demo_aux_outro",
+      screenMs: hold,
+      readLeadMs: hold,
+    },
   );
 }
 
@@ -524,6 +846,8 @@ export async function maybeShowDemoChapter(
       page,
       setupChapterHeadline(kind),
       setupChapterSubtitle(kind),
+      undefined,
+      "main",
     );
     return;
   }
@@ -534,23 +858,39 @@ export async function maybeShowDemoChapter(
     return;
   }
 
-  if (kind === "grade_golden_example" && typeof exampleIndex === "number") {
-    await showSellerInsightStrip(page, sellerGradeInsight(exampleIndex));
+  if (kind === "grade_golden_example") {
+    const ix = coerceScriptExampleIndex(exampleIndex);
+    if (ix === undefined) {
+      return;
+    }
+    await showSellerInsightStrip(page, sellerGradeInsight(ix), {
+      stripElementId: `__vinyliq_demo_aux_grade_${ix}`,
+    });
     return;
   }
 
-  if (kind === "price_estimate_via_sw" && typeof exampleIndex === "number") {
-    const insight = sellerEstimateInsight(exampleIndex);
-    const lead = sellerInsightStripLeadMs();
-    const screen = sellerInsightStripScreenMs();
-    const opts =
-      exampleIndex === 0
-        ? {
-            readLeadMs: Math.max(400, Math.floor(lead / 2)),
-            screenMs: Math.max(2800, Math.floor(screen / 2)),
-          }
-        : undefined;
-    await showSellerInsightStrip(page, insight, opts);
+  if (kind === "price_estimate_via_sw") {
+    const ix = coerceScriptExampleIndex(exampleIndex);
+    if (ix === undefined) {
+      return;
+    }
+    if (ix === 1 && !demoVideoChaptersDisabledFromEnv()) {
+      return;
+    }
+    const id = `__vinyliq_demo_aux_estimate_${ix}`;
+    if (ix === 0) {
+      await showSellerInsightStrip(page, sellerEstimateInsight(0), {
+        stripElementId: id,
+        readLeadMs: copyAEstimateStripReadLeadMs(),
+        screenMs: COPY_A_ESTIMATE_STRIP_SCREEN_MS,
+      });
+      return;
+    }
+    await showSellerInsightStrip(page, sellerEstimateInsight(ix), {
+      stripElementId: id,
+      readLeadMs: narrativeTransitionReadLeadMs(),
+      screenMs: narrativeTransitionScreenMs(),
+    });
     return;
   }
 }

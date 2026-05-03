@@ -4,16 +4,7 @@ A monorepo for vinyl collection tooling: **Discogs integration**, **data ingest*
 
 ## Demo
 
-<!--
-  REPLACE the src below with the GitHub user-attachments URL produced
-  by following demo/vinyliq_demo_playwright/RECORDING.md. Drag the
-  generated demo.mp4 into a GitHub issue/PR comment box, copy the
-  https://github.com/user-attachments/assets/<id>/demo.mp4 URL, and
-  paste it here. The width=720 + controls reflow nicely on github.com.
--->
-<video src="https://github.com/user-attachments/assets/REPLACE_WITH_DEMO_VIDEO_ID/demo.mp4"
-       controls
-       width="720"></video>
+[![VinylIQ seller demo on Discogs (~3 min) — watch on YouTube](demo/vinyliq_demo_playwright/demo_thumbnail.png)](https://youtu.be/04D_E4hLWyE)
 
 End-to-end demo: a seller pastes condition notes into a Discogs sell-listing form, the VinylIQ Chrome extension calls the **grader API** to predict media + sleeve grades and updates the dropdowns, then on the matching release page the same extension calls the **price API** and renders an estimate that varies meaningfully with the predicted condition. Full deploy is on GKE Autopilot — see [`k8s/demo/README.md`](k8s/demo/README.md) for the runbook and [`demo/vinyliq_demo_playwright/RECORDING.md`](demo/vinyliq_demo_playwright/RECORDING.md) for the recording flow.
 

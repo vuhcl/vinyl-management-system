@@ -308,7 +308,7 @@ export async function runHybridCatalogReleasePageNarration(
     return;
   }
   await waitUntilDiscogsGoldenReleasePage(page, releaseId, navTimeoutMs);
-  await page.waitForTimeout(400);
+  await page.waitForTimeout(160);
   await showDemoCatalogReleaseUncertaintyChapter(page);
   await page.evaluate(() => {
     window.scrollBy(
@@ -379,7 +379,7 @@ export async function gotoSellerViaDiscogsUx(
   await followDiscogsAnchorSameTab(page, releaseAnchor, 120_000);
 
   await waitForReleasePath(page, rid, 120_000);
-  await page.waitForTimeout(400);
+  await page.waitForTimeout(160);
   await showDemoCatalogReleaseUncertaintyChapter(page);
   await page.evaluate(() => {
     window.scrollBy(
