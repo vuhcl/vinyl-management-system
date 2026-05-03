@@ -1,0 +1,59 @@
+{
+  "schema_version": 1,
+  "steps": [
+    {
+      "kind": "inject_extension_storage",
+      "title": "Seed VinylIQ endpoints (popup tab; recorder stays on Sell flow)"
+    },
+    {
+      "kind": "hold",
+      "title": "Beat after inject (popup + storage seed settle)",
+      "ms": 1000
+    },
+    {
+      "kind": "goto_seller_listing",
+      "title": "Seller draft (catalog: search → master → release → Sell unless DEMO_CATALOG_UX=0)"
+    },
+    {
+      "kind": "hold",
+      "title": "Brief settle after Sell draft loads (goto)",
+      "ms": 225
+    },
+    {
+      "kind": "grade_golden_example",
+      "title": "Rough-copy listing description → Grade",
+      "example_index": 0
+    },
+    { "kind": "hold", "title": "Beat after grading rough copy", "ms": 520 },
+    {
+      "kind": "price_estimate_via_sw",
+      "title": "Market check vs rough-copy grades",
+      "example_index": 0
+    },
+    {
+      "kind": "hold",
+      "title": "Light settle (Copy 1 estimate already dwelled inline when chapters run)",
+      "ms": 400
+    },
+    {
+      "kind": "grade_golden_example",
+      "title": "Strong-copy listing description → Grade",
+      "example_index": 1
+    },
+    { "kind": "hold", "title": "Beat after grading strong copy", "ms": 1100 },
+    {
+      "kind": "assert_expected_grades_differ",
+      "title": "Grades change with the rewritten note"
+    },
+    {
+      "kind": "price_estimate_via_sw",
+      "title": "Market check vs strong-copy grades",
+      "example_index": 1
+    },
+    { "kind": "hold", "title": "Hold final overlay", "ms": 1600 },
+    {
+      "kind": "assert_min_price_delta",
+      "title": "Assert wedge between both estimates"
+    }
+  ]
+}

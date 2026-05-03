@@ -64,9 +64,9 @@ COPY price_estimator/__init__.py       ./price_estimator/__init__.py
 COPY price_estimator/src               ./price_estimator/src
 COPY price_estimator/configs           ./price_estimator/configs
 
-# Root-level configs/base.yaml is `inherits:`-referenced by
-# price_estimator/configs/base.yaml; ship it so the default config
-# resolves cleanly (the GKE deploy overrides it via VINYLIQ_CONFIG anyway).
+# Repo-root ``configs/`` exists for collector/recommender; VinylIQ merges use
+# ``price_estimator/configs/base.yaml``. GKE should inherit the latter via
+# ``VINYLIQ_CONFIG`` so ``vinyliq.inference.*`` survives path overrides.
 COPY configs ./configs
 
 RUN pip install --upgrade pip && pip install -r /tmp/requirements.txt

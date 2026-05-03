@@ -1,31 +1,45 @@
 {
   "manifest_version": 3,
   "name": "VinylIQ",
-  "version": "0.2.0",
+  "version": "0.3.7",
   "description": "ML-assisted price estimates and condition grading on Discogs (VinylIQ APIs)",
   "permissions": ["storage", "activeTab", "scripting"],
   "host_permissions": [
     "https://www.discogs.com/*",
+    "https://discogs.com/*",
+    "https://*.discogs.com/*",
     "http://127.0.0.1/*",
     "http://localhost/*",
     "https://*.nip.io/*"
   ],
   "action": {
     "default_popup": "popup.html",
-    "default_title": "VinylIQ"
+    "default_title": "VinylIQ (seller listing: fixed panel)"
   },
   "background": {
     "service_worker": "service-worker.js"
   },
+  "options_ui": {
+    "page": "options.html",
+    "open_in_tab": true
+  },
   "content_scripts": [
     {
-      "matches": ["https://www.discogs.com/release/*"],
-      "js": ["content.js"],
+      "matches": [
+        "https://www.discogs.com/release/*",
+        "https://discogs.com/release/*",
+        "https://*.discogs.com/release/*"
+      ],
+      "js": ["listing_dom.js", "content.js"],
       "run_at": "document_idle"
     },
     {
-      "matches": ["https://www.discogs.com/sell/post/*"],
-      "js": ["seller-grade.js"],
+      "matches": [
+        "https://www.discogs.com/sell/post/*",
+        "https://discogs.com/sell/post/*",
+        "https://*.discogs.com/sell/post/*"
+      ],
+      "js": ["listing_dom.js", "content.js"],
       "run_at": "document_idle"
     }
   ]

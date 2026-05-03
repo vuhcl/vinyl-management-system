@@ -5,8 +5,10 @@
   "description": "Playwright TypeScript spec that drives the vinyl management system demo (release-page price estimate + seller-page condition grading) and records a 2-minute video.",
   "scripts": {
     "test": "playwright test",
+    "test:ci": "DEMO_CATALOG_UX=0 DEMO_SKIP_HOLDS=1 DEMO_VIDEO_CHAPTERS=0 playwright test",
     "test:show": "playwright test --headed",
-    "install-browsers": "playwright install chromium"
+    "install-browsers": "playwright install chromium",
+    "warm-profile": "WARM_PROFILE=1 playwright test tests/warm_profile.spec.ts"
   },
   "devDependencies": {
     "@playwright/test": "^1.55.0",

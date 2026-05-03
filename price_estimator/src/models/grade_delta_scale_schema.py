@@ -68,3 +68,10 @@ def validate_grade_delta_scale_fit_json(blob: Any) -> None:
             float(blob[key])
         except (TypeError, ValueError) as e:
             raise ValueError(f"{key} must be numeric") from e
+    for opt in ("alpha", "beta"):
+        if opt not in blob or blob[opt] is None:
+            continue
+        try:
+            float(blob[opt])
+        except (TypeError, ValueError) as e:
+            raise ValueError(f"{opt} must be numeric when present") from e

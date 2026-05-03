@@ -7,6 +7,8 @@ from typing import Any
 import joblib
 import numpy as np
 
+from ..features.vinyliq_features import MAX_LOG_PRICE
+
 
 class XGBVinylIQModel:
     def __init__(self) -> None:
@@ -64,5 +66,5 @@ class XGBVinylIQModel:
     def predict_dollars(self, X: np.ndarray) -> np.ndarray:
         logp = self.predict_log1p(X)
         if self.target_was_log1p_:
-            return np.expm1(np.clip(logp, 0, 20))
+            return np.expm1(np.clip(logp, 0, MAX_LOG_PRICE))
         return np.clip(logp, 0, None)

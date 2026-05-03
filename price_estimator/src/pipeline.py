@@ -78,10 +78,15 @@ def estimate(
         fs = root / fs
     if not md.is_absolute():
         md = root / md
+    inf = v.get("inference") if isinstance(v.get("inference"), dict) else {}
+    use_ps_anchor = bool(
+        inf.get("use_price_suggestion_condition_anchor", True)
+    )
     svc = InferenceService(
         marketplace_db=mp,
         feature_store_db=fs,
         model_dir=md,
+        use_price_suggestion_condition_anchor=use_ps_anchor,
     )
     out = svc.estimate(str(release_id), media_condition, sleeve_condition)
     return {

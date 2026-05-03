@@ -1,8 +1,10 @@
 """
 VinylIQ price microservice.
 
-Run from repository root:
-  PYTHONPATH=. uvicorn price_estimator.src.api.main:app --host 0.0.0.0 --port 8801
+Run from repository root (example):
+
+  PYTHONPATH=. uvicorn price_estimator.src.api.main:app \\
+      --host 0.0.0.0 --port 8801
 """
 from __future__ import annotations
 
@@ -18,6 +20,7 @@ from price_estimator.src.api.schemas import (
     EstimateRequest,
     EstimateResponse,
     HealthResponse,
+    InvalidateMarketplaceCacheResponse,
 )
 from price_estimator.src.inference.service import load_service_from_config
 
@@ -57,7 +60,10 @@ def _check_api_key(x_api_key: str | None) -> None:
     if not expected:
         return
     if not x_api_key or x_api_key != expected:
-        raise HTTPException(status_code=401, detail="Invalid or missing API key")
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid or missing API key",
+        )
 
 
 @app.get("/health", response_model=HealthResponse)
@@ -66,11 +72,17 @@ async def health(x_api_key: str | None = Header(None, alias="X-API-Key")):
     svc = get_service()
     # COUNT(*) can exceed kube probes on multi-million-row Postgres; ping only.
     svc.features.ping()
-    loaded = (svc.model_dir / "xgb_model.joblib").exists()
+    md = svc.model_dir
+    loaded = (
+        (md / "model_manifest.json").is_file()
+        or (md / "regressor.joblib").is_file()
+        or (md / "xgb_model.joblib").is_file()
+    )
     return HealthResponse(
         status="ok",
         feature_store_count=None,
         model_loaded=loaded,
+        model_source=svc.model_source,
     )
 
 
@@ -81,13 +93,42 @@ async def estimate(
 ):
     _check_api_key(x_api_key)
     svc = get_service()
+    overlay = (
+        body.marketplace_client.model_dump(exclude_none=True)
+        if body.marketplace_client
+        else None
+    )
+    if not overlay:
+        overlay = None
     out = svc.estimate(
         body.release_id,
         body.media_condition,
         body.sleeve_condition,
         refresh_stats=body.refresh_stats,
+        marketplace_client=overlay,
     )
     return EstimateResponse(**out)
+
+
+@app.delete(
+    "/cache/marketplace/{release_id}",
+    response_model=InvalidateMarketplaceCacheResponse,
+)
+async def invalidate_marketplace_redis_cache(
+    release_id: str,
+    x_api_key: str | None = Header(None, alias="X-API-Key"),
+):
+    """
+    Drop the Redis L1 projection for this release_id.
+
+    The next ``/estimate`` misses Redis, loads marketplace data from the backing
+    store, and may repopulate Redis. Send ``refresh_stats: true`` on a later
+    request to skip the store and refetch Discogs (releases + price_suggestions).
+    """
+    _check_api_key(x_api_key)
+    svc = get_service()
+    out = svc.invalidate_marketplace_redis_cache(release_id)
+    return InvalidateMarketplaceCacheResponse(**out)
 
 
 @app.post("/collection/value", response_model=CollectionValueResponse)
@@ -96,8 +137,9 @@ async def collection_value(
     x_api_key: str | None = Header(None, alias="X-API-Key"),
 ):
     """
-    Sum estimates for a list of items. Does not fetch the user's Discogs collection;
-    the client must pass items (extension / app supplies them).
+    Sum estimates for a list of items.
+
+    Does not fetch the user's Discogs collection; the client passes items.
     """
     _check_api_key(x_api_key)
     svc = get_service()
