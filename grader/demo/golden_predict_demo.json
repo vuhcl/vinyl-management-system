@@ -1,22 +1,24 @@
 {
   "demo_release_id": 456663,
+  "demo_master_id": 46402,
   "release_description": "Beatles, The - The Beatles (UK original mono first pressing, 1968 / 'misprint' / true first issue)",
-  "sell_post_url": "https://www.discogs.com/sell/post/REPLACE_WITH_PROJECT_LISTING_ID",
+  "search_query": "the beatles",
+  "sell_post_url": "https://www.discogs.com/sell/post/456663",
   "min_price_delta_usd": 100,
   "examples": [
     {
       "id": "A",
-      "text": "REPLACE_AT_CURATION_TIME_LOWER_GRADE_NARRATIVE",
-      "expected_media_condition": "REPLACE_AT_CURATION_TIME",
-      "expected_sleeve_condition": "REPLACE_AT_CURATION_TIME",
-      "notes": "After curation: paste actual P1 from twin estimate; e.g. 'P1=$148 against VG sleeve baseline'."
+      "text": "The black inners have some creases and the tears. Both records have surface noise and pops throughout. Sleeve looks good from the front and back but the spine is split.",
+      "expected_media_condition": "Good",
+      "expected_sleeve_condition": "Good",
+      "notes": "P1=$693.21 against G baseline."
     },
     {
       "id": "B",
-      "text": "REPLACE_AT_CURATION_TIME_HIGHER_GRADE_NARRATIVE",
-      "expected_media_condition": "REPLACE_AT_CURATION_TIME",
-      "expected_sleeve_condition": "REPLACE_AT_CURATION_TIME",
-      "notes": "After curation: paste actual P2; B must differ from A on at least one of media/sleeve."
+      "text": "Glossy vinyl, only a few light marks that do not affect play. My test play gave a GORGEOUS audio with virtually NO surface noise. Top opening sleeve kept in polythene, in pristine condition. *Complete with poster NM & 4 photos Mint, original back inners. An exceptional copy of a Beatles classic.",
+      "expected_media_condition": "Very Good Plus",
+      "expected_sleeve_condition": "Near Mint",
+      "notes": "P2=$3929.08"
     }
   ]
 }

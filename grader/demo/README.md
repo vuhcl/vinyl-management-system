@@ -9,9 +9,24 @@ demo and the Playwright spec
 - [`golden_predict_demo.json`](golden_predict_demo.json) — exactly two
   seller-comment examples (A, B) for one release ID
   (`demo_release_id=456663`, the Beatles White Album UK original mono
-  "misprint" first pressing). Each example pins the comment text the
-  user types into the listing form and the **exact** grade strings the
-  grader is expected to predict.
+  "misprint" first pressing) plus **`demo_master_id`** (extract the numeric id from **`GET /releases/{id}`** **`master_url`**, **`…/masters/<id>`**) for Playwright's
+  **home → search → Masters → `/master/` → `/release/`** catalogue path.
+  Each example pins the comment text the user types into the listing form and
+  the **exact** grade strings the grader is expected to predict.
+
+## Seed SQLite / Postgres rows for ``demo_release_id``
+
+Before playground curation, ensure **MarketplaceStats** has a full ladder plus
+catalog features row for Cloud SQL loads:
+
+```bash
+# From repo root; needs DISCOGS_TOKEN (.env loaded via shared helpers).
+PYTHONPATH=. uv run python price_estimator/scripts/populate_demo_golden_discogs.py
+
+# Then see k8s/demo/README.md Phase 4 — sqlite_to_cloudsql_loader.py
+```
+
+Optional: `--fetch-master`, custom `--golden-file`, `--marketplace-db`, `--feature-db`.
 
 The Playwright spec asserts:
 
@@ -89,5 +104,5 @@ different price) instead of abstract.
 
 - [`demo/vinyliq_demo_playwright/tests/demo.spec.ts`](../../demo/vinyliq_demo_playwright/tests/demo.spec.ts)
   — consumes this file via the `GOLDEN_FILE` env var.
-- [`vinyliq-extension/seller-grade.js`](../../vinyliq-extension/seller-grade.js)
-  — the production code path the recorded demo exercises.
+- [`vinyliq-extension/content.js`](../../vinyliq-extension/content.js)
+  (`GRADE_SELLER_LISTING` message handler) — the production code path the recorded demo exercises.
