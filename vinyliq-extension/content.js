@@ -27,14 +27,16 @@ function showOverlay(payload) {
     "top:16px",
     "right:16px",
     "z-index:2147483646",
-    "max-width:320px",
+    "max-width:420px",
+    "min-width:260px",
     "background:#1a1a1a",
     "color:#eee",
     "font-family:system-ui,sans-serif",
-    "font-size:14px",
-    "padding:12px 14px",
-    "border-radius:8px",
-    "box-shadow:0 4px 24px rgba(0,0,0,0.4)",
+    "font-size:16px",
+    "line-height:1.35",
+    "padding:16px 18px",
+    "border-radius:10px",
+    "box-shadow:0 4px 28px rgba(0,0,0,0.45)",
     "border:1px solid #333",
   ].join(";");
   const price = payload.estimated_price;
@@ -43,13 +45,13 @@ function showOverlay(payload) {
   /* Deliberately omit baseline_median: API/feature-store value can lag; seller
    * estimates attach fresh ``marketplace_client`` from the page when scraped. */
   wrap.innerHTML = `
-    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
-      <strong>VinylIQ</strong>
-      <button type="button" id="vinyliq-close" style="background:#333;border:none;color:#fff;cursor:pointer;padding:2px 8px;border-radius:4px;">×</button>
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
+      <strong style="font-size:17px;">VinylIQ</strong>
+      <button type="button" id="vinyliq-close" style="background:#333;border:none;color:#fff;cursor:pointer;padding:4px 10px;border-radius:4px;font-size:15px;">×</button>
     </div>
-    <div>Estimate: <strong>$${price != null ? price : "—"}</strong></div>
-    <div style="opacity:0.85;font-size:12px;margin-top:4px;">Range: $${lo ?? "—"} – $${hi ?? "—"}</div>
-    <div style="opacity:0.6;font-size:11px;margin-top:6px;">${payload.model_version || ""} · ${payload.status || ""}</div>
+    <div>Estimate: <strong style="font-size:17px;">$${price != null ? price : "—"}</strong></div>
+    <div style="opacity:0.85;font-size:14px;margin-top:6px;">Range: $${lo ?? "—"} – $${hi ?? "—"}</div>
+    <div style="opacity:0.6;font-size:12px;margin-top:8px;">${payload.model_version || ""} · ${payload.status || ""}</div>
   `;
   document.body.appendChild(wrap);
   wrap.querySelector("#vinyliq-close").addEventListener("click", removeOverlay);
