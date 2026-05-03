@@ -37,6 +37,20 @@ FIXTURE_HTML = """
 </div></body></html>
 """
 
+FIXTURE_HTML_MEDIA_HEADER = """
+<html><body><div id="page_content">
+<table><thead><tr>
+<th>Order Date</th><th>Media Condition</th><th>Sleeve Condition</th>
+<th>Price in your currency</th><th>Price</th>
+</tr></thead><tbody>
+<tr>
+  <td>2026-05-01</td><td>Very Good Plus (VG+)</td><td>Near Mint (NM or M-)</td>
+  <td>$50.00</td><td>£40.00</td>
+</tr>
+</tbody></table>
+</div></body></html>
+"""
+
 
 def test_looks_like_login_or_challenge() -> None:
     assert looks_like_login_or_challenge("<html>Sign In</html><input name=password>") is True
@@ -62,6 +76,14 @@ def test_parse_sale_history_fixture() -> None:
     assert "CA$225.00" in p.rows[0].price_original_text
     assert p.rows[1].seller_comments == "Sealed"
     assert p.rows[0].row_hash("36946488") != p.rows[1].row_hash("36946488")
+
+
+def test_parse_sale_history_prefers_explicit_media_condition_column() -> None:
+    """When the vinyl column is ``Media Condition`` (not legacy ``Condition``)."""
+    p = parse_sale_history_html(FIXTURE_HTML_MEDIA_HEADER, "1")
+    assert len(p.rows) == 1
+    assert p.rows[0].media_condition == "Very Good Plus (VG+)"
+    assert p.rows[0].sleeve_condition == "Near Mint (NM or M-)"
 
 
 def test_sale_history_db_upsert(tmp_path) -> None:

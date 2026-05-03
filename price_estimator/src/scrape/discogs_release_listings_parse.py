@@ -51,7 +51,8 @@ def _first_listing_id(href: str | None) -> str | None:
 
 def _parse_media_sleeve_from_condition_block(text: str) -> tuple[str, str]:
     """
-    Parse ``p.item_condition`` body: lines like ``Media: ...`` / ``Sleeve: ...``.
+    Parse ``p.item_condition`` body: lines like ``Media: …`` / ``Sleeve: …``
+    (or ``Jacket:`` / ``Cover:`` for the jacket lane).
     Returns (raw_media, raw_sleeve) — may be empty if not in Discogs format.
     """
     raw_media = ""
@@ -65,7 +66,9 @@ def _parse_media_sleeve_from_condition_block(text: str) -> tuple[str, str]:
         low = line.lower()
         if low.startswith("media:"):
             raw_media = line.split(":", 1)[1].strip()
-        elif low.startswith("sleeve:"):
+        elif low.startswith("sleeve:") or low.startswith("jacket:") or low.startswith(
+            "cover:"
+        ):
             raw_sleeve = line.split(":", 1)[1].strip()
     return raw_media, raw_sleeve
 
