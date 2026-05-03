@@ -287,6 +287,13 @@ kubectl -n vinyl-demo create secret generic vinyl-mlflow \
   --from-literal=MLFLOW_TRACKING_URI="$MLFLOW_TRACKING_URI" \
   --from-literal=MLFLOW_MODEL_URI="$MLFLOW_MODEL_URI"
 
+# Price API MLflow pull (see `VINYLIQ_MLFLOW_MODEL_URI` in price_estimator README).
+# Recreate from `.env` any time values change; `apply` updates the Secret in place.
+kubectl -n vinyl-demo create secret generic vinyl-price-mlflow \
+  --from-literal=MLFLOW_TRACKING_URI="$MLFLOW_TRACKING_URI" \
+  --from-literal=VINYLIQ_MLFLOW_MODEL_URI="$VINYLIQ_MLFLOW_MODEL_URI" \
+  --dry-run=client -o yaml | kubectl apply -f -
+
 kubectl -n vinyl-demo create secret generic vinyl-redis \
   --from-literal=REDIS_HOST="$REDIS_HOST"
 
@@ -328,6 +335,10 @@ until pg_isready -h 127.0.0.1 -p 5432 -U vinyl_app -d vinyliq; do sleep 1; done
 sqlite3 price_estimator/data/cache/marketplace_stats.sqlite \
   "SELECT release_id FROM marketplace_stats WHERE release_id='456663';"
 ls price_estimator/artifacts/vinyliq/xgb_model.joblib
+
+# Hydrate the demo golden release (demo_release_id in grader/demo/golden_predict_demo.json)
+# via Discogs GET /releases + /marketplace/price_suggestions (requires DISCOGS_TOKEN).
+PYTHONPATH=. uv run python price_estimator/scripts/populate_demo_golden_discogs.py
 
 # Schema (idempotent)
 psql "$DATABASE_URL" -f k8s/demo/schema.sql
@@ -421,9 +432,9 @@ curl "https://${DEMO_HOSTNAME}/price/health"
 
 curl -sX POST "https://${DEMO_HOSTNAME}/grader/predict" \
   -H 'Content-Type: application/json' \
-  -d '{"text":"VG+ sleeve, light hairlines, plays well"}' | jq .
+  -d '{"text":"The vinyl is in great condition with original gloss and only a few hairlines. The jacket is pristine, complete with poster NM & 4 photos Mint, as well as original back inners. An exceptional copy of a Beatles classic."}' | jq .
 
-# Twin price check (driven by the demo golden file in the verify branch)
+# Twin price check (minimal body; Redis/Postgres-backed stats only).
 curl -sX POST "https://${DEMO_HOSTNAME}/price/estimate" \
   -H 'Content-Type: application/json' \
   -d '{"release_id":"456663","media_condition":"Good (G)","sleeve_condition":"Good (G)"}' | jq .
@@ -431,11 +442,106 @@ curl -sX POST "https://${DEMO_HOSTNAME}/price/estimate" \
 curl -sX POST "https://${DEMO_HOSTNAME}/price/estimate" \
   -H 'Content-Type: application/json' \
   -d '{"release_id":"456663","media_condition":"Near Mint (NM or M-)","sleeve_condition":"Near Mint (NM or M-)"}' | jq .
+```
 
-# Verify Redis populated (debug pod with redis-cli)
-kubectl -n vinyl-demo run redis-cli --rm -it --restart=Never \
+### Price `/estimate` — full JSON (Chrome extension parity)
+
+Use `marketplace_client` when simulating scraped Discogs-visible values **before** trusting Redis-only rows. Omit individual keys inside `marketplace_client` if unknown; omit the whole `marketplace_client` object to use DB/Redis as-is. **`price_suggestions_json`** mirrors `GET https://api.discogs.com/marketplace/price_suggestions/{release_id}`: each key is Discogs’s **exact grade string**; entries use `value` (+ optional `currency`).
+
+Fill in **`PLACEHOLDER_…` strings**, replace **`0`** with numeric values from Discogs/UI, keep **`null`** or delete optional keys until you substitute. Residual-trained models may return **`residual_anchor_usd`** (anchor used for reconstruction).
+
+```bash
+curl -sS -X POST "https://${DEMO_HOSTNAME}/price/estimate" \
+  -H 'Content-Type: application/json' \
+  -d '{
+  "release_id": "456663",
+  "media_condition": "Good (G)",
+  "sleeve_condition": "Good (G)",
+  "refresh_stats": true,
+  "marketplace_client": {
+    "release_lowest_price": 27.39,
+    "num_for_sale": 60,
+    "release_num_for_sale": 60,
+    "community_want": 6171,
+    "community_have": 7528,
+    "blocked_from_sale": null,
+    "price_suggestions_json": {
+      "Mint (M)": {"value": 4682.02, "currency": "USD"},
+      "Near Mint (NM or M-)": {"value": 4189.18, "currency": "USD"},
+      "Very Good Plus (VG+)": {"value": 3203.49, "currency": "USD"},
+      "Very Good (VG)": {"value": 2217.80, "currency": "USD"},
+      "Good Plus (G+)": {"value": 1232.11, "currency": "USD"},
+      "Good (G)": {"value": 739.27, "currency": "USD"},
+      "Fair (F)": {"value": 429.81, "currency": "USD"},
+      "Poor (P)": {"value": 246.42, "currency": "USD"}
+    }
+  }
+}' | jq .
+```
+
+Keep **only rungs Discogs actually returned** (delete unused grades). **`price_suggestions_json`** may be a JSON **string** (escaped) instead of a nested object.
+
+Set **`"refresh_stats": true`** to force a Discogs `GET /releases/{id}` upsert from the cluster (rewrites Postgres + Redis projection), without `marketplace_client`.
+
+### Inspect Redis (in-cluster only)
+
+Memorystore is on a **private RFC1918 IP** (`gcloud redis instances describe …`; `authorizedNetwork` is VPC `default`). **`redis-cli` from your workstation usually times out**. The **`price-api` image does not include `redis-cli`**, so use either a short-lived **`redis:7-alpine`** pod or **Python + `redis`** inside `price-api`.
+
+Canonical value at **`GET vinyliq:marketplace:stats:{release_id}`**: one JSON object with **`_schema_ver: 2`** and the inference projection (same keys as Postgres/SQLite marketplace row used for `/estimate`):
+
+| Key | Meaning |
+| --- | --- |
+| `release_lowest_price` | Listing floor (USD) from release/marketplace data |
+| `num_for_sale` | Count used for depth features |
+| `release_num_for_sale` | Often same source as listing depth |
+| `community_want` / `community_have` | Community counts |
+| `blocked_from_sale` | `0`/`1` or **`null`** when unknown |
+| `price_suggestions_json` | **String** holding JSON: grade → `{ "value", "currency" }` (Discogs ladder) |
+| `_schema_ver` | **`2`** = full projection; older entries without this may omit the ladder |
+
+**Ephemeral `redis-cli`** (substitute Memorystore IP from `kubectl … exec … print REDIS_HOST`):
+
+```bash
+kubectl -n vinyl-demo run redis-cli-dbg --rm -it --restart=Never \
   --image=redis:7-alpine -- \
-  redis-cli -h "$REDIS_HOST" GET "vinyliq:marketplace:stats:456663"
+  redis-cli -h 10.xx.xx.xx -p 6379 GET "vinyliq:marketplace:stats:PLACEHOLDER_RELEASE_ID"
+```
+
+**Pretty-print + sanity-check inner ladder** (uses `redis` on the **`price`** container; set **`RELEASE_ID`** first):
+
+```bash
+export RELEASE_ID="456663"
+kubectl -n vinyl-demo exec deploy/price-api -c price -- \
+  env RELEASE_ID="$RELEASE_ID" python - <<'PY'
+import json, os, redis
+
+r = redis.Redis(
+    host=os.environ["REDIS_HOST"],
+    port=int(os.environ.get("REDIS_PORT", "6379")),
+    decode_responses=True,
+    socket_connect_timeout=5,
+    socket_timeout=5,
+)
+release_id = os.environ["RELEASE_ID"].strip()
+k = f"vinyliq:marketplace:stats:{release_id}"
+raw = r.get(k)
+if not raw:
+    print("MISS", k)
+else:
+    d = json.loads(raw)
+    meta = sorted(x for x in d if x != "price_suggestions_json")
+    print("schema_ver", d.get("_schema_ver"), "other_keys", meta)
+    ps = d.get("price_suggestions_json")
+    lad = json.loads(ps) if isinstance(ps, str) else ps
+    print("price_suggestions grades", sorted(lad.keys()) if isinstance(lad, dict) else type(lad))
+PY
+```
+
+Print Memorystore coordinates from the pod env when you need **`redis-cli -h`**:
+
+```bash
+kubectl -n vinyl-demo exec deploy/price-api -c price -- \
+  python -c 'import os; print(os.getenv("REDIS_HOST"), os.getenv("REDIS_PORT","6379"))'
 ```
 
 ## Failure modes and where to look

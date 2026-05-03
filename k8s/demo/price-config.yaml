@@ -11,7 +11,9 @@ metadata:
   namespace: vinyl-demo
 data:
   config.yaml: |
-    inherits: configs/base.yaml
+    # VinylIQ defaults (incl. vinyliq.inference) live here — NOT monorepo
+    # root ``configs/base.yaml`` (collector/shared paths only).
+    inherits: price_estimator/configs/base.yaml
     vinyliq:
       paths:
         postgres_dsn_env: DATABASE_URL

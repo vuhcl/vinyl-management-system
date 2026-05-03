@@ -1,8 +1,8 @@
 # Price API (XGBoost FittedVinylIQRegressor + Memorystore Redis cache).
 #
 # Mounts:
-#   - /data/artifacts PVC (vinyl-price-data): xgb_model.joblib + encoders only
-#   - /etc/vinyliq    ConfigMap (price-config): postgres_dsn_env + model_dir
+#   - /data/artifacts PVC (vinyl-price-data): optional locals / MLflow cache
+#   - /etc/vinyliq    ConfigMap (price-config): postgres_dsn_env (+ model_dir if local-only)
 #
 # Cloud SQL: cloudsql-proxy sidecar on 127.0.0.1:5432; DATABASE_URL from
 # vinyl-cloudsql secret (must match proxy port).
@@ -43,6 +43,8 @@ spec:
             - name: VINYLIQ_CONFIG
               value: /etc/vinyliq/config.yaml
           envFrom:
+            - secretRef:
+                name: vinyl-price-mlflow
             - secretRef:
                 name: vinyl-redis
             - secretRef:
