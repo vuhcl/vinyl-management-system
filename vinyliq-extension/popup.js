@@ -1,102 +1,132 @@
-const CONDITIONS = [
-  "Mint (M)",
-  "Near Mint (NM or M-)",
-  "Very Good Plus (VG+)",
-  "Very Good (VG)",
-  "Good Plus (G+)",
-  "Good (G)",
-  "Fair (F)",
-  "Poor (P)",
-];
-
-function fillSelect(id) {
-  const el = document.getElementById(id);
-  CONDITIONS.forEach((c) => {
-    const o = document.createElement("option");
-    o.value = c;
-    o.textContent = c;
-    el.appendChild(o);
-  });
-  el.value = "Near Mint (NM or M-)";
-}
-
 async function init() {
-  fillSelect("media");
-  fillSelect("sleeve");
+  const errEl = document.getElementById("err");
+  const releaseLineEl = document.getElementById("release-line");
+  const gradeBtn = document.getElementById("grade");
+  /** While a grade request runs, keep Grade disabled regardless of textarea text. */
+  let gradeBusy = false;
 
-  // 0.2.0 split a single ``apiBase`` (price-only) into ``priceApiBase`` and
-  // ``graderApiBase``. If only the legacy key exists, fold it into the new
-  // price key so users do not have to re-enter their URL after upgrade.
-  const stored = await chrome.storage.sync.get([
-    "priceApiBase",
-    "graderApiBase",
-    "apiBase",
-    "apiKey",
-  ]);
-  const priceApiBase =
-    stored.priceApiBase || stored.apiBase || "http://127.0.0.1:8801";
-  const graderApiBase = stored.graderApiBase || "http://127.0.0.1:8090";
-  const apiKey = stored.apiKey || "";
-
-  document.getElementById("priceApiBase").value = priceApiBase;
-  document.getElementById("graderApiBase").value = graderApiBase;
-  document.getElementById("apiKey").value = apiKey;
+  document.getElementById("open-options").addEventListener("click", (ev) => {
+    ev.preventDefault();
+    chrome.runtime.openOptionsPage();
+  });
 
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   const rid =
     tab?.id != null
-      ? await chrome.tabs
-          .sendMessage(tab.id, { type: "GET_RELEASE_ID" })
-          .catch(() => null)
+      ? await chrome.tabs.sendMessage(tab.id, { type: "GET_RELEASE_ID" }).catch(() => null)
       : null;
-  const releaseId = rid?.releaseId;
-  document.getElementById("release-line").textContent = releaseId
-    ? `Release: ${releaseId}`
-    : "Not on a discogs.com/release/ page";
 
-  document.getElementById("estimate").onclick = async () => {
-    const err = document.getElementById("err");
-    err.textContent = "";
-    if (!releaseId) {
-      err.textContent = "Open a release page first.";
+  const releaseId = rid?.releaseId;
+  const surface = rid?.surface;
+
+  releaseLineEl.textContent =
+    "Open a VinylIQ-supported Discogs tab (seller listing or release page).";
+
+  async function syncGradeGate() {
+    if (surface !== "sell_post" || !tab?.id) {
       return;
     }
-    const priceBase = document.getElementById("priceApiBase").value.trim();
-    const graderBase = document.getElementById("graderApiBase").value.trim();
-    const key = document.getElementById("apiKey").value.trim();
-    await chrome.storage.sync.set({
-      priceApiBase: priceBase,
-      graderApiBase: graderBase,
-      apiKey: key,
-    });
+    if (gradeBusy) {
+      gradeBtn.disabled = true;
+      return;
+    }
+    const st = await chrome.tabs.sendMessage(tab.id, {
+      type: "GET_GRADE_COMMENT_STATE",
+    }).catch(() => ({ ok: false, hasText: false }));
+    gradeBtn.disabled = !(st?.ok && st.hasText);
+  }
 
+  if (releaseId && surface === "sell_post") {
+    releaseLineEl.textContent = `Selling page — listing draft for release ${releaseId}`;
+    gradeBtn.classList.remove("hidden");
+    gradeBtn.disabled = true;
+    await syncGradeGate();
+    setInterval(syncGradeGate, 400);
+  } else if (releaseId && surface === "release") {
+    releaseLineEl.textContent = `Release catalogue page — release ${releaseId} (Estimate needs /sell/post/…)`;
+  }
+
+  gradeBtn.onclick = async () => {
+    errEl.textContent = "";
+    if (!tab?.id) {
+      errEl.textContent = "No active tab.";
+      return;
+    }
+    gradeBusy = true;
+    gradeBtn.disabled = true;
+    let done;
+    try {
+      done = await chrome.tabs
+        .sendMessage(tab.id, { type: "GRADE_SELLER_LISTING" })
+        .catch((e) => ({ ok: false, message: String(e) }));
+    } finally {
+      gradeBusy = false;
+      await syncGradeGate();
+    }
+
+    if (!done?.ok) {
+      errEl.textContent =
+        done?.message ||
+        done?.error ||
+        `Grade failed (${done?.code || "blocked"}).`;
+      return;
+    }
+    if (!done.mediaOk || !done.sleeveOk) {
+      errEl.textContent =
+        done.detail ||
+        "Grader ran but dropdowns did not accept the predicted grades.";
+      return;
+    }
+  };
+
+  document.getElementById("estimate").onclick = async () => {
+    errEl.textContent = "";
+    if (!tab?.id) {
+      errEl.textContent = "No active tab.";
+      return;
+    }
+    const collected = await chrome.tabs
+      .sendMessage(tab.id, { type: "COLLECT_LISTING_CONDITIONS" })
+      .catch((e) => ({ ok: false, message: String(e) }));
+
+    if (!collected?.ok) {
+      errEl.textContent =
+        collected?.message ||
+        `Cannot estimate (${collected?.code || "blocked"}): open a seller draft with Media + Sleeve set.`;
+      return;
+    }
+
+    /** @type {Record<string, any>} */
     const body = {
-      release_id: releaseId,
-      media_condition: document.getElementById("media").value,
-      sleeve_condition: document.getElementById("sleeve").value,
+      release_id: collected.release_id,
+      media_condition: collected.media_condition,
+      sleeve_condition: collected.sleeve_condition,
       refresh_stats: false,
     };
-
+    if (
+      collected.marketplace_client &&
+      typeof collected.marketplace_client === "object" &&
+      Object.keys(collected.marketplace_client).length > 0
+    ) {
+      body.marketplace_client = collected.marketplace_client;
+    }
     const resp = await chrome.runtime.sendMessage({
       type: "ESTIMATE",
-      apiBase: priceBase,
-      apiKey: key,
       body,
     });
 
     if (!resp?.ok) {
-      err.textContent =
+      errEl.textContent =
         resp?.error ||
         (resp?.data && JSON.stringify(resp.data)) ||
         `HTTP ${resp?.status || "error"}`;
       return;
     }
-    if (tab?.id != null) {
-      await chrome.tabs.sendMessage(tab.id, {
-        type: "SHOW_OVERLAY",
-        payload: resp.data,
-      });
-    }
+
+    await chrome.tabs.sendMessage(tab.id, {
+      type: "APPLY_ESTIMATE_UI",
+      payload: resp.data,
+    });
     window.close();
   };
 }

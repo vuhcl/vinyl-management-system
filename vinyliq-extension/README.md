@@ -4,14 +4,12 @@ Thin client for two VinylIQ FastAPI services:
 
 - **Price API** (`price_estimator/src/api/main.py`) — `POST /estimate`,
   rendered as a floating overlay on `https://www.discogs.com/release/*`.
-- **Grader API** (`grader/serving/main.py`) — `POST /predict`, wired to a
-  "Grade condition" button injected into the seller listing form on
-  `https://www.discogs.com/sell/post/*`.
+- **Grader API** (`grader/serving/main.py`) — `POST /predict`, wired on seller drafts
+  `https://www.discogs.com/sell/post/*`: a **floating dock** on the listing page stays open while you work (Chrome toolbar popups close on outside click).
 
-Version `0.2.0` introduces the seller-side grading flow and splits the
-single legacy `apiBase` setting into separate `priceApiBase` and
-`graderApiBase` keys so the two services can live on different ports
-(local dev) or behind different Gateway prefixes (GKE demo).
+Version `0.2.0` split the legacy single `apiBase` into `priceApiBase` /
+`graderApiBase`; **`0.3.x`** adds the seller-page dock next to drafts and
+mirrors slim actions in the toolbar popup.
 
 ## Setup
 
@@ -28,7 +26,10 @@ single legacy `apiBase` setting into separate `priceApiBase` and
    ```
 
 2. Chrome → Extensions → Load unpacked → select this `vinyliq-extension`
-   folder.
+   folder. **Details** shows the extension ID (depends on unpack path).
+
+   Reference ID for the maintained VinylIQ unpack in this monorepo:
+   **`bhhebpplkmapokijgbmeejhamdlkbcao`** (use **`chrome://extensions`** if Chrome lists a different one).
 
 3. Click the extension icon to open the popup, set:
 
@@ -40,10 +41,10 @@ single legacy `apiBase` setting into separate `priceApiBase` and
 
    - **Release page** (`/release/<id>`): pick media/sleeve grades and
      click **Get estimate**. Results appear in a fixed overlay.
-   - **Seller listing** (`/sell/post/<release-id>`): a "Grade
-     condition" button is injected next to the comments textarea.
-     Type the condition comment, click the button, and the form's
-     Media + Sleeve `<select>`s update to the predicted grades.
+   - **Seller listing** (`/sell/post/<release-id>`): once the VinylIQ dock appears bottom-right,
+     type or paste the seller note in **Condition comments** (`#comments` or textarea fallbacks),
+     click **Grade condition**, then **Get estimate** when you want a price overlay / suggested USD.
+     Toolbar popup repeats the flow if you prefer it—popup focus does not persist while clicking Discogs controls.
 
 ## GKE demo deployment
 
