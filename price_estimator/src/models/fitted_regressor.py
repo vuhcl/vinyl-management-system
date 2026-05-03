@@ -9,6 +9,8 @@ from typing import Any
 import joblib
 import numpy as np
 
+from ..features.vinyliq_features import MAX_LOG_PRICE
+
 MANIFEST_FILE = "model_manifest.json"
 REGRESSOR_FILE = "regressor.joblib"
 FEATURE_COLUMNS_FILE = "feature_columns.joblib"
@@ -120,7 +122,7 @@ class FittedVinylIQRegressor:
                 "log1p_dollar_from_residual(predict_log1p(X), median) then expm1"
             )
         if self.target_was_log1p:
-            return np.expm1(np.clip(logp, 0, 20))
+            return np.expm1(np.clip(logp, 0, MAX_LOG_PRICE))
         return np.clip(logp, 0, None)
 
     def save(self, directory: Path | str) -> None:

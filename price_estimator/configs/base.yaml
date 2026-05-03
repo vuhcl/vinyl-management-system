@@ -12,6 +12,17 @@ vinyliq:
     feature_store_db: "data/feature_store.sqlite"
     sale_history_db: "data/cache/sale_history.sqlite"
     model_dir: "artifacts/vinyliq"
+    # Local cache when pulling weights via MLflow (see ``mlflow_model_uri``).
+    mlflow_cache_dir: "artifacts/mlflow_model_cache"
+  # Pull champion weights from MLflow when set. Env VINYLIQ_MLFLOW_MODEL_URI wins.
+  # Examples: models:/VinylIQPrice@production  models:/VinylIQPrice/12  runs:/<run_id>
+  mlflow_model_uri: null
+  # Serving-only (residual_log_median): run two ladder-anchored reconstructions
+  # (media grade rung vs sleeve grade rung), suppress ordinal stacking per path,
+  # then average the two USD estimates. Env VINYLIQ_USE_PRICE_SUGGESTION_CONDITION_ANCHOR
+  # overrides this.
+  inference:
+    use_price_suggestion_condition_anchor: true
   # Which env var the API reads for the personal token (see repo .env.template).
   discogs_token_env: "DISCOGS_TOKEN"
   # null = auto from labeled count (cap ~ n/25, max 3000; keep all if ≤500 uniques)
@@ -81,8 +92,8 @@ vinyliq:
         min_rows_relax_2: 6
         apply_grade_uplift_to_nm: true
         condition_adjustment:
-          alpha: -0.06
-          beta: -0.04
+          alpha: 0.17885
+          beta: 0.13049
           ref_grade: 8.0
         grade_delta_scale:
           price_ref_usd: 50.0

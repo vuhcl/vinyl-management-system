@@ -47,6 +47,17 @@ _CONDITION_MAP: dict[str, float] = {
     "no cover": -2.0,
 }
 
+MAX_PRICE_USD: float = 100_000.0
+MAX_LOG_PRICE: float = math.log1p(MAX_PRICE_USD)
+
+
+def clamp_ordinals_for_inference(media_ord: float, sleeve_ord: float) -> tuple[float, float]:
+    """Clamp condition ordinals to [1, 8] before user-facing condition adjustment."""
+    return (
+        max(1.0, min(8.0, float(media_ord))),
+        max(1.0, min(8.0, float(sleeve_ord))),
+    )
+
 
 def condition_string_to_ordinal(label: str | None) -> float:
     if label is None or (isinstance(label, float) and pd.isna(label)):
@@ -573,8 +584,8 @@ def apply_condition_log_adjustment(
     media_ord: float,
     sleeve_ord: float,
     *,
-    alpha: float = -0.06,
-    beta: float = -0.04,
+    alpha: float = 0.06,
+    beta: float = 0.04,
     ref_grade: float = 8.0,
 ) -> float:
     """Shift log-price based on distance from reference mint grade."""

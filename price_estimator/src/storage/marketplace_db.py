@@ -70,6 +70,32 @@ def extract_release_listing_fields(release: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def extract_marketplace_stats_listing(payload: dict[str, Any]) -> dict[str, Any]:
+    """
+    Listing scalars from ``GET /marketplace/stats/{release_id}``.
+
+    Discogs documents ``lowest_price`` (often ``{value, currency}``),
+    ``num_for_sale``, and ``blocked_from_sale``. Community totals are not in
+    this response; pass ``community_want`` / ``community_have`` on ``payload``
+    when upserting merged data (e.g. from ``GET /releases/{id}/stats``).
+    """
+    if not isinstance(payload, dict):
+        return {}
+    lp_raw = payload.get("lowest_price")
+    lp = _parse_price_field(lp_raw if isinstance(lp_raw, dict) else lp_raw)
+    nfs = payload.get("num_for_sale")
+    if nfs is None:
+        nfs = payload.get("for_sale_count")
+    try:
+        rns = int(nfs) if nfs is not None else None
+    except (TypeError, ValueError):
+        rns = None
+    return {
+        "release_lowest_price": lp,
+        "release_num_for_sale": rns,
+    }
+
+
 def price_suggestions_ladder_from_json(raw_json: str | None) -> dict[str, dict[str, Any]]:
     """
     Parse stored ``GET /marketplace/price_suggestions/{id}`` JSON: one entry per
@@ -103,6 +129,35 @@ def price_suggestion_values_by_grade(raw_json: str | None) -> dict[str, float]:
         if x is not None and x > 0:
             out[grade] = float(x)
     return out
+
+
+def price_suggestion_usd_for_grade_label(
+    ladder: dict[str, float],
+    label: str | None,
+) -> float | None:
+    """
+    Map a user / Discogs grade string onto a ladder USD value.
+
+    Tries exact key match first, then case-insensitive containment between label and
+    canonical ladder keys (``"Near Mint (NM or M-)"``, ``"Good (G)"``, ...).
+    """
+    if not ladder or label is None or not str(label).strip():
+        return None
+    t_raw = str(label).strip()
+    if t_raw in ladder:
+        return float(ladder[t_raw])
+
+    tl = t_raw.lower()
+    for lk, fv in ladder.items():
+        lk_s = str(lk).strip()
+        if lk_s.lower() == tl:
+            return float(fv)
+    # Substring heuristic (handles minor punctuation / spacing drift).
+    for lk, fv in ladder.items():
+        lk_l = str(lk).strip().lower()
+        if lk_l in tl or tl in lk_l:
+            return float(fv)
+    return None
 
 
 def merge_release_listing_into_norm(
@@ -215,11 +270,6 @@ def compute_marketplace_upsert_values(
         if ps_raw is None:
             ps_raw = json.dumps(new_ps, ensure_ascii=False, separators=(",", ":"))
 
-    def _coalesce(new: Any, old_key: str) -> Any:
-        if new is not None:
-            return new
-        return prev.get(old_key)
-
     rlj = rel_raw if rel_raw is not None else prev.get("release_raw_json")
     psj = ps_raw if ps_raw is not None else prev.get("price_suggestions_json")
 
@@ -228,10 +278,41 @@ def compute_marketplace_upsert_values(
     cw = rel_ext.get("community_want")
     ch = rel_ext.get("community_have")
     if release_payload is None:
-        rlp = _coalesce(None, "release_lowest_price")
-        rns = _coalesce(None, "release_num_for_sale")
-        cw = _coalesce(None, "community_want")
-        ch = _coalesce(None, "community_have")
+        mstat = extract_marketplace_stats_listing(payload)
+        if mstat.get("release_lowest_price") is not None:
+            rlp = mstat["release_lowest_price"]
+        else:
+            rlp = prev.get("release_lowest_price")
+        # ``release_num_for_sale`` mirrors GET /releases; do not derive it from a
+        # bare marketplace ``num_for_sale`` fragment alone (infer depth uses
+        # ``norm[num_for_sale]`` separately).
+        nfs_m = mstat.get("release_num_for_sale")
+        if (
+            mstat.get("release_lowest_price") is not None
+            and nfs_m is not None
+        ):
+            rns = nfs_m
+        else:
+            rns = prev.get("release_num_for_sale")
+
+        cw_in = payload.get("community_want") if isinstance(payload, dict) else None
+        ch_in = payload.get("community_have") if isinstance(payload, dict) else None
+        cw = None
+        ch = None
+        if cw_in is not None:
+            try:
+                cw = int(cw_in)
+            except (TypeError, ValueError):
+                cw = None
+        if ch_in is not None:
+            try:
+                ch = int(ch_in)
+            except (TypeError, ValueError):
+                ch = None
+        if cw is None:
+            cw = prev.get("community_want")
+        if ch is None:
+            ch = prev.get("community_have")
     else:
         rlp = rlp if rlp is not None else prev.get("release_lowest_price")
         rns = rns if rns is not None else prev.get("release_num_for_sale")
@@ -252,6 +333,178 @@ def compute_marketplace_upsert_values(
         "community_want": cw,
         "community_have": ch,
     }
+
+
+# --- Inference / Redis: aligned projections (train ↔ serve parity) ---
+
+MARKETPLACE_INFERENCE_STATS_KEYS = (
+    "release_lowest_price",
+    "num_for_sale",
+    "release_num_for_sale",
+    "community_want",
+    "community_have",
+    "blocked_from_sale",
+    "price_suggestions_json",
+    "sale_stats_average_usd",
+    "sale_stats_median_usd",
+    "sale_stats_high_usd",
+    "sale_stats_low_usd",
+)
+
+REDIS_MP_STATS_SCHEMA_VER = 2
+
+
+def marketplace_inference_stats_from_row(row: dict[str, Any] | None) -> dict[str, Any]:
+    """Normalized marketplace slice feeding ``row_dict_for_inference`` + anchors."""
+    src = dict(row or {})
+    rlp = _parse_price_field(src.get("release_lowest_price"))
+    nfs = src.get("num_for_sale")
+    try:
+        num_sale = int(nfs) if nfs is not None else 0
+    except (TypeError, ValueError):
+        num_sale = 0
+    rnfs = src.get("release_num_for_sale")
+    try:
+        release_nfs = int(rnfs) if rnfs is not None else None
+    except (TypeError, ValueError):
+        release_nfs = None
+    cw_raw = src.get("community_want")
+    try:
+        cw = int(cw_raw) if cw_raw is not None else None
+    except (TypeError, ValueError):
+        cw = None
+    ch_raw = src.get("community_have")
+    try:
+        ch = int(ch_raw) if ch_raw is not None else None
+    except (TypeError, ValueError):
+        ch = None
+    bl = src.get("blocked_from_sale")
+    blocked: int | None
+    try:
+        if bl is None:
+            blocked = None
+        else:
+            blocked = 1 if int(bl) else 0
+    except (TypeError, ValueError):
+        blocked = None
+    psj = src.get("price_suggestions_json")
+    if isinstance(psj, dict):
+        ps_out = json.dumps(psj, ensure_ascii=False, separators=(",", ":"))
+    elif psj is None or not str(psj).strip():
+        ps_out = None
+    else:
+        ps_out = str(psj).strip()
+
+    s_avg = _parse_price_field(src.get("sale_stats_average_usd"))
+    s_med = _parse_price_field(src.get("sale_stats_median_usd"))
+    s_hi = _parse_price_field(src.get("sale_stats_high_usd"))
+    s_lo = _parse_price_field(src.get("sale_stats_low_usd"))
+
+    out: dict[str, Any] = {
+        "release_lowest_price": rlp,
+        "num_for_sale": num_sale,
+        "release_num_for_sale": release_nfs,
+        "community_want": cw if cw is not None else None,
+        "community_have": ch if ch is not None else None,
+        "blocked_from_sale": blocked,
+        "price_suggestions_json": ps_out,
+        "sale_stats_average_usd": s_avg,
+        "sale_stats_median_usd": s_med,
+        "sale_stats_high_usd": s_hi,
+        "sale_stats_low_usd": s_lo,
+    }
+    return out
+
+
+def redis_marketplace_cache_blob_from_row(row: dict[str, Any]) -> dict[str, Any]:
+    """JSON-serializable Redis value (includes schema version marker)."""
+    core = marketplace_inference_stats_from_row(row)
+    blob: dict[str, Any] = {**core}
+    blob["_schema_ver"] = REDIS_MP_STATS_SCHEMA_VER
+    return blob
+
+
+def decode_redis_marketplace_cached_payload(cached: dict[str, Any]) -> dict[str, Any]:
+    """Hydrate inference stats dict from Redis JSON (handles legacy skinny payloads)."""
+    if cached.get("_schema_ver") == REDIS_MP_STATS_SCHEMA_VER:
+        raw_pre = {k: cached.get(k) for k in MARKETPLACE_INFERENCE_STATS_KEYS}
+        return marketplace_inference_stats_from_row(raw_pre)
+
+    raw: dict[str, Any] = {k: None for k in MARKETPLACE_INFERENCE_STATS_KEYS}
+    raw["release_lowest_price"] = cached.get("release_lowest_price")
+    nfs = cached.get("num_for_sale")
+    raw["num_for_sale"] = int(nfs) if nfs is not None else 0
+    return marketplace_inference_stats_from_row(raw)
+
+
+def merge_marketplace_client_overlay(
+    base: dict[str, Any],
+    overlay: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Deep-merge scraped / client-visible Discogs marketplace fields onto ``base``."""
+
+    def _blocked_int(v: Any) -> int:
+        return 1 if bool(int(v)) else 0
+
+    if not overlay:
+        return base
+    out = dict(base)
+    for k in (
+        "release_lowest_price",
+        "num_for_sale",
+        "release_num_for_sale",
+        "community_want",
+        "community_have",
+    ):
+        if k not in overlay or overlay[k] is None:
+            continue
+        if k == "release_lowest_price":
+            fv = _parse_price_field(overlay[k])
+            if fv is None:
+                continue
+            out[k] = float(fv)
+            continue
+        try:
+            out[k] = int(overlay[k])
+        except (TypeError, ValueError):
+            continue
+
+    if "blocked_from_sale" in overlay and overlay["blocked_from_sale"] is not None:
+        v = overlay["blocked_from_sale"]
+        if isinstance(v, bool):
+            out["blocked_from_sale"] = 1 if v else 0
+        else:
+            try:
+                out["blocked_from_sale"] = _blocked_int(v)
+            except (TypeError, ValueError):
+                pass
+
+    if "price_suggestions_json" in overlay and overlay["price_suggestions_json"] is not None:
+        ps = overlay["price_suggestions_json"]
+        if isinstance(ps, dict):
+            if ps:
+                out["price_suggestions_json"] = json.dumps(
+                    ps,
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                )
+        elif isinstance(ps, str) and str(ps).strip():
+            out["price_suggestions_json"] = str(ps).strip()
+
+    for sale_k in (
+        "sale_stats_average_usd",
+        "sale_stats_median_usd",
+        "sale_stats_high_usd",
+        "sale_stats_low_usd",
+    ):
+        if sale_k not in overlay or overlay[sale_k] is None:
+            continue
+        fv = _parse_price_field(overlay[sale_k])
+        if fv is None:
+            continue
+        out[sale_k] = float(fv)
+
+    return marketplace_inference_stats_from_row(out)
 
 
 _MARKETPLACE_MIGRATIONS: list[tuple[str, str]] = [

@@ -15,7 +15,7 @@ price_estimator/
 ├── src/
 │   ├── api/           # FastAPI app
 │   ├── training/      # train_vinyliq.py (single train + tune entrypoint)
-│   ├── inference/     # service.py — stats + features + model
+│   ├── inference/     # service.py, mlflow_bundle.py — stats + features + model
 │   ├── storage/       # marketplace_stats, feature_store, sale_history SQLite
 │   ├── features/      # vinyliq_features
 │   ├── models/        # boosters, grade-delta overlays
@@ -45,7 +45,8 @@ Commands below assume the **shell cwd** is the **monorepo root** and imports wor
 
 ## Config summary (read before running)
 
-- **`vinyliq.paths`**: `marketplace_db`, `feature_store_db`, `sale_history_db`, `model_dir` — **relative to `price_estimator/`** unless absolute.
+- **`vinyliq.paths`**: `marketplace_db`, `feature_store_db`, `sale_history_db`, `model_dir`, optional **`mlflow_cache_dir`** — **relative to `price_estimator/`** unless absolute.
+- **`vinyliq.mlflow_model_uri`**: optional MLflow URI for the Price API to download weights at startup (see **Serve API** and **MLflow**). Environment **`VINYLIQ_MLFLOW_MODEL_URI`** overrides this when set.
 - **`vinyliq.training_label`**: e.g. **`sale_floor_blend`** / **`sale_floor`**; blend modes need **`paths.sale_history_db`** populated.
 - **`vinyliq.training_target`**: default **`residual_log_median`**; optional **`residual_z_clip_abs`**.
 - **`vinyliq.tuning`**: **`enabled`**, **`n_trials_per_family`**, **`model_families`**, **`search_spaces`**, **`constraints`**, **`cv_folds`**, **`cv_stratify`**, **`selection_metric`** (and related blocks in [`configs/base.yaml`](configs/base.yaml)).
@@ -203,12 +204,21 @@ CLI flags (parsed first; unknown args are ignored with a stderr notice):
 
 ### 8) (Optional) Grade-delta scale JSON
 
-**`fit_grade_delta_scale.py`** emits **`grade_delta_scale.json`** for overlays. Default DB paths are under **`price_estimator/data/`** (package-relative); **`--out`** is required.
+**`fit_grade_delta_scale.py`** emits **`grade_delta_scale.json`** for overlays merged by **`load_params_with_grade_delta_overlays`** next to **`condition_params.json`** (scaler keys nest under **`grade_delta_scale`**; optional top-level **`alpha`** / **`beta`** from the fit overwrite serving coefficients).
+
+Default DB paths are under **`price_estimator/data/`** (package-relative); **`--out`** is required.
 
 ```bash
 PYTHONPATH=. uv run python price_estimator/scripts/fit_grade_delta_scale.py \
   --out price_estimator/artifacts/vinyliq/grade_delta_scale.json
 ```
+
+**Defaults (sale-history DBs present):** jointly fits **`price_gamma`** / **`age_k`** and **α / β** from pooled cross-grade contrasts (symmetric VG+ vs NM plus asymmetric media/sleeve slices). Metadata **`fit_kind`** reports **`cross_grade_bin_median_v2_alpha_beta`** when triplet fitting runs.
+
+| Flag | Purpose |
+|------|---------|
+| **`--no-fit-alpha-beta`** | Keep **`--base-alpha`** / **`--base-beta`** fixed; legacy grid on scalers only (**`fit_kind`** **`cross_grade_bin_median_v1`**). |
+| **`--beta-per-alpha-fallback`** | When asymmetric strata are too sparse, split **`s = α+β`** with **`β = ratio·α`** (default: **`base_beta/base_alpha`**). |
 
 Use **`--placeholder`** for a bootstrap JSON without DB reads.
 
@@ -218,7 +228,24 @@ Use **`--placeholder`** for a bootstrap JSON without DB reads.
 uv run uvicorn price_estimator.src.api.main:app --host 127.0.0.1 --port 8801
 ```
 
+Example (**weights from registry**, cache under default **`artifacts/mlflow_model_cache`**):
+
+```bash
+export MLFLOW_TRACKING_URI=https://your-tracking-host/
+export VINYLIQ_MLFLOW_MODEL_URI='models:/VinylIQPrice@production'
+uv run uvicorn price_estimator.src.api.main:app --host 127.0.0.1 --port 8801
+```
+
 Host/port defaults also appear under **`api.*`** in YAML. Set **`VINYLIQ_API_KEY`** if the API should require **`X-API-Key`**.
+
+**Model weights**
+
+- **Bundled path (default):** **`vinyliq.paths.model_dir`** — same layout as after **`train_vinyliq`** (**`model_manifest.json`**, **`regressor.joblib`** or **`xgb_model.joblib`**, encoders, **`condition_params.json`**). Optional **`grade_delta_scale.json`** in that directory is merged for inference.
+- **MLflow pull:** If **`VINYLIQ_MLFLOW_MODEL_URI`** or **`vinyliq.mlflow_model_uri`** is set, startup downloads the champion **artifact tree** logged as **`vinyliq_artifacts`** (training logs it beside the pyfunc **`vinyliq_model`** bundle). Supported URI forms include **`models:/VinylIQPrice@production`**, **`models:/VinylIQPrice/<version>`**, and **`runs:/<run_id>`** (normalized to **`…/vinyliq_artifacts`**). Requires a resolvable **`MLFLOW_TRACKING_URI`** (or YAML **`mlflow.tracking_uri_fallback`**). Downloads are cached under **`VINYLIQ_MLFLOW_CACHE_DIR`** or **`vinyliq.paths.mlflow_cache_dir`**; set **`VINYLIQ_MLFLOW_FORCE_REFRESH=true`** to ignore the cache.
+
+**`GET /health`** returns **`model_loaded`** if **`model_manifest.json`**, **`regressor.joblib`**, or **`xgb_model.joblib`** exists under the effective model directory, and **`model_source`** **`local`** vs **`mlflow`**.
+
+**`POST /estimate`** responses include **`num_for_sale`** and **`warnings`** (e.g. **`low_market_depth`** when **`num_for_sale < 3`**).
 
 ---
 
@@ -237,9 +264,10 @@ Edit **`price_estimator/configs/base.yaml`** (or a merged override via **`VINYLI
 
 - Set **`MLFLOW_TRACKING_URI`** in repo-root **`.env`** to your tracking server.
 - Align the server’s **`--default-artifact-root`** (e.g. GCS) with grader when sharing a bucket.
-- Use **`GOOGLE_APPLICATION_CREDENTIALS`** or ADC for GCS uploads.
+- Use **`GOOGLE_APPLICATION_CREDENTIALS`** or ADC for GCS uploads (training uploads and **Price API downloads** both honor **`mlflow.google_application_credentials`** in YAML when relevant).
 - If **`MLFLOW_TRACKING_URI`** is unset, **`tracking_uri_fallback`** in **`configs/base.yaml`** can default to a local metadata DB (e.g. under **`grader/experiments/`**); experiment name **`vinyl_price_estimator`**.
-- Training logs metrics, hyperparameters, tags, the YAML config, and the **`artifacts/vinyliq`** tree under the run artifact path **`vinyliq_model/`** when artifact logging is enabled.
+- **Training** logs metrics, hyperparameters, tags, the YAML config, the flat champion directory under **`vinyliq_artifacts/`**, and a **`mlflow.pyfunc`** model under **`vinyliq_model/`** when artifact logging is enabled. Registry options (**`registry_model_name`**, aliases **`staging`** / **`production`**) live under **`mlflow.*`** in YAML.
+- **Price API:** optional pull of **`vinyliq_artifacts`** via **`VINYLIQ_MLFLOW_MODEL_URI`** (or **`vinyliq.mlflow_model_uri`**). Registry URIs resolve the version’s **`source`** run and swap **`vinyliq_model` → `vinyliq_artifacts`** so inference loads the same files as local **`model_dir`**. See **Serve API** for cache and force-refresh env vars.
 
 ---
 
@@ -288,8 +316,11 @@ Defaults write feature + marketplace SQLite under **`price_estimator/data/`**. U
 | `VINYLIQ_CONFIG` | Override path to YAML |
 | `VINYLIQ_API_KEY` | If set, API requires `X-API-Key` |
 | `PRICE_SERVICE_URL` | Web monolith proxies `/api/price/...` here when set |
-| `MLFLOW_TRACKING_URI` | MLflow server URL |
-| `GOOGLE_APPLICATION_CREDENTIALS` | GCS artifact upload (optional) |
+| `MLFLOW_TRACKING_URI` | MLflow server URL (training + optional API artifact pull) |
+| `VINYLIQ_MLFLOW_MODEL_URI` | If set, Price API downloads champion weights from MLflow (overrides **`vinyliq.mlflow_model_uri`**) |
+| `VINYLIQ_MLFLOW_CACHE_DIR` | Local cache directory for downloaded **`vinyliq_artifacts`** (overrides **`vinyliq.paths.mlflow_cache_dir`**) |
+| `VINYLIQ_MLFLOW_FORCE_REFRESH` | If `1` / `true` / `yes`, re-download even when cache stamp matches |
+| `GOOGLE_APPLICATION_CREDENTIALS` | GCS artifact upload / download (optional) |
 | `REDIS_HOST` | Optional Memorystore (or local Redis) host for the L1 stats cache; unset = SQLite-only |
 | `REDIS_PORT` | Defaults to `6379` |
 | `REDIS_DB` | Defaults to `0` |
@@ -310,12 +341,8 @@ Workload Identity, GitHub Actions Workload Identity Federation), see
 [`k8s/demo/README.md`](../k8s/demo/README.md). Highlights specific to
 this package:
 
-- The price API loads its model from a local filesystem path
-  (`vinyliq.paths.model_dir`), not MLflow. In the GKE deploy, the
-  trained `xgb_model.joblib` and friends live on a `ReadWriteOnce`
-  PersistentVolumeClaim populated from
-  [`price_estimator/artifacts/vinyliq/`](artifacts/vinyliq/) at
-  bootstrap time.
+- The price API loads weights from **`vinyliq.paths.model_dir`** by default, or from **MLflow** when **`VINYLIQ_MLFLOW_MODEL_URI`** (or **`vinyliq.mlflow_model_uri`**) is set—downloads land in **`mlflow_cache_dir`** (emptyDir or PVC) so the pod does not need the full bundle in the image.
+- In the bundled demo, trained **`regressor.joblib`** / **`model_manifest.json`** (and friends) may live on a **`ReadWriteOnce`** PersistentVolumeClaim populated from [`price_estimator/artifacts/vinyliq/`](artifacts/vinyliq/) at bootstrap time when not using MLflow pull.
 - A `ConfigMap` mounted at `/etc/vinyliq/config.yaml` overrides
   `vinyliq.paths.*` to point at the PVC mount; the Deployment sets
   `VINYLIQ_CONFIG=/etc/vinyliq/config.yaml`.

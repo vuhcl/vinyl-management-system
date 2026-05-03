@@ -10,6 +10,8 @@ import pandas as pd
 from mlflow.pyfunc import PythonModel
 
 from ..features.vinyliq_features import (
+    MAX_LOG_PRICE,
+    clamp_ordinals_for_inference,
     condition_string_to_ordinal,
     default_feature_columns,
     grade_delta_scale_params_from_cond,
@@ -25,6 +27,9 @@ from .fitted_regressor import (
 
 # Residual reconstruction anchor: prefer release lowest, same order as training.
 _PYFUNC_MEDIAN_COL = "discogs_median_price"
+_PYFUNC_MIN_PRICE_USD = 0.50
+_PYFUNC_MIN_RELEASE_YEAR = 1877
+_PYFUNC_MAX_RELEASE_YEAR = 2030
 
 
 class VinylIQPricePyFunc(PythonModel):
@@ -87,14 +92,38 @@ class VinylIQPricePyFunc(PythonModel):
         params: dict[str, Any] | None = None,
     ) -> pd.DataFrame:
         _ = params
-        df = model_input
+        df_work = model_input.copy()
         cols = self._feature_columns
-        missing = [c for c in cols if c not in df.columns]
+        missing = [c for c in cols if c not in df_work.columns]
         if missing:
             raise ValueError(f"Missing feature columns: {missing[:10]!r}…")
 
-        X = df[cols].to_numpy(dtype=np.float64, copy=False)
-        n = len(df)
+        if "media_condition" in df_work.columns:
+            media_ord = np.array(
+                [condition_string_to_ordinal(x) for x in df_work["media_condition"]],
+                dtype=np.float64,
+            )
+        else:
+            media_ord = df_work["media_grade"].to_numpy(dtype=np.float64, copy=True)
+        if "sleeve_condition" in df_work.columns:
+            sleeve_ord = np.array(
+                [condition_string_to_ordinal(x) for x in df_work["sleeve_condition"]],
+                dtype=np.float64,
+            )
+        else:
+            sleeve_ord = df_work["sleeve_grade"].to_numpy(dtype=np.float64, copy=True)
+
+        nm_grade = 7.0
+        nm_discount = nm_grade / 8.0
+        if "media_grade" in df_work.columns:
+            df_work["media_grade"] = nm_grade
+        if "sleeve_grade" in df_work.columns:
+            df_work["sleeve_grade"] = nm_grade
+        if "condition_discount" in df_work.columns:
+            df_work["condition_discount"] = nm_discount
+
+        X = df_work[cols].to_numpy(dtype=np.float64, copy=False)
+        n = len(df_work)
         if self._ensemble is not None:
             if self._estimator_nm is None or self._estimator_ord is None:
                 raise RuntimeError("Ensemble manifest missing estimator artifacts")
@@ -105,13 +134,15 @@ class VinylIQPricePyFunc(PythonModel):
                 self._estimator_ord.predict(X), dtype=np.float64
             ).ravel()
             if self._target_kind == TARGET_KIND_RESIDUAL_LOG_MEDIAN:
-                if _PYFUNC_MEDIAN_COL not in df.columns:
+                if _PYFUNC_MEDIAN_COL not in model_input.columns:
                     raise ValueError(
                         f"Residual target requires {_PYFUNC_MEDIAN_COL!r} column "
                         f"(log1p anchor; use release or marketplace lowest)"
                     )
                 med = np.maximum(
-                    df[_PYFUNC_MEDIAN_COL].to_numpy(dtype=np.float64, copy=False),
+                    model_input[_PYFUNC_MEDIAN_COL].to_numpy(
+                        dtype=np.float64, copy=False
+                    ),
                     0.0,
                 )
                 lp_nm = pred_log1p_dollar_for_metrics(z_nm, med, self._target_kind)
@@ -125,52 +156,50 @@ class VinylIQPricePyFunc(PythonModel):
                     "vinyliq ensemble is only supported for residual_log_median targets"
                 )
             anchor_arr = np.maximum(
-                df[_PYFUNC_MEDIAN_COL].to_numpy(dtype=np.float64, copy=False),
+                model_input[_PYFUNC_MEDIAN_COL].to_numpy(
+                    dtype=np.float64, copy=False
+                ),
                 1e-6,
-            ) if _PYFUNC_MEDIAN_COL in df.columns else np.ones(n, dtype=np.float64)
+            ) if _PYFUNC_MEDIAN_COL in model_input.columns else np.ones(
+                n, dtype=np.float64
+            )
         else:
             assert self._estimator is not None
             logp = np.asarray(self._estimator.predict(X), dtype=np.float64).ravel()
             if self._target_kind == TARGET_KIND_RESIDUAL_LOG_MEDIAN:
-                if _PYFUNC_MEDIAN_COL not in df.columns:
+                if _PYFUNC_MEDIAN_COL not in model_input.columns:
                     raise ValueError(
                         f"Residual target requires {_PYFUNC_MEDIAN_COL!r} column "
                         f"(log1p anchor; use release or marketplace lowest)"
                     )
                 med = np.maximum(
-                    df[_PYFUNC_MEDIAN_COL].to_numpy(dtype=np.float64, copy=False),
+                    model_input[_PYFUNC_MEDIAN_COL].to_numpy(
+                        dtype=np.float64, copy=False
+                    ),
                     0.0,
                 )
                 logp = logp + np.log1p(med)
                 anchor_arr = np.maximum(med, 1e-6)
-            elif _PYFUNC_MEDIAN_COL in df.columns:
+            elif _PYFUNC_MEDIAN_COL in model_input.columns:
                 anchor_arr = np.maximum(
-                    df[_PYFUNC_MEDIAN_COL].to_numpy(dtype=np.float64, copy=False),
+                    model_input[_PYFUNC_MEDIAN_COL].to_numpy(
+                        dtype=np.float64, copy=False
+                    ),
                     1e-6,
                 )
             else:
                 anchor_arr = np.ones(n, dtype=np.float64)
-        if "media_condition" in df.columns:
-            media_ord = np.array(
-                [condition_string_to_ordinal(x) for x in df["media_condition"]],
-                dtype=np.float64,
-            )
-        else:
-            media_ord = df["media_grade"].to_numpy(dtype=np.float64, copy=False)
-        if "sleeve_condition" in df.columns:
-            sleeve_ord = np.array(
-                [condition_string_to_ordinal(x) for x in df["sleeve_condition"]],
-                dtype=np.float64,
-            )
-        else:
-            sleeve_ord = df["sleeve_grade"].to_numpy(dtype=np.float64, copy=False)
-
-        alpha = float(self._cond.get("alpha", -0.06))
-        beta = float(self._cond.get("beta", -0.04))
+        _dp = default_params()
+        alpha = float(self._cond.get("alpha", _dp["alpha"]))
+        beta = float(self._cond.get("beta", _dp["beta"]))
         ref_grade = float(self._cond.get("ref_grade", 8.0))
         scale_params = grade_delta_scale_params_from_cond(self._cond)
-        has_year = "year" in df.columns
-        year_col = df["year"].to_numpy(dtype=np.float64, copy=False) if has_year else None
+        has_year = "year" in model_input.columns
+        year_col = (
+            model_input["year"].to_numpy(dtype=np.float64, copy=False)
+            if has_year
+            else None
+        )
 
         prices = []
         for i in range(n):
@@ -180,10 +209,21 @@ class VinylIQPricePyFunc(PythonModel):
             yr = float(year_col[i]) if year_col is not None else None
             if yr is not None and not np.isfinite(yr):
                 yr = None
-            logp_adj = scaled_condition_log_adjustment(
-                float(logp[i]),
+            elif yr is not None:
+                yr = float(
+                    max(
+                        _PYFUNC_MIN_RELEASE_YEAR,
+                        min(_PYFUNC_MAX_RELEASE_YEAR, yr),
+                    )
+                )
+            mo, so = clamp_ordinals_for_inference(
                 float(media_ord[i]),
                 float(sleeve_ord[i]),
+            )
+            logp_adj = scaled_condition_log_adjustment(
+                float(logp[i]),
+                mo,
+                so,
                 base_alpha=alpha,
                 base_beta=beta,
                 ref_grade=ref_grade,
@@ -191,7 +231,8 @@ class VinylIQPricePyFunc(PythonModel):
                 release_year=yr,
                 scale_params=scale_params,
             )
-            prices.append(float(np.expm1(np.clip(logp_adj, 0, 25))))
+            raw = float(np.expm1(np.clip(logp_adj, 0, MAX_LOG_PRICE)))
+            prices.append(max(raw, _PYFUNC_MIN_PRICE_USD))
 
         out = pd.DataFrame(
             {
@@ -236,6 +277,9 @@ def build_pyfunc_input_example(
     else:
         cols = default_feature_columns()
     row = {c: 0.0 for c in cols}
+    row["media_grade"] = 7.0
+    row["sleeve_grade"] = 7.0
+    row["condition_discount"] = 7.0 / 8.0
     row["media_condition"] = "Near Mint (NM or M-)"
     row["sleeve_condition"] = "Near Mint (NM or M-)"
     if target_kind == TARGET_KIND_RESIDUAL_LOG_MEDIAN:

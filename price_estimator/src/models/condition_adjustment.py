@@ -8,8 +8,8 @@ from typing import Any
 
 def default_params() -> dict[str, Any]:
     return {
-        "alpha": -0.06,
-        "beta": -0.04,
+        "alpha": 0.06,
+        "beta": 0.04,
         "ref_grade": 8.0,
         "grade_delta_scale": None,
     }
@@ -35,6 +35,36 @@ def merge_grade_delta_scale_dict(base: dict[str, Any] | None, overlay: dict[str,
     cur_d: dict[str, Any] = dict(cur) if isinstance(cur, dict) else {}
     cur_d.update(overlay)
     out["grade_delta_scale"] = cur_d
+    return out
+
+
+def merge_inference_condition_params(
+    artifact: dict[str, Any],
+    yaml_overlay: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """
+    Merge YAML ``ordinal_cascade`` condition scalers over artefact-backed params.
+
+    Precedence: **YAML wins** where keys are present so shipped ``configs/base.yaml``
+    stays aligned with ``fit_grade_delta_scale`` / training edits without rewriting
+    ``condition_params.json`` in the champion bundle on every coef tweak.
+    """
+    if not yaml_overlay:
+        return dict(artifact)
+    out = dict(artifact)
+    for k in ("alpha", "beta", "ref_grade"):
+        if k not in yaml_overlay:
+            continue
+        vals = yaml_overlay[k]
+        if vals is None:
+            continue
+        try:
+            out[k] = float(vals)
+        except (TypeError, ValueError):
+            continue
+    gds = yaml_overlay.get("grade_delta_scale")
+    if isinstance(gds, dict) and gds:
+        out = merge_grade_delta_scale_dict(out, dict(gds))
     return out
 
 
@@ -73,4 +103,12 @@ def load_params_with_grade_delta_overlays(model_dir: Path | str) -> dict[str, An
     overlay = _grade_delta_overlay_from_fit_file(blob)
     if not overlay:
         return out
-    return merge_grade_delta_scale_dict(out, overlay)
+    merged = merge_grade_delta_scale_dict(out, overlay)
+    for coef in ("alpha", "beta"):
+        if coef not in blob or blob[coef] is None:
+            continue
+        try:
+            merged[coef] = float(blob[coef])
+        except (TypeError, ValueError):
+            pass
+    return merged
