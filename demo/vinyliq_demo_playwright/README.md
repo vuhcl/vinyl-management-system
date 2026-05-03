@@ -73,11 +73,12 @@ lists the canonical defaults.
 | `DEMO_SELLER_STRIP_READ_MS` | **`7200`** | After the bottom insight strip appears, wait this long before keystrokes / next action (ms, 400..28000) |
 | `DEMO_SELLER_STRIP_MS` | **`26000`** | How long the gradient strip stays mounted (ms, 2800..48000); keep ≥ read delay so copy stays visible while the script waits |
 | `DEMO_STRIP_ABOVE_DOCK_GAP_PX` | **`18`** | Gap (px, 0..80) between **`#vinyliq-sell-dock`** and the narration strip (**`fixtures/demo_video_ann.ts`**) |
-| `DEMO_SEGUE_STRIP_MS` | **`24000`** | Bridge strips after Copy 1 grade / estimate (**`fixtures/demo_video_ann.ts`**; **`4500`..`52000`**) |
+| `DEMO_SEGUE_STRIP_MS` | **`24000`** | Bridge strips after grades / **`after_first_estimate`** (**`fixtures/demo_video_ann.ts`**; **`4500`..`52000`**) |
 | `DEMO_SEGUE_STRIP_READ_MS` | **`7600`** | Post-mount pause before continuing after segue strips (`700..28000`) |
-| `DEMO_SEGUE_AFTER_FIRST_ESTIMATE_MS` | **`5000`** | **“That's Copy A's number…”** strip only (`900`..`30000`); other segues use ``DEMO_SEGUE_STRIP_*`` |
-| `DEMO_AFTER_FIRST_ESTIMATE_BARE_MS` | **`19000`** | Extra silent dwell on Copy 1's estimate overlay before segue typing (`0..72000`) |
-| `DEMO_SKIP_SEGUES` | _(off)_ | **`1`** → skip **`after_first_*`** narrative segue overlays (bare dwell above still applies when chapters are on) |
+| `DEMO_SEGUE_AFTER_FIRST_ESTIMATE_MS` | **`8000`** | **“That's Copy A's number…”** strip only (`900`..`30000`); other segues use ``DEMO_SEGUE_STRIP_*`` |
+| `DEMO_SEGUE_AFTER_FIRST_GRADE_TRIM_MS` | **`0`** | **`after_first_grade`** / **`after_second_grade`** optional trim (`0`..`12000`; floors `4500` / `700` vs ``DEMO_SEGUE_STRIP_*``) |
+| `DEMO_AFTER_FIRST_ESTIMATE_BARE_MS` | **`9800`** | Silent dwell before **That's Copy A's number…** and before the Copy **B** session **outro** (same knob; default ~Copy A strip remainder + ~3 s at stock **`DEMO_SELLER_STRIP_READ_MS`** + **12 s** Copy A strip; lengthen e.g. **`19000`** for a slower Copy **B** outro) (`0..72000`) |
+| `DEMO_SKIP_SEGUES` | _(off)_ | **`1`** → skip **That's Copy A's number…** and session **outro** after Copy B. **Grade** segues (**after_first_grade**, **after_second_grade**) still show when **`DEMO_VIDEO_CHAPTERS=1`** |
 | `DEMO_COMMENT_TYPING_DELAY_MS` | **`38`** | Ms between keystrokes for seller condition comments (**`0`** → instant **`fill`**). Stacks with **`playwright.config.ts`** **`slowMo`** on each Playwright primitive — both show up **1×** in **`recordVideo`**, not slowed again in export |
 | `DEMO_HYBRID` | `0` | **`1`** = **hybrid operator** run: chapter/strip annotations + typing golden comments stay automated; **you** drive Discogs navigation (**`waitForURL`** **`/sell/post/…`** matches golden), **Grade condition**, and **Get estimate** (see **`tests/demo.spec.ts`**) |
 | `DEMO_HYBRID_NAV_TIMEOUT_MS` | same as step budget | Max wait (ms, ≥60 000) for **`/sell/post/{id}`** to appear in hybrid mode |
