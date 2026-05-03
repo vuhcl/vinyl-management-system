@@ -1,0 +1,91 @@
+# Build and publish grader + price images to Artifact Registry on PRs targeting
+# `main`. Uses the same WIF-backed secrets as `demo-deploy.yml`.
+#
+# Tags (never `:demo`; that stays for deploy-branch / manual pipeline):
+#   - :<pr_head_sha>
+#   - :pr-<number>-<short_sha>
+#
+# Fork PRs are skipped — GitHub does not expose repository secrets on fork workflows,
+# so authenticate/push cannot run safely for untrusted forks.
+#
+# Required repository secrets (see demo-deploy.yml / k8s/demo README CI section):
+#   GCP_PROJECT_ID, GCP_REGION, WIF_PROVIDER, WIF_SERVICE_ACCOUNT
+# Optional: AR_REPO (default vinyl-images)
+
+name: Docker build and publish (PR)
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+  id-token: write # WIF
+
+jobs:
+  build-and-push:
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - service: grader
+            dockerfile: grader/Dockerfile
+          - service: price
+            dockerfile: price_estimator/Dockerfile
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud (WIF)
+        id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
+          service_account: ${{ secrets.WIF_SERVICE_ACCOUNT }}
+
+      - name: Set up gcloud
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure Docker for Artifact Registry
+        run: |
+          gcloud auth configure-docker \
+            "${{ secrets.GCP_REGION }}-docker.pkg.dev" \
+            --quiet
+
+      - name: Set image refs
+        id: refs
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          REPO="${{ secrets.AR_REPO }}"
+          REPO="${REPO:-vinyl-images}"
+          BASE="${{ secrets.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${REPO}/${{ matrix.service }}"
+          SHORT="${HEAD_SHA:0:12}"
+          echo "image_head=${BASE}:${HEAD_SHA}" >> "$GITHUB_OUTPUT"
+          echo "image_pr=${BASE}:pr-${{ github.event.pull_request.number }}-${SHORT}" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push (linux/amd64)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          platforms: linux/amd64
+          push: true
+          tags: |
+            ${{ steps.refs.outputs.image_head }}
+            ${{ steps.refs.outputs.image_pr }}
+          cache-from: type=gha,scope=${{ matrix.service }}
+          cache-to: type=gha,scope=${{ matrix.service }},mode=max
+
+      - name: Summary
+        run: |
+          {
+            echo "### ${{ matrix.service }} pushed"
+            echo
+            echo "- \`${{ steps.refs.outputs.image_head }}\`"
+            echo "- \`${{ steps.refs.outputs.image_pr }}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
