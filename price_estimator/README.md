@@ -17,7 +17,7 @@ price_estimator/
 │   ├── training/      # train_vinyliq.py (single train + tune entrypoint)
 │   ├── inference/     # service.py, service_factory.py, mlflow_bundle.py — stats + features + model
 │   ├── storage/       # marketplace_stats, feature_store, sale_history SQLite
-│   ├── features/      # vinyliq_features
+│   ├── features/      # vinyliq_features + VinylIQFeatureSchema (column contract)
 │   ├── models/        # fitted_regressor (facade) + regressor_{fitted,training,metrics}, sample_weights; pyfunc; overlays
 │   ├── ingest/        # discogs_dump streaming parser
 │   └── scrape/        # sale history parsing helpers

@@ -1,5 +1,6 @@
 from .vinyliq_features import (
     GradeDeltaScaleParams,
+    VinylIQFeatureSchema,
     apply_condition_log_adjustment,
     condition_string_to_ordinal,
     default_feature_columns,
@@ -10,6 +11,7 @@ from .vinyliq_features import (
 
 __all__ = [
     "GradeDeltaScaleParams",
+    "VinylIQFeatureSchema",
     "apply_condition_log_adjustment",
     "condition_string_to_ordinal",
     "default_feature_columns",
