@@ -19,6 +19,7 @@ from .regressor_constants import (
     TARGET_KIND_RESIDUAL_LOG_MEDIAN,
     TARGET_LOG1P_FILE,
 )
+from .model_manifest import ModelManifest
 from .regressor_fitted import FittedVinylIQRegressor
 from .regressor_metrics import (
     ensemble_blend_weight_log_anchor,
@@ -54,20 +55,15 @@ def load_fitted_regressor(directory: Path | str) -> FittedVinylIQRegressor | Non
             manifest = json.loads(mf.read_text())
         except (json.JSONDecodeError, OSError):
             return None
-        backend = str(manifest.get("backend", "")).strip()
-        if not backend or not (d / REGRESSOR_FILE).is_file():
+        mm = ModelManifest.from_dict(manifest)
+        if not mm.backend or not (d / REGRESSOR_FILE).is_file():
             return None
-        schema = int(manifest.get("schema_version", 1))
-        tk = str(manifest.get("target_kind", "")).strip()
-        if schema >= 2 and tk:
-            target_kind = tk
-        else:
-            target_kind = TARGET_KIND_DOLLAR_LOG1P
+        target_kind = mm.target_kind
         tw = bool(joblib.load(d / TARGET_LOG1P_FILE))
         if target_kind == TARGET_KIND_RESIDUAL_LOG_MEDIAN:
             tw = False
         return FittedVinylIQRegressor(
-            backend=backend,
+            backend=mm.backend,
             estimator=joblib.load(d / REGRESSOR_FILE),
             feature_columns=list(joblib.load(d / FEATURE_COLUMNS_FILE)),
             target_was_log1p=tw,

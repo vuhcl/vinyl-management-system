@@ -19,11 +19,9 @@ from ..features.vinyliq_features import (
     scaled_condition_log_adjustment,
 )
 from .condition_adjustment import default_params, load_params_with_grade_delta_overlays
-from .fitted_regressor import (
-    TARGET_KIND_RESIDUAL_LOG_MEDIAN,
-    ensemble_blend_weight_log_anchor,
-    pred_log1p_dollar_for_metrics,
-)
+from .fitted_regressor import TARGET_KIND_RESIDUAL_LOG_MEDIAN, ensemble_blend_weight_log_anchor
+from .model_manifest import ModelManifest
+from .residual_dollar_reconstruction import pred_log1p_dollar_from_stored_prediction
 
 # Residual reconstruction anchor: prefer release lowest, same order as training.
 _PYFUNC_MEDIAN_COL = "discogs_median_price"
@@ -45,20 +43,10 @@ class VinylIQPricePyFunc(PythonModel):
         cond_path = Path(art["condition_params"])
 
         manifest = json.loads(manifest_path.read_text())
-        self._backend = str(manifest.get("backend", "unknown"))
-        schema = int(manifest.get("schema_version", 1))
-        tk = str(manifest.get("target_kind", "")).strip()
-        if schema >= 2 and tk:
-            self._target_kind = tk
-        else:
-            self._target_kind = "dollar_log1p"
-
-        ens_raw = manifest.get("ensemble")
-        self._ensemble: dict[str, Any] | None = (
-            ens_raw
-            if isinstance(ens_raw, dict) and ens_raw.get("enabled")
-            else None
-        )
+        mm = ModelManifest.from_dict(manifest)
+        self._backend = mm.backend or "unknown"
+        self._target_kind = mm.target_kind
+        self._ensemble = mm.ensemble
         self._estimator = None
         self._estimator_nm = None
         self._estimator_ord = None
@@ -145,8 +133,12 @@ class VinylIQPricePyFunc(PythonModel):
                     ),
                     0.0,
                 )
-                lp_nm = pred_log1p_dollar_for_metrics(z_nm, med, self._target_kind)
-                lp_ord = pred_log1p_dollar_for_metrics(z_ord, med, self._target_kind)
+                lp_nm = pred_log1p_dollar_from_stored_prediction(
+                    z_nm, med, self._target_kind
+                )
+                lp_ord = pred_log1p_dollar_from_stored_prediction(
+                    z_ord, med, self._target_kind
+                )
                 w = ensemble_blend_weight_log_anchor(
                     med, center_log1p=self._blend_t, scale=self._blend_s
                 )
@@ -178,7 +170,9 @@ class VinylIQPricePyFunc(PythonModel):
                     ),
                     0.0,
                 )
-                logp = logp + np.log1p(med)
+                logp = pred_log1p_dollar_from_stored_prediction(
+                    logp, med, self._target_kind
+                )
                 anchor_arr = np.maximum(med, 1e-6)
             elif _PYFUNC_MEDIAN_COL in model_input.columns:
                 anchor_arr = np.maximum(
