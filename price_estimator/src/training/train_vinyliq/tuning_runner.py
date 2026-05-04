@@ -12,15 +12,8 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
-import yaml
 
-from ...features.vinyliq_features import (
-    default_feature_columns,
-    residual_training_feature_columns,
-    row_dict_for_inference,
-)
 from ...mlflow_tracking import configure_mlflow_from_config
-from ...models.condition_adjustment import default_params, save_params
 from ...models.fitted_regressor import (
     TARGET_KIND_DOLLAR_LOG1P,
     TARGET_KIND_RESIDUAL_LOG_MEDIAN,
@@ -31,10 +24,8 @@ from ...models.fitted_regressor import (
     mae_dollars,
     median_ape_dollars,
     median_ape_dollar_quartiles,
-    median_ape_quartile_format_slice_diagnostics,
     median_ape_quartile_format_slice_table,
     median_ape_train_median_baseline,
-    metrics_dollar_from_log1p_masked,
     pred_log1p_dollar_for_metrics,
     refit_champion,
     wape_dollars,
@@ -45,8 +36,6 @@ from ...models.vinyliq_pyfunc import (
     build_pyfunc_input_example,
     pyfunc_artifacts_dict,
 )
-from ...models.xgb_vinyliq import XGBVinylIQModel
-from ..label_synthesis import training_label_config_from_vinyliq
 from ..search_space import sample_from_space
 from ..vinyliq_tuning_selection import (
     TrialRecord,
@@ -63,97 +52,23 @@ from ..vinyliq_tuning_selection import (
 from .catalog_encoders import _write_encoder_artifacts
 from .ensemble_manifest import _save_ensemble_manifest_and_estimators
 from .release_train_split import train_test_split_by_release
+from .tuning_diagnostics import (
+    log_quartile_format_slice_diagnostics as _log_quartile_format_slice_diagnostics,
+    log_slice_metrics_block as _log_slice_metrics_block,
+    slice_metric_debug_enabled as _slice_metric_debug_enabled,
+)
 from .training_config import (
     _config_path_for_mlflow,
     _enabled_families,
+    _format_sample_weight_multipliers,
     _mlflow_flags,
     _mlflow_log_training_label_params,
-    _resolve_tuning_selection_metric,
     _root,
-    _training_label_mlflow_params,
+    _tuning_sample_weight_mode,
     _write_training_label_config,
+    residual_z_clip_abs_from_vinyliq,
 )
 
-
-def _log_slice_metrics_block(
-    *,
-    split_label: str,
-    y_lp: np.ndarray,
-    pred_lp: np.ndarray,
-    mask_nm: np.ndarray,
-    mask_cold: np.ndarray,
-    mask_ord: np.ndarray,
-    mflow_on: bool,
-    mlflow: Any,
-    min_count: int = 15,
-) -> None:
-    """NM-comps, cold-start (no NM comps), and ordinal-comps slices in log1p-dollar space."""
-    for name, mask in (
-        ("nm_comps", mask_nm),
-        ("cold_start_no_nm_comps", mask_cold),
-        ("ordinal_comps", mask_ord),
-    ):
-        mae_s, wape_s, mdape_s = metrics_dollar_from_log1p_masked(
-            y_lp, pred_lp, mask, min_count=min_count
-        )
-        n_m = int(np.sum(mask & np.isfinite(y_lp) & np.isfinite(pred_lp)))
-        if math.isnan(mdape_s):
-            print(
-                f"  {split_label} {name}: n<{min_count} (n={n_m}) — MdAPE skipped",
-            )
-        else:
-            print(
-                f"  {split_label} {name}: MAE ${mae_s:.4f} | "
-                f"WAPE {100.0 * wape_s:.2f}% | median APE {100.0 * mdape_s:.2f}% "
-                f"(n={n_m})",
-            )
-        if mflow_on:
-            mlflow.log_metric(f"{split_label}_{name}_n_rows", float(n_m))
-            if not math.isnan(mae_s):
-                mlflow.log_metric(f"{split_label}_{name}_mae_dollars_approx", mae_s)
-            if not math.isnan(wape_s):
-                mlflow.log_metric(f"{split_label}_{name}_wape_dollars", wape_s)
-            if not math.isnan(mdape_s):
-                mlflow.log_metric(f"{split_label}_{name}_median_ape_dollars", mdape_s)
-
-def _slice_metric_debug_enabled() -> bool:
-    return os.environ.get("VINYLIQ_SLICE_METRIC_DEBUG", "").strip().lower() in (
-        "1",
-        "true",
-        "yes",
-        "on",
-    )
-
-
-def _log_quartile_format_slice_diagnostics(
-    split_label: str,
-    y_lp: np.ndarray,
-    pred_lp: np.ndarray,
-    X_sub: np.ndarray,
-    cols: list[str],
-) -> None:
-    """Stderr table: median / mean / p90 / max APE when ``VINYLIQ_SLICE_METRIC_DEBUG`` is set."""
-    rows = median_ape_quartile_format_slice_diagnostics(
-        y_lp, pred_lp, X_sub, cols, min_count=15
-    )
-    print(
-        f"[VINYLIQ_SLICE_METRIC_DEBUG] {split_label}: quartile×format "
-        "(MdAPE / mean / p90 / max as % of true $)",
-        file=sys.stderr,
-    )
-    for r in rows:
-        md, mn, p9, mx = (
-            r["median_ape"],
-            r["mean_ape"],
-            r["p90_ape"],
-            r["max_ape"],
-        )
-        print(
-            f"  Q{r['quartile'] + 1} {r['slice']:9s} n={r['n_rows']:<5d} "
-            f"md={100.0 * md:7.4f}% mean={100.0 * mn:7.4f}% "
-            f"p90={100.0 * p9:7.4f}% max={100.0 * mx:7.4f}%",
-            file=sys.stderr,
-        )
 
 def _run_tuning(
     cfg: dict,
