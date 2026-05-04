@@ -14,6 +14,11 @@ import pandas as pd
 import streamlit as st
 from dotenv import dotenv_values
 
+from grader.src.eval.label_audit_constants import (
+    ACCEPT_LIKE_HUMAN_ACTIONS,
+    ACCEPT_OR_REJECT_DECIDED,
+    human_action_sql_in_list,
+)
 from grader.src.eval.label_audit_backend import (
     build_queue_from_cleanlab_csvs,
     commit_queue_to_label_patches,
@@ -1207,12 +1212,16 @@ def page_review(db_path: Path) -> None:
     if decision_filter == "undecided":
         where.append("COALESCE(human_action, '') = ''")
     elif decision_filter == "accepted":
-        where.append("COALESCE(human_action, '') IN ('accept_llm', 'auto_apply')")
+        where.append(
+            "COALESCE(human_action, '') IN ("
+            f"{human_action_sql_in_list(ACCEPT_LIKE_HUMAN_ACTIONS)})"
+        )
     elif decision_filter == "rejected":
         where.append("COALESCE(human_action, '') = 'keep_assigned'")
     elif decision_filter == "decided (accepted + rejected)":
         where.append(
-            "COALESCE(human_action, '') IN ('accept_llm', 'auto_apply', 'keep_assigned')"
+            "COALESCE(human_action, '') IN ("
+            f"{human_action_sql_in_list(ACCEPT_OR_REJECT_DECIDED)})"
         )
 
     sql = (
@@ -1228,7 +1237,8 @@ def page_review(db_path: Path) -> None:
         counts_row = conn.execute(
             "SELECT "
             "SUM(CASE WHEN COALESCE(human_action, '') = '' THEN 1 ELSE 0 END) AS undecided, "
-            "SUM(CASE WHEN COALESCE(human_action, '') IN ('accept_llm', 'auto_apply') THEN 1 ELSE 0 END) AS accepted, "
+            "SUM(CASE WHEN COALESCE(human_action, '') IN ("
+            f"{human_action_sql_in_list(ACCEPT_LIKE_HUMAN_ACTIONS)}) THEN 1 ELSE 0 END) AS accepted, "
             "SUM(CASE WHEN COALESCE(human_action, '') = 'keep_assigned' THEN 1 ELSE 0 END) AS rejected, "
             "COUNT(*) AS total "
             "FROM queue WHERE "
