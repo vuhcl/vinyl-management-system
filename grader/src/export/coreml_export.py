@@ -38,9 +38,9 @@ import coremltools as ct
 import mlflow
 import numpy as np
 import torch
-import yaml
 from transformers import DistilBertTokenizerFast
 
+from grader.src.config_io import load_yaml_mapping
 from grader.src.mlflow_tracking import configure_mlflow_from_config
 from grader.src.data.preprocess import Preprocessor
 from grader.src.features.tfidf_features import TFIDFFeatureBuilder
@@ -51,10 +51,6 @@ from grader.src.models.transformer import TwoHeadClassifier
 # ---------------------------------------------------------------------------
 # Logging
 # ---------------------------------------------------------------------------
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-)
 logger = logging.getLogger(__name__)
 
 # Validation test sentences — cover a range of grades and edge cases
@@ -94,7 +90,7 @@ class CoreMLExporter:
     """
 
     def __init__(self, config_path: str) -> None:
-        self.config = self._load_yaml(config_path)
+        self.config = load_yaml_mapping(config_path)
         self.config_path = config_path
 
         # Paths
@@ -123,14 +119,6 @@ class CoreMLExporter:
 
         # MLflow — resolve tracking URI (env / fallback / legacy key)
         configure_mlflow_from_config(self.config)
-
-    # -----------------------------------------------------------------------
-    # Config loading
-    # -----------------------------------------------------------------------
-    @staticmethod
-    def _load_yaml(path: str) -> dict:
-        with open(path, "r") as f:
-            return yaml.safe_load(f)
 
     # -----------------------------------------------------------------------
     # Label encoder loading
@@ -787,6 +775,10 @@ class CoreMLExporter:
 def main() -> None:
     import argparse
 
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    )
     parser = argparse.ArgumentParser(
         description="Export vinyl grader models to CoreML"
     )

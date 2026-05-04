@@ -10,8 +10,9 @@ import time
 from pathlib import Path
 from typing import Any
 
-import yaml
 from dotenv import load_dotenv
+
+from grader.src.config_io import load_yaml_mapping
 
 from grader.src.eval.label_audit_backend import (
     REASON_CODES,
@@ -45,11 +46,6 @@ OPENROUTER_FREE_MODELS = [
 ]
 STARTUP_META_PATH = Path("grader/reports/label_audit_last_startup.json")
 MODEL_TIERS_STATE_PATH = Path("grader/reports/label_audit_model_tiers_state.json")
-
-
-def _load_yaml(path: Path) -> dict:
-    with path.open(encoding="utf-8") as f:
-        return yaml.safe_load(f)
 
 
 def _cache_key(
@@ -885,7 +881,7 @@ def main() -> int:
         except ImportError:
             raise ImportError("Install `google-genai` first.")
 
-    _ = _load_yaml(Path(args.config))
+    _ = load_yaml_mapping(Path(args.config))
     guidelines_path = Path(args.guidelines)
     raw_dir = Path(args.raw_dir)
     raw_dir.mkdir(parents=True, exist_ok=True)

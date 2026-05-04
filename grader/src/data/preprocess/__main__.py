@@ -3,11 +3,16 @@
 from __future__ import annotations
 
 import argparse
+import logging
 
 from .preprocessor_core import Preprocessor
 
 
 def main() -> None:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    )
     parser = argparse.ArgumentParser(
         description="Preprocess unified vinyl grader dataset"
     )

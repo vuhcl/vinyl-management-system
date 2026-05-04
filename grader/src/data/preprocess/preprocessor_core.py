@@ -11,8 +11,8 @@ from pathlib import Path
 from typing import Any, Optional, Sequence
 
 import mlflow
-import yaml
 
+from grader.src.config_io import load_yaml_mapping
 from grader.src.mlflow_tracking import (
     mlflow_pipeline_step_run_ctx,
 )
@@ -24,10 +24,6 @@ from .listing_promo import (
     strip_listing_promo_noise,
 )
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-)
 logger = logging.getLogger(__name__)
 
 
@@ -72,8 +68,8 @@ class Preprocessor:
         if config is not None:
             self.config = copy.deepcopy(config)
         else:
-            self.config = self._load_yaml(config_path)
-        self.guidelines = self._load_yaml(guidelines_path)
+            self.config = load_yaml_mapping(config_path)
+        self.guidelines = load_yaml_mapping(guidelines_path)
 
         pp_cfg = self.config["preprocessing"]
         self.do_lowercase: bool = pp_cfg.get("lowercase", True)
@@ -387,11 +383,6 @@ class Preprocessor:
     # -----------------------------------------------------------------------
     # Config loading
     # -----------------------------------------------------------------------
-    @staticmethod
-    def _load_yaml(path: str) -> dict:
-        with open(path, "r") as f:
-            return yaml.safe_load(f)
-
     # -----------------------------------------------------------------------
     # Protected terms
     # -----------------------------------------------------------------------

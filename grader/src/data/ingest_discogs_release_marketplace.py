@@ -18,12 +18,9 @@ import logging
 from pathlib import Path
 from typing import Any, Iterator
 
+from grader.src.config_io import load_yaml_mapping
 from grader.src.data.ingest_discogs import DiscogsIngester
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-)
 logger = logging.getLogger(__name__)
 
 
@@ -46,6 +43,10 @@ def _iter_listing_dicts(raw_dir: Path) -> Iterator[dict[str, Any]]:
 
 
 def main() -> int:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    )
     parser = argparse.ArgumentParser(
         description=(
             "Normalize Discogs release-marketplace scrape NDJSON for harmonize"
@@ -82,10 +83,7 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    import yaml
-
-    with open(args.config, encoding="utf-8") as f:
-        cfg = yaml.safe_load(f)
+    cfg = load_yaml_mapping(args.config)
     guidelines_path = args.guidelines or cfg.get(
         "guidelines_path",
         "grader/configs/grading_guidelines.yaml",
