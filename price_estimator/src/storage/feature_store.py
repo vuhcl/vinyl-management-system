@@ -55,6 +55,86 @@ MASTERS_FEATURES_COLUMNS: list[str] = [
 ]
 
 
+def _marketplace_join_where_order(
+    *,
+    sort_by: str,
+    min_have: int,
+    min_want: int,
+    exclude_various_artists: bool,
+    exclude_file_formats: bool,
+    exclude_unofficial_releases: bool,
+    prefer_vinyl_tiebreak: bool,
+) -> tuple[str, list[int], str, str | None]:
+    """
+    Shared ``WHERE`` / ``ORDER BY`` for iterators that ``LEFT JOIN`` ``marketplace_stats``.
+
+    ``sort_by`` must be one of ``have_count``, ``want_count``, ``popularity``.
+    Returns ``(where_sql, params, order_sql, vinyl_rank_expr_or_none)``.
+    """
+    clauses: list[str] = []
+    params: list[int] = []
+    mh = max(0, int(min_have))
+    mw = max(0, int(min_want))
+    ch = "COALESCE(m.community_have, 0)"
+    cw = "COALESCE(m.community_want, 0)"
+    if mh > 0:
+        clauses.append(f"{ch} >= ?")
+        params.append(mh)
+    if mw > 0:
+        clauses.append(f"{cw} >= ?")
+        params.append(mw)
+    if exclude_various_artists:
+        from price_estimator.src.catalog_proxy import (
+            sql_exclude_various_primary_artist,
+        )
+
+        clauses.append(sql_exclude_various_primary_artist("f.artists_json"))
+    if exclude_file_formats:
+        from price_estimator.src.catalog_proxy import (
+            sql_exclude_file_format_releases,
+        )
+
+        clauses.append(
+            sql_exclude_file_format_releases("f.formats_json", "f.format_desc")
+        )
+    if exclude_unofficial_releases:
+        from price_estimator.src.catalog_proxy import (
+            sql_exclude_unofficial_releases,
+        )
+
+        clauses.append(
+            sql_exclude_unofficial_releases("f.formats_json", "f.format_desc")
+        )
+    where = f"WHERE {' AND '.join(clauses)} " if clauses else ""
+
+    vinyl_k: str | None = None
+    if prefer_vinyl_tiebreak:
+        from price_estimator.src.catalog_proxy import sql_vinyl_format_rank
+
+        vinyl_k = sql_vinyl_format_rank("f.formats_json", "f.format_desc")
+
+    if sort_by == "have_count":
+        order = (
+            f"ORDER BY {ch} DESC, {vinyl_k} DESC, f.release_id ASC"
+            if vinyl_k
+            else f"ORDER BY {ch} DESC, f.release_id ASC"
+        )
+    elif sort_by == "want_count":
+        order = (
+            f"ORDER BY {cw} DESC, {vinyl_k} DESC, f.release_id ASC"
+            if vinyl_k
+            else f"ORDER BY {cw} DESC, f.release_id ASC"
+        )
+    else:
+        pop = f"({ch} + {cw})"
+        order = (
+            f"ORDER BY {pop} DESC, {vinyl_k} DESC, f.release_id ASC"
+            if vinyl_k
+            else f"ORDER BY {pop} DESC, f.release_id ASC"
+        )
+    return where, params, order, vinyl_k
+
+
 class FeatureStoreDB:
     def __init__(self, path: Path | str):
         self.path = Path(path)
@@ -344,66 +424,45 @@ class FeatureStoreDB:
                     yield str(row[0])
             return
 
-        clauses: list[str] = []
-        params: list[int] = []
-        mh = max(0, int(min_have))
-        mw = max(0, int(min_want))
-        ch = "COALESCE(m.community_have, 0)"
-        cw = "COALESCE(m.community_want, 0)"
-        if mh > 0:
-            clauses.append(f"{ch} >= ?")
-            params.append(mh)
-        if mw > 0:
-            clauses.append(f"{cw} >= ?")
-            params.append(mw)
-        if exclude_various_artists:
-            from price_estimator.src.catalog_proxy import (
-                sql_exclude_various_primary_artist,
+        if sort_by in ("have_count", "want_count", "popularity"):
+            where, params, order, _vk_unused = _marketplace_join_where_order(
+                sort_by=sort_by,
+                min_have=min_have,
+                min_want=min_want,
+                exclude_various_artists=exclude_various_artists,
+                exclude_file_formats=exclude_file_formats,
+                exclude_unofficial_releases=exclude_unofficial_releases,
+                prefer_vinyl_tiebreak=prefer_vinyl_tiebreak,
             )
+        elif sort_by == "release_id":
+            clauses: list[str] = []
+            params = []
+            if exclude_various_artists:
+                from price_estimator.src.catalog_proxy import (
+                    sql_exclude_various_primary_artist,
+                )
 
-            clauses.append(sql_exclude_various_primary_artist("f.artists_json"))
-        if exclude_file_formats:
-            from price_estimator.src.catalog_proxy import (
-                sql_exclude_file_format_releases,
-            )
+                clauses.append(sql_exclude_various_primary_artist("f.artists_json"))
+            if exclude_file_formats:
+                from price_estimator.src.catalog_proxy import (
+                    sql_exclude_file_format_releases,
+                )
 
-            clauses.append(
-                sql_exclude_file_format_releases("f.formats_json", "f.format_desc")
-            )
-        if exclude_unofficial_releases:
-            from price_estimator.src.catalog_proxy import (
-                sql_exclude_unofficial_releases,
-            )
+                clauses.append(
+                    sql_exclude_file_format_releases("f.formats_json", "f.format_desc")
+                )
+            if exclude_unofficial_releases:
+                from price_estimator.src.catalog_proxy import (
+                    sql_exclude_unofficial_releases,
+                )
 
-            clauses.append(
-                sql_exclude_unofficial_releases("f.formats_json", "f.format_desc")
-            )
-        where = f"WHERE {' AND '.join(clauses)} " if clauses else ""
-
-        vinyl_k = None
-        if prefer_vinyl_tiebreak:
-            from price_estimator.src.catalog_proxy import sql_vinyl_format_rank
-
-            vinyl_k = sql_vinyl_format_rank("f.formats_json", "f.format_desc")
-
-        if sort_by == "have_count":
-            if vinyl_k:
-                order = f"ORDER BY {ch} DESC, {vinyl_k} DESC, f.release_id ASC"
-            else:
-                order = f"ORDER BY {ch} DESC, f.release_id ASC"
-        elif sort_by == "want_count":
-            if vinyl_k:
-                order = f"ORDER BY {cw} DESC, {vinyl_k} DESC, f.release_id ASC"
-            else:
-                order = f"ORDER BY {cw} DESC, f.release_id ASC"
-        elif sort_by == "popularity":
-            pop = f"({ch} + {cw})"
-            if vinyl_k:
-                order = f"ORDER BY {pop} DESC, {vinyl_k} DESC, f.release_id ASC"
-            else:
-                order = f"ORDER BY {pop} DESC, f.release_id ASC"
-        else:
+                clauses.append(
+                    sql_exclude_unofficial_releases("f.formats_json", "f.format_desc")
+                )
+            where = f"WHERE {' AND '.join(clauses)} " if clauses else ""
             order = "ORDER BY f.release_id ASC"
+        else:
+            raise ValueError(f"unexpected sort_by after validation: {sort_by!r}")
 
         if sort_by == "release_id":
             sql = f"SELECT f.release_id FROM releases_features AS f {where}{order}"
@@ -452,65 +511,15 @@ class FeatureStoreDB:
         if sort_by not in valid:
             raise ValueError(f"sort_by must be one of {valid}, got {sort_by!r}")
 
-        clauses: list[str] = []
-        params: list[int] = []
-        mh = max(0, int(min_have))
-        mw = max(0, int(min_want))
-        ch = "COALESCE(m.community_have, 0)"
-        cw = "COALESCE(m.community_want, 0)"
-        if mh > 0:
-            clauses.append(f"{ch} >= ?")
-            params.append(mh)
-        if mw > 0:
-            clauses.append(f"{cw} >= ?")
-            params.append(mw)
-        if exclude_various_artists:
-            from price_estimator.src.catalog_proxy import (
-                sql_exclude_various_primary_artist,
-            )
-
-            clauses.append(sql_exclude_various_primary_artist("f.artists_json"))
-        if exclude_file_formats:
-            from price_estimator.src.catalog_proxy import (
-                sql_exclude_file_format_releases,
-            )
-
-            clauses.append(
-                sql_exclude_file_format_releases("f.formats_json", "f.format_desc")
-            )
-        if exclude_unofficial_releases:
-            from price_estimator.src.catalog_proxy import (
-                sql_exclude_unofficial_releases,
-            )
-
-            clauses.append(
-                sql_exclude_unofficial_releases("f.formats_json", "f.format_desc")
-            )
-        where = f"WHERE {' AND '.join(clauses)} " if clauses else ""
-
-        vinyl_k = None
-        if prefer_vinyl_tiebreak:
-            from price_estimator.src.catalog_proxy import sql_vinyl_format_rank
-
-            vinyl_k = sql_vinyl_format_rank("f.formats_json", "f.format_desc")
-
-        if sort_by == "have_count":
-            if vinyl_k:
-                order = f"ORDER BY {ch} DESC, {vinyl_k} DESC, f.release_id ASC"
-            else:
-                order = f"ORDER BY {ch} DESC, f.release_id ASC"
-        elif sort_by == "want_count":
-            if vinyl_k:
-                order = f"ORDER BY {cw} DESC, {vinyl_k} DESC, f.release_id ASC"
-            else:
-                order = f"ORDER BY {cw} DESC, f.release_id ASC"
-        else:
-            pop = f"({ch} + {cw})"
-            if vinyl_k:
-                order = f"ORDER BY {pop} DESC, {vinyl_k} DESC, f.release_id ASC"
-            else:
-                order = f"ORDER BY {pop} DESC, f.release_id ASC"
-
+        where, params, order, vinyl_k = _marketplace_join_where_order(
+            sort_by=sort_by,
+            min_have=min_have,
+            min_want=min_want,
+            exclude_various_artists=exclude_various_artists,
+            exclude_file_formats=exclude_file_formats,
+            exclude_unofficial_releases=exclude_unofficial_releases,
+            prefer_vinyl_tiebreak=prefer_vinyl_tiebreak,
+        )
         vk_sel = vinyl_k if vinyl_k else "0"
         mp = str(Path(marketplace_db_path).resolve())
         with self._connect() as conn:
