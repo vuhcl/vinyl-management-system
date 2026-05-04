@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import math
-import sqlite3
 import sys
 from collections import defaultdict
 from dataclasses import dataclass
@@ -31,7 +30,10 @@ from .catalog_encoders import (
     _catalog_encoders_from_saved_bundle,
     _fit_frequency_capped_id_encoder,
 )
+from price_estimator.src.storage.sqlite_util import open_sqlite
+
 from ..label_synthesis import training_label_config_from_vinyliq
+from ..sale_floor_enums import SaleConditionPolicy, TrainingLabelMode
 from ..sale_floor_targets import (
     sale_floor_blend_bundle,
     sale_floor_blend_sf_cfg_for_policy,
@@ -54,15 +56,6 @@ def _pick_newer_marketplace_row_dict(
     return a if score(a) >= score(b) else b
 
 
-def _auto_top_k_id_encoder(n_labeled: int, n_unique: int) -> int:
-    if n_unique <= 0:
-        return 0
-    if n_unique <= 500:
-        return n_unique
-    k = max(500, min(3000, n_labeled // 25))
-    return min(k, n_unique)
-
-
 def _load_sale_history_sidecars(
     sh_path: Path,
 ) -> tuple[dict[str, list[dict[str, Any]]], dict[str, dict[str, Any]]]:
@@ -71,8 +64,7 @@ def _load_sale_history_sidecars(
     fetch: dict[str, dict[str, Any]] = {}
     if not sh_path.is_file():
         return {}, {}
-    conn = sqlite3.connect(str(sh_path))
-    conn.row_factory = sqlite3.Row
+    conn = open_sqlite(sh_path)
     try:
         for r in conn.execute("SELECT * FROM release_sale"):
             d = dict(r)
@@ -150,15 +142,15 @@ def load_training_frame(
     catalog_encoders_override: dict[str, Any] | None = None,
 ) -> TrainingFrameLoad:
     tl = training_label or training_label_config_from_vinyliq({})
-    mode_l = str(tl.get("mode", "sale_floor_blend")).strip().lower()
-    if mode_l not in ("sale_floor_blend", "sale_floor"):
+    mode_l = str(tl.get("mode", TrainingLabelMode.SALE_FLOOR_BLEND)).strip().lower()
+    if mode_l not in (TrainingLabelMode.SALE_FLOOR_BLEND, TrainingLabelMode.SALE_FLOOR):
         raise ValueError(
             f"Unsupported training_label.mode {mode_l!r} for VinylIQ training "
             "(expected sale_floor_blend or sale_floor)."
         )
     sales_by_rid: dict[str, list[dict[str, Any]]] = {}
     fetch_by_rid: dict[str, dict[str, Any]] = {}
-    if mode_l in ("sale_floor_blend", "sale_floor"):
+    if mode_l in (TrainingLabelMode.SALE_FLOOR_BLEND, TrainingLabelMode.SALE_FLOOR):
         if sale_history_db is None or not Path(sale_history_db).is_file():
             print(
                 "Warning: sale_floor_blend needs sale_history.sqlite "
@@ -218,8 +210,8 @@ def load_training_frame(
     row_cold_flags: dict[str, dict[str, float]] = {}
     ps_grade = str(tl.get("price_suggestion_grade") or "Near Mint (NM or M-)").strip()
     sf_cfg = tl.get("sale_floor_blend") if isinstance(tl.get("sale_floor_blend"), dict) else {}
-    sf_nm = sale_floor_blend_sf_cfg_for_policy(sf_cfg, "nm_substrings_only")
-    sf_ord = sale_floor_blend_sf_cfg_for_policy(sf_cfg, "ordinal_cascade")
+    sf_nm = sale_floor_blend_sf_cfg_for_policy(sf_cfg, SaleConditionPolicy.NM_SUBSTRINGS_ONLY)
+    sf_ord = sale_floor_blend_sf_cfg_for_policy(sf_cfg, SaleConditionPolicy.ORDINAL_CASCADE)
     primary_pol = str(sf_cfg.get("sale_condition_policy", "nm_substrings_only")).strip().lower()
     if primary_pol not in ("nm_substrings_only", "ordinal_cascade"):
         primary_pol = "nm_substrings_only"

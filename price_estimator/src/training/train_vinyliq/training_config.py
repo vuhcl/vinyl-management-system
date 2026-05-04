@@ -13,6 +13,7 @@ from ...models.fitted_regressor import (
     TARGET_KIND_DOLLAR_LOG1P,
     TARGET_KIND_RESIDUAL_LOG_MEDIAN,
 )
+from ..sale_floor_enums import TrainingLabelMode
 from ..vinyliq_tuning_selection import _resolve_single_selection_metric
 
 
@@ -43,6 +44,8 @@ def residual_z_clip_abs_from_vinyliq(v: dict | None) -> float | None:
     except (TypeError, ValueError):
         return None
     return x if x > 0 else None
+
+
 def _tuning_sample_weight_mode(v: dict[str, Any]) -> str | None:
     t = v.get("tuning") or {}
     sw = t.get("sample_weight")
@@ -68,9 +71,9 @@ def _format_sample_weight_multipliers(v: dict[str, Any]) -> dict[str, float] | N
 
 def _training_label_console_summary(tl: dict[str, object]) -> str:
     """Human-readable label config: only keys that apply to ``mode``."""
-    mode = str(tl.get("mode", "sale_floor_blend")).strip().lower()
+    mode = str(tl.get("mode", TrainingLabelMode.SALE_FLOOR_BLEND)).strip().lower()
     parts: list[str] = [f"mode={mode}"]
-    if mode in ("sale_floor_blend", "sale_floor"):
+    if mode in (TrainingLabelMode.SALE_FLOOR_BLEND, TrainingLabelMode.SALE_FLOOR):
         sfb = tl.get("sale_floor_blend")
         if isinstance(sfb, dict) and sfb:
             parts.append(
@@ -87,9 +90,9 @@ def _training_label_console_summary(tl: dict[str, object]) -> str:
 
 def _training_label_mlflow_params(tl: dict[str, object]) -> dict[str, str]:
     """Flat params for MLflow (sale-floor training and optional nested knobs)."""
-    mode = str(tl.get("mode", "sale_floor_blend")).strip().lower()
+    mode = str(tl.get("mode", TrainingLabelMode.SALE_FLOOR_BLEND)).strip().lower()
     out: dict[str, str] = {"training_label_mode": mode}
-    if mode in ("sale_floor_blend", "sale_floor"):
+    if mode in (TrainingLabelMode.SALE_FLOOR_BLEND, TrainingLabelMode.SALE_FLOOR):
         sfb = tl.get("sale_floor_blend")
         if isinstance(sfb, dict):
             for k, v in sorted(sfb.items()):
@@ -104,6 +107,8 @@ def _mlflow_log_training_label_params(
 ) -> None:
     for k, v in _training_label_mlflow_params(tl).items():
         mlflow.log_param(k, v)
+
+
 def _root() -> Path:
     # train_vinyliq/training_config.py -> parents[3] == price_estimator package root
     return Path(__file__).resolve().parents[3]

@@ -14,7 +14,7 @@ price_estimator/
 │   └── base.yaml      # vinyliq.* paths, training_label, training_target, tuning, ensemble
 ├── src/
 │   ├── api/           # FastAPI app
-│   ├── training/      # train_vinyliq.py (single train + tune entrypoint)
+│   ├── training/      # train_vinyliq; sale_floor_enums, numeric_coercion, sale_floor_*
 │   ├── inference/     # service.py, service_factory.py, mlflow_bundle.py — stats + features + model
 │   ├── storage/       # marketplace_stats, marketplace_projection, sqlite_util, feature_store, sale_history
 │   ├── features/      # vinyliq_features + VinylIQFeatureSchema (column contract)

@@ -13,6 +13,7 @@ from .sale_floor_blend_config import (
     _cap_listing_floor_against_sales,
     sale_floor_blend_config_from_raw,
 )
+from .sale_floor_enums import SaleConditionPolicy
 from .sale_floor_eligibility import (
     eligible_nm_sale_rows,
     eligible_ordinal_cascade_sale_rows,
@@ -105,7 +106,7 @@ def _sale_floor_blend_compute(
     elig: list[tuple[datetime, float]] = []
 
     if t_ref is not None and sh_ok:
-        if cfg.sale_condition_policy == "ordinal_cascade":
+        if cfg.sale_condition_policy == SaleConditionPolicy.ORDINAL_CASCADE:
             elig, relax_tag = eligible_ordinal_cascade_sale_rows(
                 sale_rows,
                 t_ref,
@@ -272,15 +273,22 @@ def sale_floor_blend_bundle(
     return y, m, flags
 
 
+def _normalize_sale_condition_policy(policy: str | SaleConditionPolicy) -> str:
+    if isinstance(policy, SaleConditionPolicy):
+        return policy.value
+    try:
+        return SaleConditionPolicy(str(policy).strip().lower()).value
+    except ValueError:
+        return SaleConditionPolicy.NM_SUBSTRINGS_ONLY.value
+
+
 def sale_floor_blend_sf_cfg_for_policy(
     sf_cfg: dict[str, Any] | None,
-    policy: str,
+    policy: str | SaleConditionPolicy,
 ) -> dict[str, Any]:
     """Shallow copy of ``sale_floor_blend`` YAML dict with ``sale_condition_policy`` set."""
     raw = dict(sf_cfg) if isinstance(sf_cfg, dict) else {}
-    pol = str(policy).strip().lower()
-    if pol not in ("nm_substrings_only", "ordinal_cascade"):
-        pol = "nm_substrings_only"
+    pol = _normalize_sale_condition_policy(policy)
     out = {**raw, "sale_condition_policy": pol}
     return out
 

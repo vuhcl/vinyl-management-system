@@ -23,6 +23,8 @@ from price_estimator.src.storage.marketplace_db import (
     price_suggestion_values_by_grade,
 )
 
+from .numeric_coercion import strictly_positive_float as _positive
+
 _PRICE_ESTIMATOR_ROOT = Path(__file__).resolve().parents[2]
 
 def _parse_ps_grade(raw_json: str | None, grade_key: str) -> float | None:
@@ -31,16 +33,6 @@ def _parse_ps_grade(raw_json: str | None, grade_key: str) -> float | None:
     )
 
     return parse_price_suggestion_value(raw_json, grade_key)
-
-
-def _positive(v: Any) -> float | None:
-    if v is None:
-        return None
-    try:
-        x = float(v)
-    except (TypeError, ValueError):
-        return None
-    return x if x > 0 else None
 
 
 def parse_iso_datetime(s: str | None) -> datetime | None:

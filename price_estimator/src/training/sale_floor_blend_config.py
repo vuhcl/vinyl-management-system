@@ -23,6 +23,7 @@ from price_estimator.src.storage.marketplace_db import (
     price_suggestion_values_by_grade,
 )
 
+from .sale_floor_enums import SaleConditionPolicy
 from .sale_floor_row_parsing import _resolve_grade_delta_path
 
 @dataclass(frozen=True)
@@ -44,7 +45,7 @@ class SaleFloorBlendConfig:
         "mint (m",
     )
     # --- ordinal cascade + uplift (legacy default: substring NM only, no uplift)
-    sale_condition_policy: str = "nm_substrings_only"
+    sale_condition_policy: str = SaleConditionPolicy.NM_SUBSTRINGS_ONLY.value
     strict_min_ordinal: float = 7.0
     relax_steps: tuple[float, ...] = (6.0, 5.0)
     min_rows_strict: int = 8
@@ -89,11 +90,13 @@ def sale_floor_blend_config_from_raw(
     if isinstance(nm_tup, (list, tuple)) and nm_tup:
         nm_sub = tuple(str(x) for x in nm_tup)
 
-    policy = (
-        str(merged.get("sale_condition_policy", "nm_substrings_only")).strip().lower()
-    )
-    if policy not in ("nm_substrings_only", "ordinal_cascade"):
-        policy = "nm_substrings_only"
+    policy_raw = str(
+        merged.get("sale_condition_policy", SaleConditionPolicy.NM_SUBSTRINGS_ONLY),
+    ).strip().lower()
+    try:
+        policy = SaleConditionPolicy(policy_raw).value
+    except ValueError:
+        policy = SaleConditionPolicy.NM_SUBSTRINGS_ONLY.value
 
     rs = merged.get("relax_steps")
     if isinstance(rs, (list, tuple)) and rs:
