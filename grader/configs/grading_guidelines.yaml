@@ -307,6 +307,8 @@ grades:
     hard_signals: []
     supporting_signals_sleeve:
       - no wear
+      - no marks
+      - no defects
       - excellent condition
       - perfect condition
       - mint minus
@@ -967,6 +969,7 @@ grades:
       - cover is not present
       - cover not present
       - seam completely split
+      - seam is starting to separate
       - chunks of cardboard missing
     hard_signals_cosignal_sleeve:
       - heavy water damage
