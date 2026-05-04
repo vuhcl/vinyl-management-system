@@ -34,50 +34,28 @@ from pathlib import Path
 from typing import Optional
 
 import mlflow
-import yaml
 
+from grader.src.config_io import load_yaml_mapping
 from grader.src.mlflow_tracking import (
     configure_mlflow_from_config,
     mlflow_enabled,
     mlflow_log_artifacts_enabled,
     vinyl_grader_pyfunc_has_python_model,
 )
-from grader.src.data.harmonize_labels import LabelHarmonizer
-from grader.src.data.ingest_discogs import DiscogsIngester
-from grader.src.data.ingest_ebay import EbayIngester
-from grader.src.data.label_patches import apply_label_patches_after_ingest
-from grader.src.data.ingest_sale_history import run_sale_history_ingest_from_config
-from grader.src.data.vinyl_format import run_post_patch_vinyl_filter_from_config
 from grader.src.data.preprocess import Preprocessor
-from grader.src.evaluation.calibration import CalibrationEvaluator
-from grader.src.evaluation.grade_analysis import (
-    build_grade_analysis_report,
-    build_rule_owned_slice_report,
-    resolve_rule_owned_grades,
-    slice_recall_for_grade,
-)
-from grader.src.evaluation.metrics import (
-    compare_models,
-    compare_models_per_class,
-    compute_metrics_from_label_strings,
-    compute_rule_override_audit,
-    format_override_audit_report,
-    log_comparison_to_mlflow,
-    remap_true_and_encode_predictions,
-    substitute_model_when_pred_excellent,
-)
 from grader.src.features.tfidf_features import TFIDFFeatureBuilder
 from grader.src.models.baseline import BaselineModel
 from grader.src.models.transformer import TransformerTrainer
+from grader.src.pipeline_train_steps import (
+    apply_train_mlflow_env_overrides,
+    run_steps_1_through_4,
+    run_train_steps_5_through_9,
+)
 from grader.src.rules.rule_engine import RuleEngine
 
 # ---------------------------------------------------------------------------
 # Logging
 # ---------------------------------------------------------------------------
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-)
 logger = logging.getLogger(__name__)
 
 
@@ -109,7 +87,7 @@ class Pipeline:
     ) -> None:
         self.config_path     = config_path
         self.guidelines_path = guidelines_path
-        self.config          = self._load_yaml(config_path)
+        self.config          = load_yaml_mapping(config_path)
 
         # Inference model selection
         inference_cfg    = self.config.get("inference", {})
@@ -127,14 +105,6 @@ class Pipeline:
         self._baseline:     Optional[BaselineModel]        = None
         self._transformer:  Optional[TransformerTrainer]   = None
         self._tfidf:        Optional[TFIDFFeatureBuilder]  = None
-
-    # -----------------------------------------------------------------------
-    # Config loading
-    # -----------------------------------------------------------------------
-    @staticmethod
-    def _load_yaml(path: str) -> dict:
-        with open(path, "r") as f:
-            return yaml.safe_load(f)
 
     # -----------------------------------------------------------------------
     # Lazy component initialization
@@ -295,15 +265,7 @@ class Pipeline:
                 "MLflow metrics-only (--mlflow-no-artifacts / "
                 "mlflow.log_artifacts: false)."
             )
-        if (
-            os.environ.get("VINYL_GRADER_MLFLOW_METRICS_ONLY", "").strip().lower()
-            in ("1", "true", "yes")
-            and ml.get("enabled", True)
-        ):
-            ml["log_artifacts"] = False
-            logger.info(
-                "MLflow metrics-only (VINYL_GRADER_MLFLOW_METRICS_ONLY env set)."
-            )
+        apply_train_mlflow_env_overrides(self.config)
 
         if mlflow_enabled(self.config):
             configure_mlflow_from_config(self.config)
@@ -326,379 +288,25 @@ class Pipeline:
         # Sub-steps (ingest/features/models/calibration) open their own MLflow runs.
         # Avoid opening an outer run here, otherwise nested start_run() calls fail.
         if True:
-
-            # Step 1 — Ingestion
-            if not skip_ingest:
-                logger.info("=" * 50)
-                logger.info("STEP 1 — DATA INGESTION")
-                logger.info("=" * 50)
-
-                repo_root = Path(__file__).resolve().parents[2]
-
-                # Sale history first so ``apply_label_patches_after_ingest`` (below)
-                # merges into a fresh ``discogs_sale_history.jsonl`` instead of a
-                # file that is about to be overwritten.
-                if not skip_sale_history_ingest:
-                    sh = run_sale_history_ingest_from_config(
-                        self.config,
-                        Path(self.config_path),
-                        Path(self.guidelines_path),
-                        repo_root,
-                    )
-                    if sh.get("ok"):
-                        results["sale_history_ingest"] = sh
-                        trim = sh.get("trim") or {}
-                        sh_cfg = sh.get("sale_history_settings") or {}
-                        logger.info(
-                            "Sale history → %s (%d line(s), vinyl post=%s, "
-                            "trim in/joint/sleeve/total=%s/%s/%s/%s, prefetch=%s order=%s "
-                            "joint_cap=%s sleeve_cap=%s total_cap=%s balance_sleeve_trim=%s)",
-                            sh.get("out"),
-                            sh.get("written", 0),
-                            (sh.get("post") or {}).get("vinyl_dropped", 0),
-                            trim.get("input_rows"),
-                            trim.get("after_joint_trim"),
-                            trim.get("after_sleeve_trim"),
-                            trim.get("after_total_trim"),
-                            sh_cfg.get("sql_prefetch_limit"),
-                            sh_cfg.get("sql_sample_order"),
-                            sh_cfg.get("max_rows_per_joint_grade"),
-                            sh_cfg.get("max_rows_per_sleeve_grade"),
-                            sh_cfg.get("max_total_sale_history_rows"),
-                            sh_cfg.get("balance_joint_within_sleeve_trim"),
-                        )
-                    else:
-                        logger.warning(
-                            "Sale history ingest not run: %s",
-                            sh.get("error", sh),
-                        )
-
-                discogs_ingester = DiscogsIngester(
-                    config_path=self.config_path,
-                    guidelines_path=self.guidelines_path,
-                    config=self.config,
-                )
-                discogs_ingester.run()
-
-                if skip_ebay_ingest:
-                    logger.info(
-                        "Skipping eBay ingestion (--skip-ebay-ingest) — "
-                        "harmonizer will use Discogs only if ebay_processed.jsonl "
-                        "is missing."
-                    )
-                else:
-                    ebay_ingester = EbayIngester(
-                        config_path=self.config_path,
-                        guidelines_path=self.guidelines_path,
-                        config=self.config,
-                    )
-                    ebay_ingester.run()
-
-                patch_stats = apply_label_patches_after_ingest(self.config)
-                if patch_stats.get("enabled"):
-                    results["label_patches"] = patch_stats
-                    if patch_stats.get("updated_total", 0):
-                        logger.info(
-                            "Label patches applied: %d row(s) updated "
-                            "(see data.label_patches_path).",
-                            patch_stats["updated_total"],
-                        )
-
-                vinyl_post = run_post_patch_vinyl_filter_from_config(
-                    self.config,
-                    filter_sale_jsonl=True,
-                )
-                if vinyl_post.get("ran"):
-                    results["discogs_vinyl_post_filter"] = vinyl_post
-                    logger.info(
-                        "Discogs post-patch vinyl filter: dropped=%s kept=%s",
-                        vinyl_post.get("dropped"),
-                        vinyl_post.get("kept"),
-                    )
-            else:
-                logger.info("Skipping ingestion — using existing raw data.")
-            # Step 2 — Label harmonization
-            if not skip_harmonize:
-                logger.info("=" * 50)
-                logger.info("STEP 2 — LABEL HARMONIZATION")
-                logger.info("=" * 50)
-
-                harmonizer = LabelHarmonizer(
-                    config_path=self.config_path,
-                    guidelines_path=self.guidelines_path,
-                    config=self.config,
-                )
-                results["harmonize"] = harmonizer.run()
-            else:
-                logger.info("Skipping harmonization — using existing unified.jsonl.")
-
-            # Step 3 — Preprocessing and splitting
-            if not skip_preprocess:
-                logger.info("=" * 50)
-                logger.info("STEP 3 — PREPROCESSING AND SPLITTING")
-                logger.info("=" * 50)
-
-                preprocessor = Preprocessor(
-                    config_path=self.config_path,
-                    guidelines_path=self.guidelines_path,
-                    config=self.config,
-                )
-                results["preprocess"] = preprocessor.run()
-            else:
-                logger.info("Skipping preprocessing — using existing splits.")
-
-            # Step 4 — TF-IDF features
-            if not skip_features:
-                logger.info("=" * 50)
-                logger.info("STEP 4 — TF-IDF FEATURE EXTRACTION")
-                logger.info("=" * 50)
-
-                tfidf = TFIDFFeatureBuilder(
-                    config_path=self.config_path,
-                    config=self.config,
-                )
-                results["features"] = tfidf.run()
-            else:
-                logger.info("Skipping feature extraction — using existing matrices.")
-
-            # Step 5 — Baseline model
-            logger.info("=" * 50)
-            logger.info("STEP 5 — BASELINE MODEL (TF-IDF + LR)")
-            logger.info("=" * 50)
-
-            if skip_baseline:
-                logger.info(
-                    "Skipping baseline training — loading encoders + models "
-                    "from paths.artifacts and evaluating on disk features."
-                )
-                baseline, baseline_results = (
-                    BaselineModel.load_trained_from_artifacts(self.config_path)
-                )
-                results["baseline"] = baseline_results
-            else:
-                baseline = BaselineModel(
-                    config_path=self.config_path,
-                    config=self.config,
-                )
-                baseline_results = baseline.run()
-                results["baseline"] = baseline_results
-
-            baseline_test_metrics = {
-                target: baseline_results["eval"]["test"][target]
-                for target in ["sleeve", "media"]
-            }
-
-            # Step 6 — Transformer model
-            transformer_test_metrics = None
-            trainer: Optional[TransformerTrainer] = None
-
-            if not skip_transformer:
-                logger.info("=" * 50)
-                logger.info("STEP 6 — TRANSFORMER MODEL (DistilBERT)")
-                logger.info("=" * 50)
-
-                trainer = TransformerTrainer(
-                    config_path=self.config_path,
-                    config=self.config,
-                )
-                transformer_results = trainer.run()
-                results["transformer"] = transformer_results
-
-                transformer_test_metrics = {
-                    target: transformer_results["eval"]["test"][target]
-                    for target in ["sleeve", "media"]
-                }
-                self._register_transformer_to_registry(
-                    transformer_results,
-                    want_register=want_registry,
-                    registry_model_name=registry_model_name,
-                )
-            else:
-                logger.info(
-                    "Skipping transformer — baseline only mode."
-                )
-
-            # Step 7 — Model comparison
-            if transformer_test_metrics is not None:
-                logger.info("=" * 50)
-                logger.info("STEP 7 — MODEL COMPARISON")
-                logger.info("=" * 50)
-
-                comparison_table = compare_models(
-                    baseline_metrics=baseline_test_metrics,
-                    transformer_metrics=transformer_test_metrics,
-                    split="test",
-                )
-                per_class_table = compare_models_per_class(
-                    baseline_metrics=baseline_test_metrics,
-                    transformer_metrics=transformer_test_metrics,
-                )
-
-                thin_compare_table = None
-                thin_per_class_table = None
-                if (
-                    "test_thin" in baseline_results["eval"]
-                    and "test_thin" in transformer_results["eval"]
-                ):
-                    b_thin = {
-                        t: baseline_results["eval"]["test_thin"][t]
-                        for t in ["sleeve", "media"]
-                    }
-                    t_thin = {
-                        t: transformer_results["eval"]["test_thin"][t]
-                        for t in ["sleeve", "media"]
-                    }
-                    thin_compare_table = compare_models(
-                        baseline_metrics=b_thin,
-                        transformer_metrics=t_thin,
-                        split="test_thin",
-                    )
-                    thin_per_class_table = compare_models_per_class(
-                        baseline_metrics=b_thin,
-                        transformer_metrics=t_thin,
-                        split_title="TEST_THIN SPLIT",
-                    )
-
-                print("\n" + comparison_table)
-                print(per_class_table)
-                if thin_compare_table is not None:
-                    print("\n" + thin_compare_table)
-                    print(thin_per_class_table)
-
-                # Save comparison tables as artifacts
-                comparison_path = (
-                    self.artifacts_dir / "model_comparison.txt"
-                )
-                with open(comparison_path, "w") as f:
-                    f.write(comparison_table + "\n\n" + per_class_table)
-                    if thin_compare_table is not None:
-                        f.write(
-                            "\n\n"
-                            + thin_compare_table
-                            + "\n\n"
-                            + thin_per_class_table
-                        )
-
-                if mlflow_enabled(self.config):
-                    if mlflow_log_artifacts_enabled(self.config):
-                        mlflow.log_artifact(str(comparison_path))
-                    log_comparison_to_mlflow(
-                        baseline_metrics=baseline_test_metrics,
-                        transformer_metrics=transformer_test_metrics,
-                    )
-                    if thin_compare_table is not None:
-                        log_comparison_to_mlflow(
-                            baseline_metrics=b_thin,
-                            transformer_metrics=t_thin,
-                            key_suffix="test_thin",
-                        )
-
-                results["comparison"] = {
-                    "table":     comparison_table,
-                    "per_class": per_class_table,
-                }
-                if thin_compare_table is not None:
-                    results["comparison"]["test_thin_table"] = (
-                        thin_compare_table
-                    )
-                    results["comparison"]["test_thin_per_class"] = (
-                        thin_per_class_table
-                    )
-
-            # Step 8 — Calibration plots
-            logger.info("=" * 50)
-            logger.info("STEP 8 — CALIBRATION EVALUATION")
-            logger.info("=" * 50)
-
-            calibration_evaluator = CalibrationEvaluator(
-                config_path=self.config_path
+            run_steps_1_through_4(
+                self,
+                results,
+                skip_ingest=skip_ingest,
+                skip_sale_history_ingest=skip_sale_history_ingest,
+                skip_ebay_ingest=skip_ebay_ingest,
+                skip_harmonize=skip_harmonize,
+                skip_preprocess=skip_preprocess,
+                skip_features=skip_features,
             )
 
-            # Load test features for calibration plots
-            tfidf_builder = self._get_tfidf()
-            _cal_mlf = (
-                mlflow_enabled(self.config)
-                and mlflow_log_artifacts_enabled(self.config)
+            run_train_steps_5_through_9(
+                self,
+                results,
+                skip_baseline=skip_baseline,
+                skip_transformer=skip_transformer,
+                want_registry=want_registry,
+                registry_model_name=registry_model_name,
             )
-            for target in ["sleeve", "media"]:
-                X_test, y_test = TFIDFFeatureBuilder.load_features(
-                    str(self.artifacts_dir / "features"),
-                    split="test",
-                    target=target,
-                )
-                encoder = TFIDFFeatureBuilder.load_encoder(
-                    str(self.artifacts_dir / f"label_encoder_{target}.pkl")
-                )
-
-                # Baseline calibration
-                baseline_proba = BaselineModel.load_model(
-                    str(self.artifacts_dir / f"baseline_{target}_calibrated.pkl")
-                ).predict_proba(X_test)
-
-                calibration_evaluator.run(
-                    y_true=y_test,
-                    y_proba=baseline_proba,
-                    class_names=encoder.classes_,
-                    target=target,
-                    model_name="baseline",
-                    log_to_mlflow=_cal_mlf,
-                )
-
-                # Transformer calibration — if available
-                if transformer_test_metrics is not None:
-                    transformer_proba = (
-                        transformer_results["eval"]["test"][target]["y_proba"]
-                    )
-                    calibration_evaluator.run(
-                        y_true=y_test,
-                        y_proba=transformer_proba,
-                        class_names=encoder.classes_,
-                        target=target,
-                        model_name="transformer",
-                        log_to_mlflow=_cal_mlf,
-                    )
-
-            # Step 9 — Rule engine: compare model vs adjusted; audit overrides
-            logger.info("=" * 50)
-            _ev = self.config.get("evaluation") or {}
-            _rs = _ev.get("rule_eval_splits")
-            _split_note = (
-                ", ".join(str(s) for s in _rs)
-                if isinstance(_rs, list) and _rs
-                else "test + test_thin"
-            )
-            logger.info("STEP 9 — RULE ENGINE EVAL (%s)", _split_note)
-            logger.info("=" * 50)
-
-            rule_engine = self._get_rule_engine()
-            use_transformer = transformer_test_metrics is not None
-
-            rule_eval, rule_mlflow, grade_paths = (
-                self._run_rule_engine_evaluation(
-                    rule_engine=rule_engine,
-                    trainer=trainer if use_transformer else None,
-                    baseline=baseline,
-                    use_transformer=use_transformer,
-                )
-            )
-
-            if mlflow_enabled(self.config):
-                mlflow.log_metrics(rule_mlflow)
-                if mlflow_log_artifacts_enabled(self.config):
-                    for _p in grade_paths.values():
-                        mlflow.log_artifact(_p)
-
-            results["rule_eval"] = rule_eval
-            results["grade_analysis_reports"] = grade_paths
-            if "test" in rule_eval:
-                results["rule_adjusted_test_metrics"] = rule_eval["test"][
-                    "adjusted"
-                ]
-                results["rule_coverage"] = rule_eval["test"]["coverage"]
-
-            logger.info("=" * 50)
-            logger.info("TRAINING PIPELINE COMPLETE")
-            logger.info("=" * 50)
 
         return results
 
@@ -1004,388 +612,17 @@ class Pipeline:
         ``rule_engine_baseline.json`` plus MLflow tags keyed
         ``rule_baseline_*`` — see §8 of the rule-owned eval plan.
         """
-        features_dir = str(self.artifacts_dir / "features")
-        splits_dir = Path(self.config["paths"]["splits"])
-        out: dict = {}
-        mlflow_flat: dict[str, float] = {}
-        grade_analysis_paths: dict[str, str] = {}
-        use_excellent_blend = bool(
-            self.config.get("evaluation", {}).get(
-                "excellent_eval_use_model_prediction", False
-            )
-        )
-        rule_owned_grades = resolve_rule_owned_grades(rule_engine.guidelines)
-        # Baseline snapshot accumulator: {split: {target: {...}}}
-        baseline_snapshot: dict[str, dict] = {}
-
-        ev = self.config.get("evaluation") or {}
-        _res = ev.get("rule_eval_splits")
-        if isinstance(_res, list) and _res:
-            eval_splits = [str(s) for s in _res]
-        else:
-            eval_splits = ["test", "test_thin"]
-
-        for split_name in eval_splits:
-            if split_name == "test_thin" and not (splits_dir / "test_thin.jsonl").exists():
-                logger.info(
-                    "Rule eval — skip split=test_thin (no test_thin.jsonl)"
-                )
-                continue
-            if split_name == "test_thin":
-                try:
-                    TFIDFFeatureBuilder.load_features(
-                        features_dir, split="test_thin", target="sleeve"
-                    )
-                except OSError:
-                    logger.info(
-                        "Rule eval — skip split=test_thin (no feature matrices)"
-                    )
-                    continue
-
-            raw, texts = self._predictions_for_rule_eval(
-                split_name, trainer, baseline, use_transformer
-            )
-            adjusted = rule_engine.apply_batch(raw, texts)
-            coverage = rule_engine.summarize_results(adjusted)
-
-            adjusted_m: dict[str, dict] = {}
-            adjusted_raw_m: dict[str, dict] = {}
-            model_m: dict[str, dict] = {}
-            audit_m: dict[str, dict] = {}
-            grade_report_sections: list[str] = []
-
-            for target in ("sleeve", "media"):
-                _, y = TFIDFFeatureBuilder.load_features(
-                    features_dir, split=split_name, target=target
-                )
-                encoder = TFIDFFeatureBuilder.load_encoder(
-                    str(self.artifacts_dir / f"label_encoder_{target}.pkl")
-                )
-                pred_key = f"predicted_{target}_condition"
-                before = [str(p[pred_key]) for p in raw]
-                after = [str(p[pred_key]) for p in adjusted]
-                after_eval = (
-                    substitute_model_when_pred_excellent(after, before)
-                    if use_excellent_blend
-                    else after
-                )
-                n_ex_subst = (
-                    sum(1 for a, e in zip(after, after_eval) if a != e)
-                    if use_excellent_blend
-                    else 0
-                )
-                adjusted_m[target] = compute_metrics_from_label_strings(
-                    y,
-                    after_eval,
-                    encoder.classes_,
-                    target=target,
-                    split=split_name,
-                )
-                if use_excellent_blend:
-                    adjusted_raw_m[target] = compute_metrics_from_label_strings(
-                        y,
-                        after,
-                        encoder.classes_,
-                        target=target,
-                        split=split_name,
-                    )
-                model_m[target] = compute_metrics_from_label_strings(
-                    y,
-                    before,
-                    encoder.classes_,
-                    target=target,
-                    split=split_name,
-                )
-                audit_m[target] = compute_rule_override_audit(
-                    y,
-                    before,
-                    after,
-                    encoder.classes_,
-                    target=target,
-                    split=split_name,
-                )
-                logger.info(
-                    "Rule eval — split=%s target=%s | model macro-F1 %.4f → "
-                    "adjusted %.4f (Δ %+.4f) | helpful=%d harmful=%d neutral=%d "
-                    "override_precision=%s | excellent→model rows=%d",
-                    split_name,
-                    target,
-                    model_m[target]["macro_f1"],
-                    adjusted_m[target]["macro_f1"],
-                    audit_m[target]["delta_macro_f1"],
-                    audit_m[target]["n_helpful"],
-                    audit_m[target]["n_harmful"],
-                    audit_m[target]["n_neutral"],
-                    audit_m[target]["override_precision"],
-                    n_ex_subst,
-                )
-                grade_report_sections.append(
-                    build_grade_analysis_report(
-                        y,
-                        before,
-                        after,
-                        encoder.classes_,
-                        target=target,
-                        split=split_name,
-                        after_for_scoring=after_eval
-                        if use_excellent_blend
-                        else None,
-                    )
-                )
-
-                # Rule-owned slice section (true-label-conditioned view)
-                owned_for_target = rule_owned_grades.get(target, [])
-                grade_report_sections.append(
-                    build_rule_owned_slice_report(
-                        y,
-                        before,
-                        after,
-                        encoder.classes_,
-                        target=target,
-                        split=split_name,
-                        rule_owned_grades=owned_for_target,
-                    )
-                )
-
-                # Formatted override-audit section with by_after /
-                # by_transition breakdowns (compact text tables).
-                grade_report_sections.append(
-                    format_override_audit_report(audit_m[target])
-                )
-
-                # Compute slice recalls for rule-owned grades — used
-                # both for MLflow tags/metrics and for the baseline JSON.
-                y_t2, combined_list, (y_b_idx, y_a_idx) = (
-                    remap_true_and_encode_predictions(
-                        y, encoder.classes_, before, after
-                    )
-                )
-                combined_arr = __import__("numpy").array(combined_list)
-                slice_recalls: dict[str, dict] = {}
-                for g in owned_for_target:
-                    slice_recalls[g] = {
-                        "recall_model": slice_recall_for_grade(
-                            y_t2, y_b_idx, combined_arr, g
-                        ),
-                        "recall_adjusted": slice_recall_for_grade(
-                            y_t2, y_a_idx, combined_arr, g
-                        ),
-                    }
-                audit_m[target]["slice_recall"] = slice_recalls
-                baseline_snapshot.setdefault(split_name, {})[target] = {
-                    "rule_owned_grades": owned_for_target,
-                    "override_precision": audit_m[target][
-                        "override_precision"
-                    ],
-                    "n_changed": audit_m[target]["n_changed"],
-                    "n_helpful": audit_m[target]["n_helpful"],
-                    "n_harmful": audit_m[target]["n_harmful"],
-                    "n_neutral": audit_m[target]["n_neutral"],
-                    "delta_macro_f1": audit_m[target].get("delta_macro_f1"),
-                    "delta_accuracy": audit_m[target].get("delta_accuracy"),
-                    "by_after": audit_m[target].get("by_after", {}),
-                    "by_transition": audit_m[target].get(
-                        "by_transition", {}
-                    ),
-                    "slice_recall": slice_recalls,
-                }
-
-            reports_dir = Path(self.config["paths"]["reports"])
-            reports_dir.mkdir(parents=True, exist_ok=True)
-            gap = "\n\n" + "=" * 72 + "\n\n"
-            ga_path = reports_dir / f"grade_analysis_{split_name}.txt"
-            ga_path.write_text(
-                gap.join(grade_report_sections),
-                encoding="utf-8",
-            )
-            grade_analysis_paths[split_name] = str(ga_path)
-            logger.info("Grade analysis report — %s", ga_path)
-
-            out[split_name] = {
-                "adjusted": adjusted_m,
-                "model":    model_m,
-                "audit":    audit_m,
-                "coverage": coverage,
-            }
-            if use_excellent_blend:
-                out[split_name]["adjusted_raw"] = adjusted_raw_m
-
-            sk = split_name
-            for target in ("sleeve", "media"):
-                adj = adjusted_m[target]
-                aud = audit_m[target]
-                mlflow_flat[f"rule_adjusted_{sk}_{target}_macro_f1"] = float(
-                    adj["macro_f1"]
-                )
-                mlflow_flat[f"rule_adjusted_{sk}_{target}_accuracy"] = float(
-                    adj["accuracy"]
-                )
-                if use_excellent_blend:
-                    rawm = adjusted_raw_m[target]
-                    mlflow_flat[
-                        f"rule_adjusted_raw_{sk}_{target}_macro_f1"
-                    ] = float(rawm["macro_f1"])
-                    mlflow_flat[
-                        f"rule_adjusted_raw_{sk}_{target}_accuracy"
-                    ] = float(rawm["accuracy"])
-                mlflow_flat[f"rule_model_{sk}_{target}_macro_f1"] = float(
-                    model_m[target]["macro_f1"]
-                )
-                mlflow_flat[f"rule_model_{sk}_{target}_accuracy"] = float(
-                    model_m[target]["accuracy"]
-                )
-                mlflow_flat[f"rule_audit_{sk}_{target}_delta_macro_f1"] = float(
-                    aud["delta_macro_f1"]
-                )
-                mlflow_flat[f"rule_audit_{sk}_{target}_delta_accuracy"] = float(
-                    aud["delta_accuracy"]
-                )
-                mlflow_flat[f"rule_audit_{sk}_{target}_helpful"] = float(
-                    aud["n_helpful"]
-                )
-                mlflow_flat[f"rule_audit_{sk}_{target}_harmful"] = float(
-                    aud["n_harmful"]
-                )
-                mlflow_flat[f"rule_audit_{sk}_{target}_neutral"] = float(
-                    aud["n_neutral"]
-                )
-                if aud["override_precision"] is not None:
-                    mlflow_flat[
-                        f"rule_audit_{sk}_{target}_override_precision"
-                    ] = float(aud["override_precision"])
-
-                # Rule-owned slice metrics (§6).
-                for g, vals in (aud.get("slice_recall") or {}).items():
-                    gsafe = g.lower().replace(" ", "_")
-                    rm = vals.get("recall_model")
-                    ra = vals.get("recall_adjusted")
-                    if rm is not None:
-                        mlflow_flat[
-                            f"rule_slice_{sk}_{target}_true_{gsafe}_recall_model"
-                        ] = float(rm)
-                    if ra is not None:
-                        mlflow_flat[
-                            f"rule_slice_{sk}_{target}_true_{gsafe}_recall_adjusted"
-                        ] = float(ra)
-
-                # Stratified "harmful to <grade>" metrics, capped to
-                # the top-K destinations that actually saw overrides.
-                by_after = aud.get("by_after") or {}
-                for g, row in by_after.items():
-                    gsafe = g.lower().replace(" ", "_")
-                    mlflow_flat[
-                        f"rule_audit_{sk}_{target}_harmful_to_{gsafe}"
-                    ] = float(row.get("n_harmful", 0))
-                    prec = row.get("override_precision")
-                    if prec is not None:
-                        mlflow_flat[
-                            f"rule_audit_{sk}_{target}_override_precision_to_{gsafe}"
-                        ] = float(prec)
-
-        if "test" in out:
-            for k in ("sleeve", "media"):
-                mlflow_flat[f"rule_adjusted_{k}_macro_f1"] = float(
-                    out["test"]["adjusted"][k]["macro_f1"]
-                )
-                mlflow_flat[f"rule_adjusted_{k}_accuracy"] = float(
-                    out["test"]["adjusted"][k]["accuracy"]
-                )
-
-        # --- §8 Baseline snapshot: JSON artifact + MLflow tags ----------
-        if baseline_snapshot:
-            reports_dir = Path(self.config["paths"]["reports"])
-            reports_dir.mkdir(parents=True, exist_ok=True)
-            snap_path = reports_dir / "rule_engine_baseline.json"
-            self._write_rule_engine_baseline(
-                snap_path, baseline_snapshot
-            )
-            logger.info("Rule engine baseline snapshot — %s", snap_path)
-            try:
-                self._tag_rule_engine_baseline(baseline_snapshot)
-            except Exception as exc:  # mlflow-optional path
-                logger.debug(
-                    "Skipped MLflow baseline tags (no active run?): %s", exc
-                )
-
-        return out, mlflow_flat, grade_analysis_paths
-
-    # -----------------------------------------------------------------------
-    # Baseline snapshot helpers (§8)
-    # -----------------------------------------------------------------------
-    @staticmethod
-    def _current_git_sha() -> Optional[str]:
-        """Return short git HEAD sha, or None if git is unavailable."""
-        import subprocess
-
-        try:
-            sha = subprocess.check_output(
-                ["git", "rev-parse", "--short", "HEAD"],
-                stderr=subprocess.DEVNULL,
-                timeout=3,
-            )
-            return sha.decode("utf-8", errors="replace").strip() or None
-        except (
-            subprocess.CalledProcessError,
-            FileNotFoundError,
-            subprocess.TimeoutExpired,
-        ):
-            return None
-
-    def _write_rule_engine_baseline(
-        self, path: Path, snapshot: dict
-    ) -> None:
-        """Persist the rule-engine baseline snapshot as canonical JSON."""
-        from datetime import datetime, timezone
-
-        payload = {
-            "captured_at": datetime.now(timezone.utc).isoformat(),
-            "commit": self._current_git_sha(),
-            "splits": snapshot,
-        }
-        path.write_text(
-            json.dumps(payload, indent=2, sort_keys=True, default=str),
-            encoding="utf-8",
+        from grader.src.evaluation.rule_engine_eval import (
+            run_rule_engine_evaluation,
         )
 
-    @staticmethod
-    def _tag_rule_engine_baseline(snapshot: dict) -> None:
-        """
-        Mirror key baseline numbers to MLflow **tags** (stringified) so
-        they are grep-able in the UI without polluting the metrics graph.
-        Top-K cap from `by_after` naturally bounds the tag count.
-        """
-        if not mlflow.active_run():
-            return
-        for split_name, targets in snapshot.items():
-            for target, data in targets.items():
-                base = f"rule_baseline_{split_name}_{target}"
-                prec = data.get("override_precision")
-                if prec is not None:
-                    mlflow.set_tag(f"{base}_override_precision", f"{prec:.4f}")
-                mlflow.set_tag(
-                    f"{base}_rule_owned_grades",
-                    ",".join(data.get("rule_owned_grades", [])),
-                )
-                for g, row in (data.get("by_after") or {}).items():
-                    gsafe = g.lower().replace(" ", "_")
-                    mlflow.set_tag(
-                        f"{base}_harmful_to_{gsafe}",
-                        str(row.get("n_harmful", 0)),
-                    )
-                    rp = row.get("override_precision")
-                    if rp is not None:
-                        mlflow.set_tag(
-                            f"{base}_override_precision_to_{gsafe}",
-                            f"{rp:.4f}",
-                        )
-                for g, vals in (data.get("slice_recall") or {}).items():
-                    gsafe = g.lower().replace(" ", "_")
-                    ra = vals.get("recall_adjusted")
-                    if ra is not None:
-                        mlflow.set_tag(
-                            f"{base}_true_{gsafe}_recall_adjusted",
-                            f"{ra:.4f}",
-                        )
+        return run_rule_engine_evaluation(
+            self,
+            rule_engine,
+            trainer,
+            baseline,
+            use_transformer,
+        )
 
     # -----------------------------------------------------------------------
     # Utilities
@@ -1409,6 +646,10 @@ class Pipeline:
 def main() -> None:
     import argparse
 
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    )
     parser = argparse.ArgumentParser(
         description="Vinyl condition grader pipeline"
     )
