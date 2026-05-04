@@ -1,7 +1,7 @@
 """Tuning champion selection metric resolution."""
 from __future__ import annotations
 
-from price_estimator.src.training.train_vinyliq import (
+from price_estimator.src.training.train_vinyliq.training_config import (
     _mlflow_flags,
     _resolve_tuning_selection_metric,
 )
