@@ -9,7 +9,7 @@ across sources, reports class distribution, and flags rare classes.
 This module is a merge + validation step. Optional
 ``data.harmonization.exclude_thin_notes`` reuses preprocess description-adequacy
 rules so unified.jsonl can match the training-eligible pool.
-No feature engineering or splitting — those stay in preprocess.py and pipeline.py.
+No feature engineering or splitting — those stay in preprocess and pipeline.py.
 
 Usage:
     python -m grader.src.data.harmonize_labels
