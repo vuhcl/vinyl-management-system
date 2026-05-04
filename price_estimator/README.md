@@ -18,7 +18,7 @@ price_estimator/
 │   ├── inference/     # service.py, service_factory.py, mlflow_bundle.py — stats + features + model
 │   ├── storage/       # marketplace_stats, marketplace_projection, sqlite_util, feature_store, sale_history
 │   ├── features/      # vinyliq_features + VinylIQFeatureSchema (column contract)
-│   ├── models/        # fitted_regressor (facade) + regressor_{fitted,training,metrics}, sample_weights; pyfunc; overlays
+│   ├── models/        # fitted_regressor, regressor_*, grade_delta_{constants,binning,artifact_keys}, condition_adjustment, pyfunc
 │   ├── ingest/        # discogs_dump streaming parser
 │   └── scrape/        # sale history parsing helpers
 ├── scripts/           # collectors, ingest, queues, audits, merges
