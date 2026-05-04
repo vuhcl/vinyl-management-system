@@ -17,6 +17,8 @@ from typing import Any
 
 from bs4 import BeautifulSoup
 
+from price_estimator.src.scrape.sale_history_currency import parse_loose_money_amount
+
 _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 # Headers normalized via ``_norm_header`` — lookup order prefers explicit wording
@@ -102,17 +104,6 @@ class ParsedSaleHistory:
     parse_warnings: list[str] = field(default_factory=list)
 
 
-def _strip_money(s: str) -> float | None:
-    t = (s or "").strip()
-    if not t:
-        return None
-    t = re.sub(r"[^\d.,-]", "", t.replace(",", ""))
-    if not t:
-        return None
-    try:
-        return float(t)
-    except ValueError:
-        return None
 
 
 def _parse_summary_from_text(text: str) -> SaleHistorySummary:
@@ -128,19 +119,19 @@ def _parse_summary_from_text(text: str) -> SaleHistorySummary:
         elif low.startswith("average"):
             m = re.search(r"average:?\s*(.+)$", ln, re.I)
             if m:
-                out.average = _strip_money(m.group(1))
+                out.average = parse_loose_money_amount(m.group(1))
         elif low.startswith("median"):
             m = re.search(r"median:?\s*(.+)$", ln, re.I)
             if m:
-                out.median = _strip_money(m.group(1))
+                out.median = parse_loose_money_amount(m.group(1))
         elif low.startswith("high"):
             m = re.search(r"high:?\s*(.+)$", ln, re.I)
             if m:
-                out.high = _strip_money(m.group(1))
+                out.high = parse_loose_money_amount(m.group(1))
         elif low.startswith("low"):
             m = re.search(r"low:?\s*(.+)$", ln, re.I)
             if m:
-                out.low = _strip_money(m.group(1))
+                out.low = parse_loose_money_amount(m.group(1))
     return out
 
 

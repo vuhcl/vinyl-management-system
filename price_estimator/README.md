@@ -20,7 +20,7 @@ price_estimator/
 │   ├── features/      # vinyliq_features + VinylIQFeatureSchema (column contract)
 │   ├── models/        # fitted_regressor, model_manifest, residual_dollar_reconstruction, regressor_*, grade_delta_*, pyfunc
 │   ├── ingest/        # discogs_dump streaming parser
-│   └── scrape/        # sale history parsing helpers
+│   └── scrape/        # sale_history_currency.parse_loose_money_amount + HTML parsers
 ├── scripts/           # collectors, ingest, queues, audits, merges
 ├── data/              # raw, processed, cache (largely gitignored)
 ├── artifacts/         # default model_dir (see vinyliq.paths)
