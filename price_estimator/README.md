@@ -15,7 +15,7 @@ price_estimator/
 ├── src/
 │   ├── api/           # FastAPI app
 │   ├── training/      # train_vinyliq.py (single train + tune entrypoint)
-│   ├── inference/     # service.py, mlflow_bundle.py — stats + features + model
+│   ├── inference/     # service.py, service_factory.py, mlflow_bundle.py — stats + features + model
 │   ├── storage/       # marketplace_stats, feature_store, sale_history SQLite
 │   ├── features/      # vinyliq_features
 │   ├── models/        # boosters, grade-delta overlays
@@ -28,6 +28,8 @@ price_estimator/
 ```
 
 **Config:** default **`price_estimator/configs/base.yaml`**. Override with **`VINYLIQ_CONFIG`**. Collectors and training load the repo-root **`.env`** automatically where noted.
+
+**Local `pipeline.estimate`:** uses the same YAML merge (`inherits`) and service factory as the API (`load_service_from_config` → `build_inference_service_from_merged_config`), so MLflow model paths, optional Postgres, and `DISCOGS_*` token resolution match `uvicorn` startup.
 
 ---
 
