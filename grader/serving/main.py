@@ -45,8 +45,9 @@ app = FastAPI(
     description=(
         "Condition grading: MLflow DistilBERT pyfunc, then the same "
         "Preprocessor + RuleEngine as grader.src.pipeline inference. "
-        "Sleeve/media confidences are the model's top-1 scores (unchanged when "
-        "rules adjust a grade)."
+        "Sleeve/media confidences are top-1 softmax probabilities "
+        "(optional GRADER_SOFTMAX_TEMPERATURE / GRADER_*_SOFTMAX_TEMPERATURE "
+        "env vars flatten overconfident peaks); unchanged when rules adjust a grade."
     ),
     lifespan=lifespan,
 )
