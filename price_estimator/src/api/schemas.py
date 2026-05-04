@@ -91,7 +91,7 @@ class CollectionValueRequest(BaseModel):
 
 class CollectionValueResponse(BaseModel):
     total_estimated_value: float
-    per_item_breakdown: list[dict[str, Any]]
+    per_item_breakdown: list[EstimateResponse]
 
 
 class InvalidateMarketplaceCacheResponse(BaseModel):

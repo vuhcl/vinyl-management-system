@@ -19,7 +19,7 @@ price_estimator/
 │   ├── storage/       # marketplace_stats, marketplace_projection, sqlite_util, feature_store, sale_history
 │   ├── features/      # vinyliq_features + VinylIQFeatureSchema (column contract)
 │   ├── models/        # fitted_regressor, model_manifest, residual_dollar_reconstruction, regressor_*, grade_delta_*, pyfunc
-│   ├── ingest/        # discogs_dump streaming parser
+│   ├── ingest/        # discogs_dump, release_parser, release_row (shared row dict)
 │   └── scrape/        # sale_history_currency.parse_loose_money_amount + HTML parsers
 ├── scripts/           # collectors, ingest, queues, audits, merges
 ├── data/              # raw, processed, cache (largely gitignored)
