@@ -5,6 +5,8 @@ import sqlite3
 from pathlib import Path
 from typing import Any, Iterable, Iterator
 
+from .sqlite_util import open_sqlite
+
 # Column order for INSERT/UPSERT (must match table). Plan §1b: no FS community
 # columns — use ``marketplace_stats.community_want`` / ``community_have`` at training time.
 RELEASES_FEATURES_COLUMNS: list[str] = [
@@ -60,9 +62,7 @@ class FeatureStoreDB:
         self._init_schema()
 
     def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(str(self.path))
-        conn.row_factory = sqlite3.Row
-        return conn
+        return open_sqlite(self.path)
 
     def _existing_columns(self, conn: sqlite3.Connection) -> set[str]:
         cur = conn.execute("PRAGMA table_info(releases_features)")

@@ -7,6 +7,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from .marketplace_projection import marketplace_stats_public_dict
+from .sqlite_util import open_sqlite
+
 
 def _parse_price_field(v: Any) -> float | None:
     if v is None:
@@ -531,11 +534,7 @@ class MarketplaceStatsDB:
         return {str(r[1]) for r in cur.fetchall()}
 
     def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(str(self.path), timeout=30.0)
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA busy_timeout=30000")
-        return conn
+        return open_sqlite(self.path)
 
     def _init_schema(self) -> None:
         with self._connect() as conn:
@@ -682,26 +681,7 @@ class MarketplaceStatsDB:
             row = cur.fetchone()
         if not row:
             return None
-        out = {
-            "release_id": row["release_id"],
-            "fetched_at": row["fetched_at"],
-            "num_for_sale": row["num_for_sale"],
-            "raw_json": row["raw_json"],
-        }
-        keys = row.keys()
-        if "blocked_from_sale" in keys:
-            out["blocked_from_sale"] = row["blocked_from_sale"]
-        for k in (
-            "release_raw_json",
-            "price_suggestions_json",
-            "release_lowest_price",
-            "release_num_for_sale",
-            "community_want",
-            "community_have",
-        ):
-            if k in keys:
-                out[k] = row[k]
-        return out
+        return marketplace_stats_public_dict(row)
 
     def iter_release_ids(self) -> list[str]:
         with self._connect() as conn:
