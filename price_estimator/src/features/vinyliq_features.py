@@ -10,7 +10,7 @@ import json
 import math
 import re
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, ClassVar
 
 import numpy as np
 import pandas as pd
@@ -483,17 +483,26 @@ def row_dict_for_inference(
     return out
 
 
-def _cold_start_feature_column_names() -> list[str]:
-    """Plan §4d / §7.1b: training-time missingness for sale history and listing floor."""
-    return [
+@dataclass(frozen=True)
+class VinylIQFeatureSchema:
+    """
+    Single source of truth for model-matrix column order.
+
+    ``default`` adds listing-dollar log features between marketplace depth and catalog tail;
+    ``residual_log_median`` training omits those so trees do not see listing medians as X.
+    """
+
+    CONDITION_HEAD: ClassVar[tuple[str, ...]] = (
+        "media_grade",
+        "sleeve_grade",
+        "condition_discount",
+    )
+    COLD_START: ClassVar[tuple[str, ...]] = (
         "has_sale_history",
         "s_imputed",
         "has_listing_floor",
-    ]
-
-
-def _marketplace_depth_column_names() -> list[str]:
-    return [
+    )
+    MARKETPLACE_DEPTH_BODY: ClassVar[tuple[str, ...]] = (
         "log1p_community_want",
         "log1p_community_have",
         "want_share",
@@ -506,77 +515,70 @@ def _marketplace_depth_column_names() -> list[str]:
         "has_nfs_delta",
         "blocked_from_sale",
         "has_blocked_from_sale",
-        *_cold_start_feature_column_names(),
-    ]
+    )
+    LISTING_DOLLAR: ClassVar[tuple[str, ...]] = ("log1p_baseline_median",)
+    CATALOG_TAIL: ClassVar[tuple[str, ...]] = (
+        "decade",
+        "year",
+        "is_original_pressing",
+        "label_tier",
+        "is_colored_vinyl",
+        "is_picture_disc",
+        "is_promo",
+        "country_index",
+        "primary_artist_index",
+        "primary_label_index",
+        "genre_count",
+        "style_count",
+        "artist_count",
+        "label_count",
+        "format_count",
+        "is_lp",
+        "is_7inch",
+        "is_10inch",
+        "is_12inch",
+        "is_cd",
+        "is_box_set",
+        "is_multi_disc",
+        "format_family",
+        "genre_index",
+    )
+
+    @classmethod
+    def marketplace_depth_columns(cls) -> tuple[str, ...]:
+        return cls.MARKETPLACE_DEPTH_BODY + cls.COLD_START
+
+    @classmethod
+    def residual_training_columns(cls) -> list[str]:
+        return list(cls.CONDITION_HEAD + cls.marketplace_depth_columns() + cls.CATALOG_TAIL)
+
+    @classmethod
+    def default_training_columns(cls) -> list[str]:
+        return list(
+            cls.CONDITION_HEAD
+            + cls.marketplace_depth_columns()
+            + cls.LISTING_DOLLAR
+            + cls.CATALOG_TAIL
+        )
+
+
+def _cold_start_feature_column_names() -> list[str]:
+    """Plan §4d / §7.1b: training-time missingness for sale history and listing floor."""
+    return list(VinylIQFeatureSchema.COLD_START)
+
+
+def _marketplace_depth_column_names() -> list[str]:
+    return list(VinylIQFeatureSchema.marketplace_depth_columns())
 
 
 def residual_training_feature_columns() -> list[str]:
     """Feature columns for ``residual_log_median`` target (no listing-dollar columns in X)."""
-    return [
-        "media_grade",
-        "sleeve_grade",
-        "condition_discount",
-        *_marketplace_depth_column_names(),
-        "decade",
-        "year",
-        "is_original_pressing",
-        "label_tier",
-        "is_colored_vinyl",
-        "is_picture_disc",
-        "is_promo",
-        "country_index",
-        "primary_artist_index",
-        "primary_label_index",
-        "genre_count",
-        "style_count",
-        "artist_count",
-        "label_count",
-        "format_count",
-        "is_lp",
-        "is_7inch",
-        "is_10inch",
-        "is_12inch",
-        "is_cd",
-        "is_box_set",
-        "is_multi_disc",
-        "format_family",
-        "genre_index",
-    ]
+    return VinylIQFeatureSchema.residual_training_columns()
 
 
 def default_feature_columns() -> list[str]:
     """Numeric columns fed to XGBoost (categorical columns pre-encoded to float)."""
-    return [
-        "media_grade",
-        "sleeve_grade",
-        "condition_discount",
-        *_marketplace_depth_column_names(),
-        "log1p_baseline_median",
-        "decade",
-        "year",
-        "is_original_pressing",
-        "label_tier",
-        "is_colored_vinyl",
-        "is_picture_disc",
-        "is_promo",
-        "country_index",
-        "primary_artist_index",
-        "primary_label_index",
-        "genre_count",
-        "style_count",
-        "artist_count",
-        "label_count",
-        "format_count",
-        "is_lp",
-        "is_7inch",
-        "is_10inch",
-        "is_12inch",
-        "is_cd",
-        "is_box_set",
-        "is_multi_disc",
-        "format_family",
-        "genre_index",
-    ]
+    return VinylIQFeatureSchema.default_training_columns()
 
 
 def apply_condition_log_adjustment(

@@ -34,11 +34,11 @@ from price_estimator.src.models.fitted_regressor import (
     log1p_dollar_targets_for_metrics,
     pred_log1p_dollar_for_metrics,
 )
+from price_estimator.src.training.label_synthesis import training_label_config_from_vinyliq
 from price_estimator.src.training.train_vinyliq import (
     load_training_frame,
     residual_z_clip_abs_from_vinyliq,
     train_test_split_by_release,
-    training_label_config_from_vinyliq,
     training_target_kind_from_vinyliq,
 )
 

@@ -15,17 +15,16 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-import yaml
-
 
 def _root() -> Path:
     return Path(__file__).resolve().parents[1]
 
 
 def load_config(config_path: Path | None = None) -> dict:
-    p = config_path or _root() / "configs" / "base.yaml"
-    with open(p) as f:
-        return yaml.safe_load(f) or {}
+    """Load VinylIQ YAML with ``inherits`` merge (same as API / :func:`load_yaml_config`)."""
+    from .inference.service import load_yaml_config
+
+    return load_yaml_config(config_path)
 
 
 def run_pipeline(
@@ -61,33 +60,15 @@ def estimate(
 ) -> dict:
     """
     Local estimate using InferenceService (same logic as POST /estimate).
+
+    Uses :func:`~price_estimator.src.inference.service.load_service_from_config`
+    (inherits merge, MLflow model dir, Postgres when configured, Discogs token env).
+
     Ignores artifacts_dir (VinylIQ uses vinyliq.model_dir from config).
     """
-    from .inference.service import InferenceService
+    from .inference.service import load_service_from_config
 
-    cfg = load_config()
-    v = cfg.get("vinyliq") or {}
-    paths = v.get("paths") or {}
-    root = _root()
-    mp = Path(paths.get("marketplace_db", root / "data" / "cache" / "marketplace_stats.sqlite"))
-    fs = Path(paths.get("feature_store_db", root / "data" / "feature_store.sqlite"))
-    md = Path(paths.get("model_dir", root / "artifacts" / "vinyliq"))
-    if not mp.is_absolute():
-        mp = root / mp
-    if not fs.is_absolute():
-        fs = root / fs
-    if not md.is_absolute():
-        md = root / md
-    inf = v.get("inference") if isinstance(v.get("inference"), dict) else {}
-    use_ps_anchor = bool(
-        inf.get("use_price_suggestion_condition_anchor", True)
-    )
-    svc = InferenceService(
-        marketplace_db=mp,
-        feature_store_db=fs,
-        model_dir=md,
-        use_price_suggestion_condition_anchor=use_ps_anchor,
-    )
+    svc = load_service_from_config(None)
     out = svc.estimate(str(release_id), media_condition, sleeve_condition)
     return {
         "release_id": out.get("release_id", release_id),

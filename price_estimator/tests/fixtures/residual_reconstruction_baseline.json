@@ -1,0 +1,389 @@
+{
+  "pred_log1p_dollar_for_metrics": [
+    {
+      "kind": "dollar_log1p",
+      "med": 0.0,
+      "out": "-2.0",
+      "pred": -2.0
+    },
+    {
+      "kind": "dollar_log1p",
+      "med": 1.0,
+      "out": "-2.0",
+      "pred": -2.0
+    },
+    {
+      "kind": "dollar_log1p",
+      "med": 5.0,
+      "out": "-2.0",
+      "pred": -2.0
+    },
+    {
+      "kind": "dollar_log1p",
+      "med": 25.0,
+      "out": "-2.0",
+      "pred": -2.0
+    },
+    {
+      "kind": "dollar_log1p",
+      "med": 100.0,
+      "out": "-2.0",
+      "pred": -2.0
+    },
+    {
+      "kind": "dollar_log1p",
+      "med": 1000.0,
+      "out": "-2.0",
+      "pred": -2.0
+    },
+    {
+      "kind": "dollar_log1p",
+      "med": 0.0,
+      "out": "-0.5",
+      "pred": -0.5
+    },
+    {
+      "kind": "dollar_log1p",
+      "med": 1.0,
+      "out": "-0.5",
+      "pred": -0.5
+    },
+    {
+      "kind": "dollar_log1p",
+      "med": 5.0,
+      "out": "-0.5",
+      "pred": -0.5
+    },
+    {
+      "kind": "dollar_log1p",
+      "med": 25.0,
+      "out": "-0.5",
+      "pred": -0.5
+    },
+    {
+      "kind": "dollar_log1p",
+      "med": 100.0,
+      "out": "-0.5",
+      "pred": -0.5
+    },
+    {
+      "kind": "dollar_log1p",
+      "med": 1000.0,
+      "out": "-0.5",
+      "pred": -0.5
+    },
+    {
+      "kind": "dollar_log1p",
+      "med": 0.0,
+      "out": "0.0",
+      "pred": 0.0
+    },
+    {
+      "kind": "dollar_log1p",
+      "med": 1.0,
+      "out": "0.0",
+      "pred": 0.0
+    },
+    {
+      "kind": "dollar_log1p",
+      "med": 5.0,
+      "out": "0.0",
+      "pred": 0.0
+    },
+    {
+      "kind": "dollar_log1p",
+      "med": 25.0,
+      "out": "0.0",
+      "pred": 0.0
+    },
+    {
+      "kind": "dollar_log1p",
+      "med": 100.0,
+      "out": "0.0",
+      "pred": 0.0
+    },
+    {
+      "kind": "dollar_log1p",
+      "med": 1000.0,
+      "out": "0.0",
+      "pred": 0.0
+    },
+    {
+      "kind": "dollar_log1p",
+      "med": 0.0,
+      "out": "0.5",
+      "pred": 0.5
+    },
+    {
+      "kind": "dollar_log1p",
+      "med": 1.0,
+      "out": "0.5",
+      "pred": 0.5
+    },
+    {
+      "kind": "dollar_log1p",
+      "med": 5.0,
+      "out": "0.5",
+      "pred": 0.5
+    },
+    {
+      "kind": "dollar_log1p",
+      "med": 25.0,
+      "out": "0.5",
+      "pred": 0.5
+    },
+    {
+      "kind": "dollar_log1p",
+      "med": 100.0,
+      "out": "0.5",
+      "pred": 0.5
+    },
+    {
+      "kind": "dollar_log1p",
+      "med": 1000.0,
+      "out": "0.5",
+      "pred": 0.5
+    },
+    {
+      "kind": "dollar_log1p",
+      "med": 0.0,
+      "out": "2.0",
+      "pred": 2.0
+    },
+    {
+      "kind": "dollar_log1p",
+      "med": 1.0,
+      "out": "2.0",
+      "pred": 2.0
+    },
+    {
+      "kind": "dollar_log1p",
+      "med": 5.0,
+      "out": "2.0",
+      "pred": 2.0
+    },
+    {
+      "kind": "dollar_log1p",
+      "med": 25.0,
+      "out": "2.0",
+      "pred": 2.0
+    },
+    {
+      "kind": "dollar_log1p",
+      "med": 100.0,
+      "out": "2.0",
+      "pred": 2.0
+    },
+    {
+      "kind": "dollar_log1p",
+      "med": 1000.0,
+      "out": "2.0",
+      "pred": 2.0
+    },
+    {
+      "kind": "residual_log_median",
+      "med": 0.0,
+      "out": "-2.0",
+      "pred": -2.0
+    },
+    {
+      "kind": "residual_log_median",
+      "med": 1.0,
+      "out": "-1.3068528194400546",
+      "pred": -2.0
+    },
+    {
+      "kind": "residual_log_median",
+      "med": 5.0,
+      "out": "-0.20824053077194504",
+      "pred": -2.0
+    },
+    {
+      "kind": "residual_log_median",
+      "med": 25.0,
+      "out": "1.2580965380214821",
+      "pred": -2.0
+    },
+    {
+      "kind": "residual_log_median",
+      "med": 100.0,
+      "out": "2.6151205168412597",
+      "pred": -2.0
+    },
+    {
+      "kind": "residual_log_median",
+      "med": 1000.0,
+      "out": "4.90875477931522",
+      "pred": -2.0
+    },
+    {
+      "kind": "residual_log_median",
+      "med": 0.0,
+      "out": "-0.5",
+      "pred": -0.5
+    },
+    {
+      "kind": "residual_log_median",
+      "med": 1.0,
+      "out": "0.1931471805599453",
+      "pred": -0.5
+    },
+    {
+      "kind": "residual_log_median",
+      "med": 5.0,
+      "out": "1.291759469228055",
+      "pred": -0.5
+    },
+    {
+      "kind": "residual_log_median",
+      "med": 25.0,
+      "out": "2.758096538021482",
+      "pred": -0.5
+    },
+    {
+      "kind": "residual_log_median",
+      "med": 100.0,
+      "out": "4.11512051684126",
+      "pred": -0.5
+    },
+    {
+      "kind": "residual_log_median",
+      "med": 1000.0,
+      "out": "6.40875477931522",
+      "pred": -0.5
+    },
+    {
+      "kind": "residual_log_median",
+      "med": 0.0,
+      "out": "0.0",
+      "pred": 0.0
+    },
+    {
+      "kind": "residual_log_median",
+      "med": 1.0,
+      "out": "0.6931471805599453",
+      "pred": 0.0
+    },
+    {
+      "kind": "residual_log_median",
+      "med": 5.0,
+      "out": "1.791759469228055",
+      "pred": 0.0
+    },
+    {
+      "kind": "residual_log_median",
+      "med": 25.0,
+      "out": "3.258096538021482",
+      "pred": 0.0
+    },
+    {
+      "kind": "residual_log_median",
+      "med": 100.0,
+      "out": "4.61512051684126",
+      "pred": 0.0
+    },
+    {
+      "kind": "residual_log_median",
+      "med": 1000.0,
+      "out": "6.90875477931522",
+      "pred": 0.0
+    },
+    {
+      "kind": "residual_log_median",
+      "med": 0.0,
+      "out": "0.5",
+      "pred": 0.5
+    },
+    {
+      "kind": "residual_log_median",
+      "med": 1.0,
+      "out": "1.1931471805599454",
+      "pred": 0.5
+    },
+    {
+      "kind": "residual_log_median",
+      "med": 5.0,
+      "out": "2.291759469228055",
+      "pred": 0.5
+    },
+    {
+      "kind": "residual_log_median",
+      "med": 25.0,
+      "out": "3.758096538021482",
+      "pred": 0.5
+    },
+    {
+      "kind": "residual_log_median",
+      "med": 100.0,
+      "out": "5.11512051684126",
+      "pred": 0.5
+    },
+    {
+      "kind": "residual_log_median",
+      "med": 1000.0,
+      "out": "7.40875477931522",
+      "pred": 0.5
+    },
+    {
+      "kind": "residual_log_median",
+      "med": 0.0,
+      "out": "2.0",
+      "pred": 2.0
+    },
+    {
+      "kind": "residual_log_median",
+      "med": 1.0,
+      "out": "2.6931471805599454",
+      "pred": 2.0
+    },
+    {
+      "kind": "residual_log_median",
+      "med": 5.0,
+      "out": "3.791759469228055",
+      "pred": 2.0
+    },
+    {
+      "kind": "residual_log_median",
+      "med": 25.0,
+      "out": "5.258096538021482",
+      "pred": 2.0
+    },
+    {
+      "kind": "residual_log_median",
+      "med": 100.0,
+      "out": "6.61512051684126",
+      "pred": 2.0
+    },
+    {
+      "kind": "residual_log_median",
+      "med": 1000.0,
+      "out": "8.90875477931522",
+      "pred": 2.0
+    }
+  ],
+  "pyfunc_ensemble_residual_t2.5_s0.5": [
+    "0.5",
+    "0.5",
+    "3.8059032364214858",
+    "25.738044022745797",
+    "109.98381915875945",
+    "1105.2105574216328"
+  ],
+  "pyfunc_ensemble_residual_t4_s1": [
+    "0.5",
+    "0.5027276921935452",
+    "3.624483267012131",
+    "20.914132706682395",
+    "96.00511476323102",
+    "1082.623491277067"
+  ],
+  "pyfunc_single_residual_6row": [
+    "0.5",
+    "0.8096748360719191",
+    "4.429024508215757",
+    "22.52577286893495",
+    "90.38857922163197",
+    "904.7422554539957"
+  ],
+  "version": 1
+}

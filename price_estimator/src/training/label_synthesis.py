@@ -4,15 +4,8 @@ from __future__ import annotations
 import json
 from typing import Any
 
-
-def _positive(v: Any) -> float | None:
-    if v is None:
-        return None
-    try:
-        x = float(v)
-    except (TypeError, ValueError):
-        return None
-    return x if x > 0 else None
+from .numeric_coercion import strictly_positive_float as _positive
+from .sale_floor_enums import TrainingLabelMode
 
 
 def parse_price_suggestion_value(
@@ -80,7 +73,7 @@ def dollar_target_and_residual_anchor_from_marketplace_row(
         yy = float(y)
         return yy, yy
 
-    if mode in ("sale_floor_blend", "sale_floor"):
+    if mode in (TrainingLabelMode.SALE_FLOOR_BLEND, TrainingLabelMode.SALE_FLOOR):
         raise ValueError(
             "training_label.mode sale_floor_blend is built in load_training_frame "
             "with sale_history.sqlite; do not call "
@@ -101,7 +94,7 @@ def training_label_config_from_vinyliq(
     raw = (v or {}).get("training_label") or {}
     if not isinstance(raw, dict):
         raw = {}
-    mode = str(raw.get("mode", "sale_floor_blend")).strip().lower()
+    mode = str(raw.get("mode", TrainingLabelMode.SALE_FLOOR_BLEND)).strip().lower()
     psg = raw.get("price_suggestion_grade", "Near Mint (NM or M-)")
     ps_grade = str(psg).strip() if psg else "Near Mint (NM or M-)"
     ps_fb = raw.get("price_suggestion_fallback_lowest", True)

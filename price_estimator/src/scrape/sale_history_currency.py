@@ -109,6 +109,21 @@ def _to_float_money(raw: str) -> float | None:
         return None
 
 
+def parse_loose_money_amount(s: str) -> float | None:
+    """
+    Parse a money string from sale-history **summary** / table cells (looser than
+    ``parse_usd_listing_amount``): strip non-numeric junk, then apply ``_to_float_money``
+    rules (US ``1,234.56`` vs ``12,34`` European decimal comma).
+    """
+    t = (s or "").strip()
+    if not t:
+        return None
+    t = re.sub(r"[^\d.,-]", "", t)
+    if not t:
+        return None
+    return _to_float_money(t)
+
+
 def usd_per_eur_from_pairs(
     ratios: Iterable[float],
     *,

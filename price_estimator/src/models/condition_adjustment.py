@@ -5,6 +5,8 @@ import json
 from pathlib import Path
 from typing import Any
 
+from .grade_delta_artifact_keys import GRADE_DELTA_FIT_TOP_LEVEL_NUMERIC_KEYS
+
 
 def default_params() -> dict[str, Any]:
     return {
@@ -73,15 +75,7 @@ def _grade_delta_overlay_from_fit_file(blob: dict[str, Any]) -> dict[str, Any]:
     inner = blob.get("grade_delta_scale")
     if isinstance(inner, dict):
         return dict(inner)
-    keys = (
-        "price_ref_usd",
-        "price_gamma",
-        "price_scale_min",
-        "price_scale_max",
-        "age_k",
-        "age_center_year",
-    )
-    return {k: blob[k] for k in keys if k in blob}
+    return {k: blob[k] for k in GRADE_DELTA_FIT_TOP_LEVEL_NUMERIC_KEYS if k in blob}
 
 
 def load_params_with_grade_delta_overlays(model_dir: Path | str) -> dict[str, Any]:

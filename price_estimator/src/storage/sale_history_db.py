@@ -8,6 +8,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+from .sqlite_util import open_sqlite
 from price_estimator.src.scrape.discogs_sale_history_parse import (
     ParsedSaleHistory,
     utc_now_iso,
@@ -21,11 +22,7 @@ class SaleHistoryDB:
         self._init_schema()
 
     def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(str(self.path), timeout=30.0)
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA busy_timeout=30000")
-        return conn
+        return open_sqlite(self.path)
 
     def _init_schema(self) -> None:
         with self._connect() as conn:

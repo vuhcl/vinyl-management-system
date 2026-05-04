@@ -14,13 +14,13 @@ price_estimator/
 │   └── base.yaml      # vinyliq.* paths, training_label, training_target, tuning, ensemble
 ├── src/
 │   ├── api/           # FastAPI app
-│   ├── training/      # train_vinyliq.py (single train + tune entrypoint)
-│   ├── inference/     # service.py, mlflow_bundle.py — stats + features + model
-│   ├── storage/       # marketplace_stats, feature_store, sale_history SQLite
-│   ├── features/      # vinyliq_features
-│   ├── models/        # boosters, grade-delta overlays
-│   ├── ingest/        # discogs_dump streaming parser
-│   └── scrape/        # sale history parsing helpers
+│   ├── training/      # train_vinyliq; sale_floor_enums, numeric_coercion, sale_floor_*
+│   ├── inference/     # service.py, service_factory.py, mlflow_bundle.py — stats + features + model
+│   ├── storage/       # marketplace_projection, sqlite_util, feature_store (incl. _marketplace_join_where_order), sale_history
+│   ├── features/      # vinyliq_features + VinylIQFeatureSchema (column contract)
+│   ├── models/        # fitted_regressor, model_manifest, residual_dollar_reconstruction, regressor_*, grade_delta_*, pyfunc
+│   ├── ingest/        # discogs_dump, release_parser, release_row (shared row dict)
+│   └── scrape/        # sale_history_currency.parse_loose_money_amount + HTML parsers
 ├── scripts/           # collectors, ingest, queues, audits, merges
 ├── data/              # raw, processed, cache (largely gitignored)
 ├── artifacts/         # default model_dir (see vinyliq.paths)
@@ -28,6 +28,8 @@ price_estimator/
 ```
 
 **Config:** default **`price_estimator/configs/base.yaml`**. Override with **`VINYLIQ_CONFIG`**. Collectors and training load the repo-root **`.env`** automatically where noted.
+
+**Local `pipeline.estimate`:** uses the same YAML merge (`inherits`) and service factory as the API (`load_service_from_config` → `build_inference_service_from_merged_config`), so MLflow model paths, optional Postgres, and `DISCOGS_*` token resolution match `uvicorn` startup.
 
 ---
 
