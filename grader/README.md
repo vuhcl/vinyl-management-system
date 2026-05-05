@@ -231,6 +231,10 @@ uv run python -m grader.src.models.transformer
 
 ## Rule-engine iteration loop (Track B)
 
+**`guidelines_version`** (top of `grading_guidelines.yaml`, format `YYYY.MM.DD` or `YYYY.MM.DD.n`) must be bumped whenever rule semantics or YAML schema shape changes. The **committed** `grader/reports/rule_engine_baseline.json` must list the same `guidelines_version` and `canonical_grades_sha256` (regenerate via pipeline eval or update in the same PR). `pytest` enforces pairing when the baseline file is present. Training logs an MLflow tag `guidelines_version` and a `training_rubric_manifest` artifact; the FastAPI grader compares the tag to runtime YAML (see `grader/serving/README.md` and `GRADER_STRICT_GUIDELINES_PAIRING`).
+
+**Change tier (for PRs):** state **A** (signal/threshold only), **B** (logic/ownership, no new labels), or **C** (grade schema / maps) in the description and use the **Tier C** issue template for schema changes that need stakeholder sign-off (`.github/ISSUE_TEMPLATE/grader_tier_c_rubric.md`).
+
 `grading_guidelines.yaml` evolves in short, measurable iterations. In `grader/configs/grader.yaml`, **`rules.allow_excellent_soft_override`** defaults to **`false`**, so the post-model rule stack does not assign the **Excellent** grade via soft override unless you opt in (useful when training/eval have no gold Excellent). With that default, the rule engine **remaps any final Excellent sleeve or media grade to Near Mint** (confidence mass folded into Near Mint), including when the model predicted Excellent and on the contradiction early-return path, so shipped labels stay off Excellent. Each loop has two committed outputs: the **baseline snapshot** (`grader/reports/rule_engine_baseline.json`, which includes per-target `delta_macro_f1` and `delta_accuracy` alongside override stats, also mirrored to MLflow tags under `rule_baseline_*`) and the **override audit / rule-owned slice sections** appended to `grader/reports/grade_analysis_{split}.txt` by `_run_rule_engine_evaluation`.
 
 **One iteration:**

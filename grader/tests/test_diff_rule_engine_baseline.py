@@ -55,6 +55,24 @@ def test_diff_baselines_detects_delta() -> None:
     assert "rule_engine_baseline.json diff" in self_diff
 
 
+def test_diff_baselines_includes_guidelines_identity_headers() -> None:
+    before = _minimal_snapshot(
+        delta_f1=-0.02, recall_poor=0.3, poor_precision=0.25
+    )
+    before["guidelines_version"] = "2026.05.01"
+    before["canonical_grades_sha256"] = "aaa"
+    after = _minimal_snapshot(
+        delta_f1=-0.01, recall_poor=0.35, poor_precision=0.30
+    )
+    after["guidelines_version"] = "2026.05.02"
+    after["canonical_grades_sha256"] = "bbb"
+    text = diff_baselines(before, after, rule_owned=("Poor",))
+    assert "before guidelines_version:" in text
+    assert "after  guidelines_version:" in text
+    assert "2026.05.01" in text and "2026.05.02" in text
+    assert "canonical_grades_sha256" in text
+
+
 def test_diff_baselines_legacy_targets_inverted_shape() -> None:
     """Older JSON used targets[target][split] — still supported."""
     inv = {

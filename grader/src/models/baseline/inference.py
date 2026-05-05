@@ -6,6 +6,8 @@ import logging
 from typing import Optional
 
 import numpy as np
+
+from grader.src.schemas import GraderPrediction
 from sklearn.linear_model import LogisticRegression
 
 from .constants import TARGETS
@@ -159,12 +161,12 @@ class BaselineInferenceMixin:
         X_media,
         item_ids: Optional[list[str]] = None,
         records: Optional[list[dict]] = None,
-    ) -> list[dict]:
+    ) -> list[GraderPrediction]:
         """
         Run inference on feature matrices and return structured
         predictions conforming to the agreed output schema.
 
-        Rule engine is NOT applied here — that is pipeline.py's job.
+        Rule engine is NOT applied here — that is the inference pipeline's job.
         rule_override_applied is always False at this stage.
 
         Args:

@@ -1,0 +1,8 @@
+{
+  "captured_at": "2026-05-04T00:00:00+00:00",
+  "canonical_grades_sha256": "dcb833d8016e0ef97754a2246d61436147f06d9758678beb76b22b12827716a9",
+  "commit": null,
+  "guidelines_path_basename": "grading_guidelines.yaml",
+  "guidelines_version": "2026.05.04",
+  "splits": {}
+}

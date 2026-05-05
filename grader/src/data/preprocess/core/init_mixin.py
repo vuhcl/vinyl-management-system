@@ -3,13 +3,17 @@
 from __future__ import annotations
 
 import copy
+import logging
 import re
 from pathlib import Path
 from typing import Any, Optional
 
 from grader.src.config_io import load_yaml_mapping
+from grader.src.guidelines_identity import guidelines_version_from_mapping
 
 from ..listing_promo import load_promo_noise_patterns
+
+logger = logging.getLogger(__name__)
 
 
 class PreprocessorInitMixin:
@@ -24,6 +28,12 @@ class PreprocessorInitMixin:
         else:
             self.config = load_yaml_mapping(config_path)
         self.guidelines = load_yaml_mapping(guidelines_path)
+        _gv = guidelines_version_from_mapping(self.guidelines)
+        logger.info(
+            "Preprocessor guidelines loaded — %s | guidelines_version=%s",
+            Path(guidelines_path).name,
+            _gv,
+        )
 
         pp_cfg = self.config["preprocessing"]
         self.do_lowercase: bool = pp_cfg.get("lowercase", True)

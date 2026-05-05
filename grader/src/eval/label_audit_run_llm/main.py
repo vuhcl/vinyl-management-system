@@ -2,17 +2,26 @@
 
 from __future__ import annotations
 
+import sys
+
 from . import lib as _lib
 
-# ``import *`` omits private names; main() needs the same surface as the old module.
-_g = globals()
-for _k in dir(_lib):
-    if _k.startswith("__"):
-        continue
-    _g[_k] = getattr(_lib, _k)
-del _g, _k
+
+def _sync_globals_from_lib() -> None:
+    """Copy names from lib into this module so ``main()`` sees monkeypatched lib.
+
+    Call at the start of ``main()`` so tests (or callers) that patch
+    ``label_audit_run_llm.lib`` before ``main()`` runs get updated bindings.
+    """
+    g: dict[str, object] = sys.modules[__name__].__dict__
+    for k in dir(_lib):
+        if k.startswith("__"):
+            continue
+        g[k] = getattr(_lib, k)
+
 
 def main() -> int:
+    _sync_globals_from_lib()
     p = argparse.ArgumentParser(description="Run Gemini LLM over label-audit queue.")
     p.add_argument("--config", default="grader/configs/grader.yaml")
     p.add_argument(
@@ -522,6 +531,10 @@ def main() -> int:
                         ),
                         flush=True,
                     )
+                _gv = (
+                    str(media_guides.get("guidelines_version") or "").strip()
+                    or str(sleeve_guides.get("guidelines_version") or "").strip()
+                )
                 prompt_ver = _joint_prompt_version(
                     model_id=active_model_id,
                     media_allowed=media_guides["allowed"],
@@ -530,6 +543,7 @@ def main() -> int:
                     sleeve_desc=sleeve_guides["descriptions"],
                     media_rubric=str(media_guides.get("rubric_text", "") or ""),
                     sleeve_rubric=str(sleeve_guides.get("rubric_text", "") or ""),
+                    guidelines_version=_gv,
                 )
                 ck = _cache_key(provider, active_model_id, prompt_ver, msgs)
                 cache_row = conn.execute(

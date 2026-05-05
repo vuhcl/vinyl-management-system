@@ -21,6 +21,9 @@ test = [
     # (plain `uv sync` omits optional extras and will prune it).
     "cleanlab>=2.1.0",
 ]
+typecheck = [
+    "pyright>=1.1.350",
+]
 
 [tool.uv.workspace]
 members = ["shared", "core", "grader", "recommender", "web", "price_estimator"]

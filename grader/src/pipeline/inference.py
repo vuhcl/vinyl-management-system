@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 from typing import Optional
 
 from grader.src.features.tfidf_features import TFIDFFeatureBuilder
+from grader.src.schemas import GraderPrediction, merge_description_quality_metadata
 from grader.src.models.baseline import BaselineModel
 from grader.src.models.transformer import TransformerTrainer
 
@@ -27,7 +29,7 @@ class PipelineInferenceMixin:
         text: str,
         item_id: Optional[str] = None,
         metadata: Optional[dict] = None,
-    ) -> dict:
+    ) -> GraderPrediction:
         """
         Run inference on a single raw text input.
 
@@ -55,7 +57,7 @@ class PipelineInferenceMixin:
         texts: list[str],
         item_ids: Optional[list[str]] = None,
         metadata_list: Optional[list[dict]] = None,
-    ) -> list[dict]:
+    ) -> list[GraderPrediction]:
         """
         Run inference on a batch of raw text inputs.
 
@@ -120,7 +122,7 @@ class PipelineInferenceMixin:
             item_ids=item_ids,
             records=records,
         )
-        self._merge_description_metadata(predictions, records)
+        merge_description_quality_metadata(predictions, records)
 
         final_predictions = rule_engine.apply_batch(
             predictions=predictions,
@@ -129,32 +131,12 @@ class PipelineInferenceMixin:
 
         return final_predictions
 
-    @staticmethod
-    def _merge_description_metadata(
-        predictions: list[dict],
-        records: list[dict],
-    ) -> None:
-        """Copy note-adequacy fields from preprocess records into model metadata."""
-        keys = (
-            "sleeve_note_adequate",
-            "media_note_adequate",
-            "adequate_for_training",
-            "needs_richer_note",
-            "description_quality_gaps",
-            "description_quality_prompts",
-        )
-        for pred, rec in zip(predictions, records):
-            meta = pred.setdefault("metadata", {})
-            for k in keys:
-                if k in rec:
-                    meta[k] = rec[k]
-
     def _model_predict(
         self,
         clean_texts: list[str],
         item_ids: list[str],
         records: list[dict],
-    ) -> list[dict]:
+    ) -> list[GraderPrediction]:
         """
         Dispatch prediction to the configured model (baseline or transformer).
         Loads model artifacts lazily on first call.
@@ -168,7 +150,7 @@ class PipelineInferenceMixin:
         clean_texts: list[str],
         item_ids: list[str],
         records: list[dict],
-    ) -> list[dict]:
+    ) -> list[GraderPrediction]:
         """Load transformer artifacts and run prediction."""
         if self._transformer is None:
             logger.info("Loading transformer model from artifacts ...")
@@ -191,7 +173,7 @@ class PipelineInferenceMixin:
         clean_texts: list[str],
         item_ids: list[str],
         records: list[dict],
-    ) -> list[dict]:
+    ) -> list[GraderPrediction]:
         """
         Load baseline artifacts and run prediction.
         Vectorizes text using the fitted TF-IDF vectorizer.

@@ -10,6 +10,7 @@ import re
 from typing import Optional
 
 from grader.src.config_io import load_yaml_mapping
+from grader.src.guidelines_identity import guidelines_version_from_mapping
 
 from .application import RuleEngineApplicationMixin
 from .contradiction import RuleEngineContradictionMixin
@@ -130,8 +131,11 @@ class RuleEngine(
             ]
         ]
 
+        _gv = guidelines_version_from_mapping(self.guidelines)
         logger.info(
-            "RuleEngine initialized — %d grades | %d contradiction pairs",
+            "RuleEngine initialized — guidelines_version=%s | %d grades | "
+            "%d contradiction pairs",
+            _gv,
             len(self.grade_defs),
             len(self._contradiction_patterns),
         )

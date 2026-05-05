@@ -27,8 +27,8 @@ from grader.src.eval.cli_common import (
 from grader.src.evaluation.metrics import remap_true_and_encode_predictions
 from grader.src.features.tfidf_features import TFIDFFeatureBuilder
 from grader.src.models.transformer import TransformerTrainer
-from grader.src.pipeline import Pipeline
 from grader.src.rules.rule_engine import RuleEngine
+from grader.src.schemas import merge_description_quality_metadata
 
 
 def _load_jsonl(path: Path) -> list[dict[str, Any]]:
@@ -113,7 +113,7 @@ def main() -> None:
     trainer.load_model()
 
     raw = trainer.predict(texts=texts, item_ids=item_ids, records=records)
-    Pipeline._merge_description_metadata(raw, records)
+    merge_description_quality_metadata(raw, records)
     rules_cfg = cfg.get("rules") or {}
     allow_ex = bool(rules_cfg.get("allow_excellent_soft_override", False))
     engine = RuleEngine(

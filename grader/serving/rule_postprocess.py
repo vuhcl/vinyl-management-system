@@ -15,20 +15,12 @@ import pandas as pd
 from grader.src.config_io import load_yaml
 from grader.src.data.preprocess import Preprocessor
 from grader.src.rules.rule_engine import RuleEngine
+from grader.src.schemas import GraderPrediction, merge_description_quality_metadata
 
 logger = logging.getLogger(__name__)
 
 _SERVING_DIR = Path(__file__).resolve().parent
 _GRADER_ROOT = _SERVING_DIR.parent
-
-_DESCRIPTION_META_KEYS = (
-    "sleeve_note_adequate",
-    "media_note_adequate",
-    "adequate_for_training",
-    "needs_richer_note",
-    "description_quality_gaps",
-    "description_quality_prompts",
-)
 
 _preprocessor: Preprocessor | None = None
 _rule_engine: RuleEngine | None = None
@@ -101,17 +93,6 @@ def get_rule_engine() -> RuleEngine:
     return _rule_engine
 
 
-def _merge_description_metadata(
-    predictions: list[dict],
-    records: list[dict],
-) -> None:
-    for pred, rec in zip(predictions, records):
-        meta = pred.setdefault("metadata", {})
-        for k in _DESCRIPTION_META_KEYS:
-            if k in rec:
-                meta[k] = rec[k]
-
-
 def preprocess_batch(
     texts: list[str],
     item_ids: list[str],
@@ -150,14 +131,14 @@ def preprocess_batch(
 def _pyfunc_df_to_prediction_dicts(
     out_df: pd.DataFrame,
     records: list[dict],
-) -> list[dict]:
+) -> list[GraderPrediction]:
     """
     Build rule-engine prediction dicts from pyfunc output.
 
     Pyfunc only exposes top-1 confidence per target; RuleEngine uses the
     score for the predicted grade only (``scores.get(predicted_grade)``).
     """
-    predictions: list[dict] = []
+    predictions: list[GraderPrediction] = []
     for (_, row), rec in zip(out_df.iterrows(), records):
         ps = str(row["predicted_sleeve_condition"])
         pm = str(row["predicted_media_condition"])
@@ -189,7 +170,7 @@ def apply_rules_to_pyfunc_batch(
     raw_texts: list[str],
     item_ids: list[Any],
     metadata_list: list[dict[str, Any]],
-) -> list[dict]:
+) -> list[GraderPrediction]:
     """
     Run preprocessing + RuleEngine on pyfunc rows.
 
@@ -204,5 +185,5 @@ def apply_rules_to_pyfunc_batch(
     ids = [str(x) for x in item_ids]
     clean_texts, records = preprocess_batch(raw_texts, ids, metadata_list)
     predictions = _pyfunc_df_to_prediction_dicts(out_df, records)
-    _merge_description_metadata(predictions, records)
+    merge_description_quality_metadata(predictions, records)
     return get_rule_engine().apply_batch(predictions, clean_texts)

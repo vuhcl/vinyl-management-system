@@ -17,7 +17,12 @@
 # tests in grader/tests/test_rule_engine.py and
 # grader/tests/test_grade_analysis_slice.py — see grader/README.md
 # "Rule-engine iteration loop".
+#
+# guidelines_version — bump when rule semantics or YAML schema shape changes.
+# Convention: YYYY.MM.DD or YYYY.MM.DD.n for multiple bumps the same day.
 # ============================================================
+
+guidelines_version: "2026.05.04"
 
 # ------------------------------------------------------------
 # Canonical Grade Schema
