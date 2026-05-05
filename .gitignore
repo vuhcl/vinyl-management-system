@@ -51,6 +51,9 @@ artifacts/*
 *.npy
 */artifacts/*
 */reports/*
+# Track rule-engine baseline JSON (pairing gate); other report artifacts stay ignored
+!grader/reports/
+!grader/reports/rule_engine_baseline.json
 
 # Config secrets
 .env

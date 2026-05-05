@@ -340,7 +340,15 @@ def load_guideline_prompt_bits(
             # Keep prompt length bounded while still conveying broader rubric intent.
             rubric_lines.append(f"{grade_name} {key}: {', '.join(cleaned[:25])}")
     rubric_text = "\n".join(rubric_lines)
-    return {"allowed": allowed, "descriptions": descs, "rubric_text": rubric_text}
+    gv = cfg.get("guidelines_version")
+    return {
+        "allowed": allowed,
+        "descriptions": descs,
+        "rubric_text": rubric_text,
+        "guidelines_version": str(gv).strip()
+        if gv is not None and str(gv).strip()
+        else "",
+    }
 
 
 def prompt_version_hash(
@@ -349,13 +357,15 @@ def prompt_version_hash(
     model_id: str,
     guideline_descriptions: list[tuple[str, str]],
     allowed_labels: list[str],
+    guidelines_version: str = "",
 ) -> str:
     payload = json.dumps(
         {
-            "target": target,
-            "model_id": model_id,
             "allowed": allowed_labels,
             "descriptions": guideline_descriptions,
+            "guidelines_version": guidelines_version,
+            "model_id": model_id,
+            "target": target,
         },
         ensure_ascii=False,
         sort_keys=True,

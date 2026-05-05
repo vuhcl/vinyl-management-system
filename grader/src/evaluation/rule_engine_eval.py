@@ -7,11 +7,12 @@ import logging
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Mapping, Optional
 
 import mlflow
 import numpy as np
 
+from grader.src.guidelines_identity import guidelines_version_from_mapping
 from grader.src.evaluation.grade_analysis import (
     build_grade_analysis_report,
     build_rule_owned_slice_report,
@@ -50,23 +51,50 @@ def current_git_sha() -> Optional[str]:
         return None
 
 
-def write_rule_engine_baseline(path: Path, snapshot: dict) -> None:
+def write_rule_engine_baseline(
+    path: Path,
+    snapshot: dict,
+    *,
+    guidelines: Mapping[str, Any] | None = None,
+    guidelines_path: str | None = None,
+) -> None:
     """Persist the rule-engine baseline snapshot as canonical JSON."""
-    payload = {
+    from grader.src.guidelines_identity import (
+        canonical_grades_sha256_from_mapping,
+        guidelines_path_basename,
+    )
+
+    payload: dict[str, Any] = {
         "captured_at": datetime.now(timezone.utc).isoformat(),
         "commit": current_git_sha(),
         "splits": snapshot,
     }
+    if guidelines is not None:
+        payload["guidelines_version"] = guidelines_version_from_mapping(
+            guidelines
+        )
+        payload["canonical_grades_sha256"] = (
+            canonical_grades_sha256_from_mapping(guidelines)
+        )
+        bn = guidelines_path_basename(guidelines_path) if guidelines_path else None
+        if bn:
+            payload["guidelines_path_basename"] = bn
     path.write_text(
         json.dumps(payload, indent=2, sort_keys=True, default=str),
         encoding="utf-8",
     )
 
 
-def tag_rule_engine_baseline(snapshot: dict) -> None:
+def tag_rule_engine_baseline(
+    snapshot: dict,
+    *,
+    guidelines_version: str | None = None,
+) -> None:
     """Mirror key baseline numbers to MLflow tags (stringified)."""
     if not mlflow.active_run():
         return
+    if guidelines_version:
+        mlflow.set_tag("guidelines_version", guidelines_version)
     for split_name, targets in snapshot.items():
         for target, data in targets.items():
             base = f"rule_baseline_{split_name}_{target}"
@@ -402,12 +430,18 @@ def run_rule_engine_evaluation(
         reports_dir = Path(pipeline.config["paths"]["reports"])
         reports_dir.mkdir(parents=True, exist_ok=True)
         snap_path = reports_dir / "rule_engine_baseline.json"
+        _gv = guidelines_version_from_mapping(rule_engine.guidelines)
         write_rule_engine_baseline(
-            snap_path, baseline_snapshot
+            snap_path,
+            baseline_snapshot,
+            guidelines=rule_engine.guidelines,
+            guidelines_path=pipeline.config.get("guidelines_path"),
         )
         logger.info("Rule engine baseline snapshot — %s", snap_path)
         try:
-            tag_rule_engine_baseline(baseline_snapshot)
+            tag_rule_engine_baseline(
+                baseline_snapshot, guidelines_version=_gv
+            )
         except Exception as exc:  # mlflow-optional path
             logger.debug(
                 "Skipped MLflow baseline tags (no active run?): %s", exc

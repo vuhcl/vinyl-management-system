@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from typing import Optional
 
+from grader.src.guidelines_identity import guidelines_version_from_mapping
 from grader.src.schemas import GraderPrediction
 
 from .constants import MEDIA, SLEEVE
@@ -67,6 +68,9 @@ class RuleEngineApplicationMixin:
             "media": dict(prediction["confidence_scores"]["media"]),
         }
         result["metadata"] = dict(prediction["metadata"])
+        result["metadata"]["guidelines_version"] = guidelines_version_from_mapping(
+            self.guidelines
+        )
 
         text_lower = text.lower()
 

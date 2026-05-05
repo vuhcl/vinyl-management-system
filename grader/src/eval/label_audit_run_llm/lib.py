@@ -98,15 +98,17 @@ def _joint_prompt_version(
     sleeve_desc: list[tuple[str, str]],
     media_rubric: str,
     sleeve_rubric: str,
+    guidelines_version: str = "",
 ) -> str:
     payload = json.dumps(
         {
-            "model_id": model_id,
+            "guidelines_version": guidelines_version,
             "media_allowed": media_allowed,
-            "sleeve_allowed": sleeve_allowed,
             "media_desc": media_desc,
-            "sleeve_desc": sleeve_desc,
             "media_rubric": media_rubric,
+            "model_id": model_id,
+            "sleeve_allowed": sleeve_allowed,
+            "sleeve_desc": sleeve_desc,
             "sleeve_rubric": sleeve_rubric,
         },
         ensure_ascii=False,

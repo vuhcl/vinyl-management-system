@@ -326,6 +326,40 @@ def log_pyfunc_model(trainer: Any) -> str:
         ),
     }
 
+    gp = trainer.config.get("guidelines_path")
+    if gp:
+        _gpath = Path(gp)
+        if _gpath.is_file():
+            from grader.src.config_io import load_yaml_mapping
+            from grader.src.guidelines_identity import (
+                canonical_grades_sha256_from_mapping,
+                guidelines_version_from_mapping,
+            )
+
+            _gmap = load_yaml_mapping(_gpath)
+            _ver = guidelines_version_from_mapping(_gmap)
+            _sha = canonical_grades_sha256_from_mapping(_gmap)
+            _manifest = trainer.model_artifact_dir / "training_rubric_manifest.json"
+            _manifest.write_text(
+                json.dumps(
+                    {
+                        "canonical_grades_sha256": _sha,
+                        "guidelines_path": str(_gpath),
+                        "guidelines_version": _ver,
+                    },
+                    indent=2,
+                    sort_keys=True,
+                ),
+                encoding="utf-8",
+            )
+            artifacts["training_rubric_manifest"] = str(_manifest)
+            mlflow.set_tag("guidelines_version", _ver)
+        else:
+            logger.warning(
+                "guidelines_path %s is not a file — skipping rubric manifest",
+                gp,
+            )
+
     input_example = pd.DataFrame(
         {"text": ["Mint sleeve, still in shrink. Vinyl unplayed."]}
     )

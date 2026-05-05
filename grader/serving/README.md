@@ -14,6 +14,7 @@ Loads the registered **pyfunc** model (`vinyl_grader` artifact) with `mlflow.pyf
 | `MLFLOW_REGISTRY_URI` | optional | Only if registry is on a different host than tracking |
 | `GRADER_CONFIG_PATH` | optional | Default: `<grader>/configs/grader.yaml` inside the package |
 | `GRADER_GUIDELINES_PATH` | optional | Default: `<grader>/configs/grading_guidelines.yaml` |
+| `GRADER_STRICT_GUIDELINES_PAIRING` | optional | Set to `1` or `true` to **fail startup** if the MLflow run’s `guidelines_version` tag does not match the `guidelines_version` in the mounted `grading_guidelines.yaml`. Default: log a **warning** on mismatch. |
 
 For **production**, use MLflow with **`--default-artifact-root gs://…`**. The API and training clients talk to the tracking server over HTTP and **read/write run artifacts via GCS** using Application Default Credentials. Omit **`GOOGLE_APPLICATION_CREDENTIALS`** only for fully local stacks (e.g. file/SQLite artifact roots).
 

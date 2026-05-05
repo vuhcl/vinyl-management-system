@@ -531,6 +531,10 @@ def main() -> int:
                         ),
                         flush=True,
                     )
+                _gv = (
+                    str(media_guides.get("guidelines_version") or "").strip()
+                    or str(sleeve_guides.get("guidelines_version") or "").strip()
+                )
                 prompt_ver = _joint_prompt_version(
                     model_id=active_model_id,
                     media_allowed=media_guides["allowed"],
@@ -539,6 +543,7 @@ def main() -> int:
                     sleeve_desc=sleeve_guides["descriptions"],
                     media_rubric=str(media_guides.get("rubric_text", "") or ""),
                     sleeve_rubric=str(sleeve_guides.get("rubric_text", "") or ""),
+                    guidelines_version=_gv,
                 )
                 ck = _cache_key(provider, active_model_id, prompt_ver, msgs)
                 cache_row = conn.execute(
