@@ -16,9 +16,11 @@ from __future__ import annotations
 import contextlib
 import logging
 import os
+from pathlib import Path
 from typing import Any, Iterator, Mapping, MutableMapping
 from urllib.parse import urlparse
 
+from grader.src.config_io import load_yaml
 from grader.src.project_env import load_project_dotenv
 
 logger = logging.getLogger(__name__)
@@ -166,7 +168,6 @@ def vinyl_grader_pyfunc_has_python_model(run_id: str) -> bool:
     Call before ``register_model(..., "runs:/<id>/vinyl_grader")`` so a failed
     remote ``log_pyfunc_model`` does not register a broken version.
     """
-    import yaml
     from mlflow.tracking import MlflowClient
 
     paths = _walk_run_artifact_paths(run_id, "vinyl_grader")
@@ -181,8 +182,7 @@ def vinyl_grader_pyfunc_has_python_model(run_id: str) -> bool:
             continue
         try:
             local = client.download_artifacts(run_id, p)
-            with open(local, encoding="utf-8") as fh:
-                doc = yaml.safe_load(fh)
+            doc = load_yaml(Path(local))
         except Exception:
             continue
         pyfunc = (doc or {}).get("flavors", {}).get("python_function", {})

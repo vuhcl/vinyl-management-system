@@ -33,8 +33,8 @@ from typing import Any, Optional
 
 import mlflow
 import requests
-import yaml
 
+from grader.src.config_io import load_yaml_mapping
 from grader.src.mlflow_tracking import (
     configure_mlflow_from_config,
     mlflow_enabled,
@@ -45,10 +45,6 @@ from grader.src.project_env import load_project_dotenv
 # ---------------------------------------------------------------------------
 # Logging
 # ---------------------------------------------------------------------------
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-)
 logger = logging.getLogger(__name__)
 
 
@@ -129,8 +125,8 @@ class EbayIngester:
         if config is not None:
             self.config = copy.deepcopy(config)
         else:
-            self.config = self._load_yaml(config_path)
-        self.guidelines = self._load_yaml(guidelines_path)
+            self.config = load_yaml_mapping(config_path)
+        self.guidelines = load_yaml_mapping(guidelines_path)
 
         load_project_dotenv()
 
@@ -194,14 +190,6 @@ class EbayIngester:
 
         # Stats counters — reset on each run()
         self._stats: dict = {}
-
-    # -----------------------------------------------------------------------
-    # Config loading
-    # -----------------------------------------------------------------------
-    @staticmethod
-    def _load_yaml(path: str) -> dict:
-        with open(path, "r") as f:
-            return yaml.safe_load(f)
 
     # -----------------------------------------------------------------------
     # OAuth — client credentials flow with auto-refresh
@@ -755,6 +743,10 @@ class EbayIngester:
 def main() -> None:
     import argparse
 
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    )
     parser = argparse.ArgumentParser(description="eBay JP trusted seller ingestion")
     parser.add_argument(
         "--config",

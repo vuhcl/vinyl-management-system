@@ -3,27 +3,23 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-import yaml
-
+from grader.src.eval.cli_common import (
+    add_grader_config_arg,
+    load_grader_config_mapping,
+)
 from grader.src.eval.label_audit_backend import (
     build_queue_from_cleanlab_csvs,
     ensure_db,
 )
 
 
-def _load_yaml(path: Path) -> dict:
-    with path.open(encoding="utf-8") as f:
-        return yaml.safe_load(f)
-
-
 def main() -> int:
     p = argparse.ArgumentParser(
         description="Build label-audit SQLite queue from cleanlab CSV files."
     )
-    p.add_argument(
-        "--config",
-        default="grader/configs/grader.yaml",
-        help="Path to grader config YAML.",
+    add_grader_config_arg(
+        p,
+        help_text="Path to grader config YAML.",
     )
     p.add_argument(
         "--db",
@@ -44,7 +40,7 @@ def main() -> int:
     )
     args = p.parse_args()
 
-    cfg = _load_yaml(Path(args.config))
+    cfg = load_grader_config_mapping(args.config)
     splits_dir = Path(cfg["paths"]["splits"])
     db_path = Path(args.db)
     ensure_db(db_path)

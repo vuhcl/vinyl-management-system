@@ -18,8 +18,12 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
-import yaml
 
+from grader.src.eval.cli_common import (
+    add_grader_config_arg,
+    add_grading_guidelines_arg,
+    load_grader_config_mapping,
+)
 from grader.src.evaluation.metrics import remap_true_and_encode_predictions
 from grader.src.features.tfidf_features import TFIDFFeatureBuilder
 from grader.src.models.transformer import TransformerTrainer
@@ -60,11 +64,8 @@ def main() -> None:
     p = argparse.ArgumentParser(
         description="Export harmful rule overrides and transition histograms"
     )
-    p.add_argument("--config", default="grader/configs/grader.yaml")
-    p.add_argument(
-        "--guidelines",
-        default="grader/configs/grading_guidelines.yaml",
-    )
+    add_grader_config_arg(p)
+    add_grading_guidelines_arg(p)
     p.add_argument(
         "--split",
         default="test",
@@ -93,8 +94,7 @@ def main() -> None:
     )
     args = p.parse_args()
 
-    with open(args.config, "r", encoding="utf-8") as f:
-        cfg = yaml.safe_load(f)
+    cfg = load_grader_config_mapping(args.config)
 
     splits_dir = Path(cfg["paths"]["splits"])
     reports_dir = Path(cfg["paths"]["reports"])

@@ -9,7 +9,7 @@ across sources, reports class distribution, and flags rare classes.
 This module is a merge + validation step. Optional
 ``data.harmonization.exclude_thin_notes`` reuses preprocess description-adequacy
 rules so unified.jsonl can match the training-eligible pool.
-No feature engineering or splitting — those stay in preprocess.py and pipeline.py.
+No feature engineering or splitting — those stay in preprocess and pipeline.py.
 
 Usage:
     python -m grader.src.data.harmonize_labels
@@ -24,8 +24,8 @@ from pathlib import Path
 from typing import Any, Optional
 
 import mlflow
-import yaml
 
+from grader.src.config_io import load_yaml_mapping
 from grader.src.mlflow_tracking import (
     mlflow_log_artifacts_enabled,
     mlflow_pipeline_step_run_ctx,
@@ -34,10 +34,6 @@ from grader.src.mlflow_tracking import (
 # ---------------------------------------------------------------------------
 # Logging
 # ---------------------------------------------------------------------------
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-)
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -86,8 +82,8 @@ class LabelHarmonizer:
         if config is not None:
             self.config = copy.deepcopy(config)
         else:
-            self.config = self._load_yaml(config_path)
-        self.guidelines = self._load_yaml(guidelines_path)
+            self.config = load_yaml_mapping(config_path)
+        self.guidelines = load_yaml_mapping(guidelines_path)
 
         # Valid grade sets
         self.sleeve_grades: set[str] = set(self.guidelines["sleeve_grades"])
@@ -123,14 +119,6 @@ class LabelHarmonizer:
 
         # Stats — reset on each run()
         self._stats: dict = {}
-
-    # -----------------------------------------------------------------------
-    # Config loading
-    # -----------------------------------------------------------------------
-    @staticmethod
-    def _load_yaml(path: str) -> dict:
-        with open(path, "r") as f:
-            return yaml.safe_load(f)
 
     # -----------------------------------------------------------------------
     # Loading
@@ -667,6 +655,10 @@ class LabelHarmonizer:
 def main() -> None:
     import argparse
 
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    )
     parser = argparse.ArgumentParser(
         description="Harmonize Discogs, optional sale-history / marketplace JSONL, "
         "and eBay JP processed data into a single unified dataset"

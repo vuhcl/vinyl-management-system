@@ -40,7 +40,6 @@ import mlflow
 import numpy as np
 import torch
 import torch.nn as nn
-import yaml
 from torch.optim import AdamW
 from torch.utils.data import DataLoader, Dataset
 from transformers import (
@@ -49,6 +48,7 @@ from transformers import (
     get_linear_schedule_with_warmup,
 )
 
+from grader.src.config_io import load_yaml_mapping
 from grader.src.evaluation.metrics import compute_metrics, log_metrics_to_mlflow
 from grader.src.mlflow_tracking import (
     configure_mlflow_for_transformer_init,
@@ -60,10 +60,6 @@ from grader.src.mlflow_tracking import (
 # ---------------------------------------------------------------------------
 # Logging
 # ---------------------------------------------------------------------------
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-)
 logger = logging.getLogger(__name__)
 
 TARGETS = ["sleeve", "media"]
@@ -356,7 +352,7 @@ class TransformerTrainer:
         if config is not None:
             self.config = copy.deepcopy(config)
         else:
-            self.config = self._load_yaml(config_path)
+            self.config = load_yaml_mapping(config_path)
         if transformer_overrides:
             self.config["models"]["transformer"] = merge_transformer_hparams(
                 self.config["models"]["transformer"],
@@ -424,11 +420,6 @@ class TransformerTrainer:
     # -----------------------------------------------------------------------
     # Config and data loading
     # -----------------------------------------------------------------------
-    @staticmethod
-    def _load_yaml(path: str) -> dict:
-        with open(path, "r") as f:
-            return yaml.safe_load(f)
-
     def _load_jsonl(self, path: Path) -> list[dict]:
         records = []
         with open(path, "r", encoding="utf-8") as f:
@@ -1330,6 +1321,10 @@ class TransformerTrainer:
 def main() -> None:
     import argparse
 
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    )
     parser = argparse.ArgumentParser(
         description="Train two-head DistilBERT classifier "
         "for vinyl condition grading"
@@ -1369,8 +1364,7 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    with open(args.config, "r", encoding="utf-8") as f:
-        cfg = yaml.safe_load(f)
+    cfg = load_yaml_mapping(args.config)
     ml = cfg.setdefault("mlflow", {})
     if args.skip_mlflow or args.no_mlflow:
         ml["enabled"] = False

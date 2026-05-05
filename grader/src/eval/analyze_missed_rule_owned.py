@@ -31,7 +31,8 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
-import yaml
+
+from grader.src.config_io import load_yaml_mapping
 
 from grader.src.evaluation.grade_analysis import resolve_rule_owned_grades
 from grader.src.models.transformer import TransformerTrainer
@@ -120,10 +121,8 @@ def main() -> None:
     )
     args = p.parse_args()
 
-    with open(args.config, "r", encoding="utf-8") as f:
-        cfg = yaml.safe_load(f)
-    with open(args.guidelines, "r", encoding="utf-8") as f:
-        guidelines = yaml.safe_load(f)
+    cfg = load_yaml_mapping(args.config)
+    guidelines = load_yaml_mapping(args.guidelines)
 
     rule_owned = resolve_rule_owned_grades(guidelines).get(args.target, [])
     if not rule_owned:

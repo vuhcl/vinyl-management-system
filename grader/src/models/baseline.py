@@ -37,7 +37,6 @@ from typing import Optional, Tuple
 
 import mlflow
 import numpy as np
-import yaml
 from sklearn.isotonic import IsotonicRegression
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import (
@@ -47,6 +46,7 @@ from sklearn.metrics import (
     f1_score,
 )
 
+from grader.src.config_io import load_yaml_mapping
 from grader.src.features.tfidf_features import TFIDFFeatureBuilder
 from grader.src.mlflow_tracking import (
     configure_mlflow_from_config,
@@ -58,10 +58,6 @@ from grader.src.mlflow_tracking import (
 # ---------------------------------------------------------------------------
 # Logging
 # ---------------------------------------------------------------------------
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-)
 logger = logging.getLogger(__name__)
 
 TARGETS = ["sleeve", "media"]
@@ -159,7 +155,7 @@ class BaselineModel:
         if config is not None:
             self.config = copy.deepcopy(config)
         else:
-            self.config = self._load_yaml(config_path)
+            self.config = load_yaml_mapping(config_path)
         self._config_path_str = config_path
 
         lr_cfg = self.config["models"]["baseline"]["logistic_regression"]
@@ -238,11 +234,6 @@ class BaselineModel:
     # -----------------------------------------------------------------------
     # Config loading
     # -----------------------------------------------------------------------
-    @staticmethod
-    def _load_yaml(path: str) -> dict:
-        with open(path, "r") as f:
-            return yaml.safe_load(f)
-
     def _load_grade_ordinal_map(self) -> dict[str, int]:
         rules_cfg = self.config.get("rules", {})
         guidelines_path = rules_cfg.get("guidelines_path")
@@ -251,8 +242,7 @@ class BaselineModel:
         p = Path(guidelines_path)
         if not p.exists():
             return {}
-        with open(p, "r") as f:
-            g = yaml.safe_load(f)
+        g = load_yaml_mapping(p)
         return {
             str(k): int(v)
             for k, v in g.get("grade_ordinal_map", {}).items()
@@ -1167,6 +1157,10 @@ class BaselineModel:
 def main() -> None:
     import argparse
 
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    )
     parser = argparse.ArgumentParser(
         description="Train and evaluate two-head LR baseline "
         "for vinyl condition grading"
@@ -1193,8 +1187,7 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    with open(args.config, "r", encoding="utf-8") as f:
-        cfg = yaml.safe_load(f)
+    cfg = load_yaml_mapping(args.config)
     ml = cfg.setdefault("mlflow", {})
     if args.no_mlflow:
         ml["enabled"] = False

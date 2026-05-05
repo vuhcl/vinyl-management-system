@@ -61,7 +61,7 @@ _HARD_PATTERN_KEYS = (
     "hard_signals_cosignal_media",
 )
 
-import yaml
+from grader.src.config_io import load_yaml_mapping
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -123,7 +123,7 @@ class RuleEngine:
         *,
         allow_excellent_soft_override: bool = False,
     ) -> None:
-        self.guidelines = self._load_yaml(guidelines_path)
+        self.guidelines = load_yaml_mapping(guidelines_path)
         self.grade_defs = self.guidelines["grades"]
         self._allow_excellent_soft_override = allow_excellent_soft_override
 
@@ -193,14 +193,6 @@ class RuleEngine:
             len(self.grade_defs),
             len(self._contradiction_patterns),
         )
-
-    # -----------------------------------------------------------------------
-    # Config loading
-    # -----------------------------------------------------------------------
-    @staticmethod
-    def _load_yaml(path: str) -> dict:
-        with open(path, "r") as f:
-            return yaml.safe_load(f)
 
     # -----------------------------------------------------------------------
     # Pattern compilation
