@@ -2,17 +2,26 @@
 
 from __future__ import annotations
 
+import sys
+
 from . import lib as _lib
 
-# ``import *`` omits private names; main() needs the same surface as the old module.
-_g = globals()
-for _k in dir(_lib):
-    if _k.startswith("__"):
-        continue
-    _g[_k] = getattr(_lib, _k)
-del _g, _k
+
+def _sync_globals_from_lib() -> None:
+    """Copy names from lib into this module so ``main()`` sees monkeypatched lib.
+
+    Call at the start of ``main()`` so tests (or callers) that patch
+    ``label_audit_run_llm.lib`` before ``main()`` runs get updated bindings.
+    """
+    g: dict[str, object] = sys.modules[__name__].__dict__
+    for k in dir(_lib):
+        if k.startswith("__"):
+            continue
+        g[k] = getattr(_lib, k)
+
 
 def main() -> int:
+    _sync_globals_from_lib()
     p = argparse.ArgumentParser(description="Run Gemini LLM over label-audit queue.")
     p.add_argument("--config", default="grader/configs/grader.yaml")
     p.add_argument(

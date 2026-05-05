@@ -1,20 +1,23 @@
-"""Label-audit LLM queue runner (split: lib + main)."""
+"""Label-audit LLM queue runner (split: lib + main).
+
+PEP 562 ``__getattr__`` delegates missing attributes to :mod:`.lib` so
+monkeypatches on ``grader.src.eval.label_audit_run_llm.lib`` are visible
+through ``import … label_audit_run_llm`` without duplicating bindings.
+"""
 
 from __future__ import annotations
 
-import sys
-from types import ModuleType
+from typing import Any
 
-from . import lib as _lib
+from . import lib
 from .main import main
 
-# Re-export all public and private names from lib (``import *`` skips ``_*``).
-_m: ModuleType = sys.modules[__name__]
-for _k in dir(_lib):
-    if _k.startswith("__"):
-        continue
-    setattr(_m, _k, getattr(_lib, _k))
+__all__ = [n for n in dir(lib) if not n.startswith("__")] + ["lib", "main"]
 
-del _m, _k
 
-__all__ = [n for n in dir(_lib) if not n.startswith("__")] + ["main"]
+def __getattr__(name: str) -> Any:
+    return getattr(lib, name)
+
+
+def __dir__() -> list[str]:
+    return sorted(set(dir(lib)) | {"lib", "main"})
