@@ -5,6 +5,8 @@ from __future__ import annotations
 import logging
 from typing import Optional
 
+from grader.src.schemas import GraderPrediction
+
 from .constants import MEDIA, SLEEVE
 
 logger = logging.getLogger(__name__)
@@ -13,7 +15,7 @@ logger = logging.getLogger(__name__)
 class RuleEngineApplicationMixin:
     """End-to-end prediction application and batch stats."""
 
-    def _collapse_excellent_to_near_mint(self, result: dict) -> None:
+    def _collapse_excellent_to_near_mint(self, result: GraderPrediction) -> None:
         """
         When soft EX is disabled, map Excellent → Near Mint on final outputs and
         fold EX probability mass into NM in confidence dicts (if present).
@@ -41,9 +43,9 @@ class RuleEngineApplicationMixin:
     # -----------------------------------------------------------------------
     def apply(
         self,
-        prediction: dict,
+        prediction: GraderPrediction,
         text: str,
-    ) -> dict:
+    ) -> GraderPrediction:
         """
         Apply rule engine to a single prediction dict.
 
@@ -51,7 +53,7 @@ class RuleEngineApplicationMixin:
         Runs full rule logic independently for sleeve and media.
 
         Args:
-            prediction: prediction dict from baseline.py or transformer.py
+            prediction: :class:`~grader.src.schemas.GraderPrediction` from models or pyfunc adapter
             text:       preprocessed seller notes (text_clean field)
 
         Returns:
@@ -191,9 +193,9 @@ class RuleEngineApplicationMixin:
     # -----------------------------------------------------------------------
     def apply_batch(
         self,
-        predictions: list[dict],
+        predictions: list[GraderPrediction],
         texts: list[str],
-    ) -> list[dict]:
+    ) -> list[GraderPrediction]:
         """
         Apply rule engine to a batch of predictions.
 
@@ -237,7 +239,7 @@ class RuleEngineApplicationMixin:
     # -----------------------------------------------------------------------
     # Rule coverage report
     # -----------------------------------------------------------------------
-    def summarize_results(self, results: list[dict]) -> dict:
+    def summarize_results(self, results: list[GraderPrediction]) -> dict:
         """
         Aggregate override / contradiction stats from apply_batch outputs
         without re-running the rule engine.
@@ -288,7 +290,7 @@ class RuleEngineApplicationMixin:
 
     def coverage_report(
         self,
-        predictions: list[dict],
+        predictions: list[GraderPrediction],
         texts: list[str],
     ) -> dict:
         """

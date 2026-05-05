@@ -36,7 +36,7 @@ from grader.src.config_io import load_yaml_mapping
 
 from grader.src.evaluation.grade_analysis import resolve_rule_owned_grades
 from grader.src.models.transformer import TransformerTrainer
-from grader.src.pipeline import Pipeline
+from grader.src.schemas import merge_description_quality_metadata
 from grader.src.rules.rule_engine import RuleEngine
 
 
@@ -150,7 +150,7 @@ def main() -> None:
     trainer.load_model()
 
     raw = trainer.predict(texts=texts, item_ids=item_ids, records=records)
-    Pipeline._merge_description_metadata(raw, records)
+    merge_description_quality_metadata(raw, records)
     rules_cfg = cfg.get("rules") or {}
     allow_ex = bool(rules_cfg.get("allow_excellent_soft_override", False))
     engine = RuleEngine(

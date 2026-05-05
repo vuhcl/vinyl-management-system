@@ -10,6 +10,7 @@ from grader.src.features.tfidf_features import TFIDFFeatureBuilder
 from grader.src.models.baseline import BaselineModel
 from grader.src.models.transformer import TransformerTrainer
 from grader.src.rules.rule_engine import RuleEngine
+from grader.src.schemas import GraderPrediction, merge_description_quality_metadata
 
 
 class PipelineRuleEvalMixin:
@@ -22,7 +23,7 @@ class PipelineRuleEvalMixin:
         self,
         baseline: BaselineModel,
         split: str = "test",
-    ) -> list[dict]:
+    ) -> list[GraderPrediction]:
         """
         Rebuild baseline predictions from saved TF-IDF features for a split.
         Used when the transformer is not run (rule eval uses the same path).
@@ -55,7 +56,7 @@ class PipelineRuleEvalMixin:
         trainer: Optional[TransformerTrainer],
         baseline: BaselineModel,
         use_transformer: bool,
-    ) -> tuple[list[dict], list[str]]:
+    ) -> tuple[list[GraderPrediction], list[str]]:
         """Model-only predictions and aligned text for rule evaluation."""
         records = self._load_split(split)
         texts = [r.get("text_clean") or r.get("text", "") for r in records]
@@ -70,7 +71,7 @@ class PipelineRuleEvalMixin:
             )
         else:
             preds = self._baseline_predict_from_features(baseline, split=split)
-        self._merge_description_metadata(preds, records)
+        merge_description_quality_metadata(preds, records)
         return preds, texts
 
     def _run_rule_engine_evaluation(

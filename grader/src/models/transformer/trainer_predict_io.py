@@ -8,6 +8,8 @@ from pathlib import Path
 from typing import Optional
 
 import numpy as np
+
+from grader.src.schemas import GraderPrediction
 import torch
 import torch.nn as nn
 from transformers import DistilBertTokenizerFast
@@ -41,12 +43,12 @@ class TransformerPredictIoMixin:
         texts: list[str],
         item_ids: Optional[list[str]] = None,
         records: Optional[list[dict]] = None,
-    ) -> list[dict]:
+    ) -> list[GraderPrediction]:
         """
         Run inference on a list of raw text strings.
         Returns structured prediction dicts matching the output schema.
 
-        Rule engine is NOT applied — that is pipeline.py's responsibility.
+        Rule engine is NOT applied — that is the inference pipeline's job.
 
         Args:
             texts:    list of seller note strings

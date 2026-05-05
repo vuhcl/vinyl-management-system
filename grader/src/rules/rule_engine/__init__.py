@@ -16,7 +16,9 @@ Rule priority (strictly enforced):
 Operates independently on sleeve and media targets.
 Generic checks are skipped for media — Generic is sleeve-only.
 
-Input:  prediction dict from baseline.py or transformer.py
+Input:  :class:`grader.src.schemas.GraderPrediction` from baseline/transformer models
+        or the MLflow pyfunc adapter (serving); plain dicts that match that shape are
+        accepted at runtime.
 Output: same schema with updated grade and metadata fields
 
 Usage:
