@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib
 import json
 import sqlite3
 import sys
@@ -14,6 +15,13 @@ from grader.src.eval.label_audit_backend import (
     validate_decision,
 )
 from grader.src.eval import label_audit_run_llm
+
+label_audit_run_llm_lib = importlib.import_module(
+    "grader.src.eval.label_audit_run_llm.lib"
+)
+label_audit_run_llm_main = importlib.import_module(
+    "grader.src.eval.label_audit_run_llm.main"
+)
 
 
 def test_is_quota_exhausted_error_detects_common_signals() -> None:
@@ -224,7 +232,12 @@ def test_run_llm_respects_targets_filter(tmp_path: Path, monkeypatch) -> None:
             ],
         }
 
-    monkeypatch.setattr(label_audit_run_llm, "load_guideline_prompt_bits", _fake_guides)
+    monkeypatch.setattr(
+        label_audit_run_llm_lib, "load_guideline_prompt_bits", _fake_guides
+    )
+    monkeypatch.setattr(
+        label_audit_run_llm_main, "load_guideline_prompt_bits", _fake_guides
+    )
     _gemini_payload = json.dumps(
         {
             "media": {
@@ -243,7 +256,7 @@ def test_run_llm_respects_targets_filter(tmp_path: Path, monkeypatch) -> None:
     )
 
     monkeypatch.setattr(
-        label_audit_run_llm,
+        label_audit_run_llm_lib,
         "_query_gemini",
         lambda _messages, model_id: (_gemini_payload, model_id),
     )
