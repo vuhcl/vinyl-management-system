@@ -1,0 +1,10 @@
+{
+  "include": ["src/schemas", "serving/rule_postprocess.py"],
+  "exclude": ["**/__pycache__"],
+  "pythonVersion": "3.12",
+  "typeCheckingMode": "basic",
+  "venvPath": "..",
+  "venv": ".venv",
+  "reportUnusedImport": "warning",
+  "reportUnusedVariable": "warning"
+}
