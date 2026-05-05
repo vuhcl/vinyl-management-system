@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 import logging
 
-from .preprocessor_core import Preprocessor
+from .core.model import Preprocessor
 
 
 def main() -> None:

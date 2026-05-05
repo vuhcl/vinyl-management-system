@@ -36,7 +36,7 @@ from .listing_promo import (
     load_promo_noise_patterns,
     strip_listing_promo_noise,
 )
-from .preprocessor_core import Preprocessor
+from .core.model import Preprocessor
 
 __all__ = [
     "Preprocessor",
