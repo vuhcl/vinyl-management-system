@@ -5,13 +5,12 @@ import json
 import os
 import sys
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any
 
 import numpy as np
 import yaml
 
 from ..features.vinyliq_features import (
-    MAX_LOG_PRICE,
     clamp_ordinals_for_inference,
     condition_string_to_ordinal,
     default_feature_columns,
@@ -19,7 +18,6 @@ from ..features.vinyliq_features import (
     first_label_id,
     grade_delta_scale_params_from_cond,
     row_dict_for_inference,
-    scaled_condition_log_adjustment,
 )
 from ..models.condition_adjustment import (
     default_params,
@@ -40,10 +38,14 @@ from ..storage.marketplace_db import (
     redis_marketplace_cache_blob_from_row,
 )
 from ..storage.redis_stats_cache import RedisStatsCache
-from ..training.sale_floor_targets import (
-    inference_price_suggestion_anchor_usd_for_side,
-    inference_residual_anchor_usd,
+from .confidence_interval import (
+    DEFAULT_MIN_HALF_WIDTH_USD,
+    read_manifest,
+    resolve_confidence_interval_bounds,
+    try_load_quantile_estimators,
+    vinyl_usd_from_logp_raw,
 )
+from ..models.confidence_calibration import load_calibration
 
 _MIN_PRICE_USD = 0.50
 _MIN_RELEASE_YEAR = 1877
@@ -263,83 +265,38 @@ class InferenceService:
         self._nm_grade_key = str(nm_grade_key).strip() or "Near Mint (NM or M-)"
         self._yaml_condition_overlay = yaml_condition_overlay or None
         self._use_ps_condition_anchor = bool(use_price_suggestion_condition_anchor)
+        self._manifest_fetched = False
+        self._manifest_memo: dict[str, Any] = {}
+        self._calibration_fetched = False
+        self._calibration_memo: dict[str, Any] | None = None
+        self._quantile_pair_fetched = False
+        self._q_low: Any = None
+        self._q_high: Any = None
+
+    def _get_manifest(self) -> dict[str, Any]:
+        if not self._manifest_fetched:
+            self._manifest_memo = read_manifest(self.model_dir)
+            self._manifest_fetched = True
+        return self._manifest_memo
+
+    def _get_calibration(self) -> dict[str, Any] | None:
+        if not self._calibration_fetched:
+            self._calibration_memo = load_calibration(self.model_dir)
+            self._calibration_fetched = True
+        return self._calibration_memo
+
+    def _get_quantile_estimators(self) -> tuple[Any | None, Any | None]:
+        if not self._quantile_pair_fetched:
+            self._q_low, self._q_high = try_load_quantile_estimators(
+                self.model_dir,
+                self._get_manifest(),
+            )
+            self._quantile_pair_fetched = True
+        return self._q_low, self._q_high
 
     def _effective_condition_params(self) -> dict[str, Any]:
         base = load_params_with_grade_delta_overlays(self.model_dir)
         return merge_inference_condition_params(base, self._yaml_condition_overlay)
-
-    def _residual_price_single_ps_path(
-        self,
-        *,
-        ladder_side: Literal["media", "sleeve"],
-        logp_raw: float,
-        stats: dict[str, Any],
-        baseline,
-        media_condition: str | None,
-        sleeve_condition: str | None,
-        media_ord: float,
-        sleeve_ord: float,
-        cond_params: dict[str, Any],
-        release_year: float | None,
-        scale_p,
-    ) -> tuple[float, float]:
-        """
-        One residual reconstruction: ladder anchor from either media or sleeve grade,
-        fallback to ``inference_residual_anchor_usd`` / listing; suppress ordinal drift
-        when the PS ladder rung anchored the path.
-
-        Returns (price_usd, anchor_usd_used).
-        """
-        anchor_f: float | None = None
-        use_ps_path = False
-        ps_anchor = inference_price_suggestion_anchor_usd_for_side(
-            stats,
-            role=ladder_side,
-            media_condition=media_condition,
-            sleeve_condition=sleeve_condition,
-        )
-        if ps_anchor is not None and ps_anchor > 0.0:
-            anchor_f = float(ps_anchor)
-            use_ps_path = True
-        if anchor_f is None:
-            anchor_f = inference_residual_anchor_usd(
-                stats,
-                nm_grade_key=self._nm_grade_key,
-            )
-            if anchor_f is None or anchor_f <= 0.0:
-                mp_b = baseline
-                anchor_f = (
-                    float(mp_b)
-                    if mp_b is not None and float(mp_b) > 0
-                    else 0.0
-                )
-        anchor = float(anchor_f)
-        logp = logp_raw + float(np.log1p(max(anchor, 0.0)))
-        _dp = default_params()
-        anchor_scale = float(anchor) if anchor > 0 else 1.0
-        ref_grade_adj = clamp_ordinals_for_inference(
-            float(cond_params.get("ref_grade", _dp["ref_grade"])),
-            float(cond_params.get("ref_grade", _dp["ref_grade"])),
-        )[0]
-        media_ord_adj, sleeve_ord_adj = media_ord, sleeve_ord
-        if use_ps_path:
-            media_ord_adj, sleeve_ord_adj = clamp_ordinals_for_inference(
-                ref_grade_adj, ref_grade_adj
-            )
-        logp_adj = scaled_condition_log_adjustment(
-            logp,
-            media_ord_adj,
-            sleeve_ord_adj,
-            base_alpha=float(cond_params.get("alpha", _dp["alpha"])),
-            base_beta=float(cond_params.get("beta", _dp["beta"])),
-            ref_grade=float(cond_params.get("ref_grade", 8.0)),
-            anchor_usd=max(anchor_scale, 1e-6),
-            release_year=release_year,
-            scale_params=scale_p,
-        )
-        raw_price = float(np.expm1(np.clip(logp_adj, 0, MAX_LOG_PRICE)))
-        price = max(raw_price, _MIN_PRICE_USD)
-        return price, anchor
 
     def _get_discogs_client(self):
         _ensure_shared_path()
@@ -542,90 +499,56 @@ class InferenceService:
             release_year = float(
                 max(_MIN_RELEASE_YEAR, min(_MAX_RELEASE_YEAR, release_year))
             )
-        scale_p = grade_delta_scale_params_from_cond(cond_params)
 
-        price: float
-        residual_anchor: float | None
-
-        if (
+        use_ps_dual_path = (
             model.target_kind == TARGET_KIND_RESIDUAL_LOG_MEDIAN
             and self._use_ps_condition_anchor
-        ):
-            pm, am = self._residual_price_single_ps_path(
-                ladder_side="media",
-                logp_raw=logp_raw,
-                stats=stats,
-                baseline=baseline,
-                media_condition=media_condition,
-                sleeve_condition=sleeve_condition,
-                media_ord=media_ord,
-                sleeve_ord=sleeve_ord,
-                cond_params=cond_params,
-                release_year=release_year,
-                scale_p=scale_p,
-            )
-            ps, aa = self._residual_price_single_ps_path(
-                ladder_side="sleeve",
-                logp_raw=logp_raw,
-                stats=stats,
-                baseline=baseline,
-                media_condition=media_condition,
-                sleeve_condition=sleeve_condition,
-                media_ord=media_ord,
-                sleeve_ord=sleeve_ord,
-                cond_params=cond_params,
-                release_year=release_year,
-                scale_p=scale_p,
-            )
-            price = max((float(pm) + float(ps)) / 2.0, _MIN_PRICE_USD)
-            residual_anchor = float((float(am) + float(aa)) / 2.0)
-        else:
-            anchor = 0.0
-            residual_anchor = None
-            if model.target_kind == TARGET_KIND_RESIDUAL_LOG_MEDIAN:
-                anchor_f = inference_residual_anchor_usd(
-                    stats,
-                    nm_grade_key=self._nm_grade_key,
-                )
-                if anchor_f is None or anchor_f <= 0.0:
-                    mp_b = baseline
-                    anchor_f = (
-                        float(mp_b)
-                        if mp_b is not None and float(mp_b) > 0
-                        else 0.0
-                    )
-                anchor = float(anchor_f)
-                residual_anchor = anchor
-                logp = logp_raw + float(np.log1p(max(anchor, 0.0)))
-            else:
-                logp = logp_raw
-                mp2 = stats.get("release_lowest_price")
-                if mp2 is not None and float(mp2) > 0:
-                    anchor = float(mp2)
-
-            anchor_scale = float(anchor) if anchor > 0 else 1.0
-            _dp = default_params()
-            logp_adj = scaled_condition_log_adjustment(
-                logp,
-                media_ord,
-                sleeve_ord,
-                base_alpha=float(cond_params.get("alpha", _dp["alpha"])),
-                base_beta=float(cond_params.get("beta", _dp["beta"])),
-                ref_grade=float(cond_params.get("ref_grade", 8.0)),
-                anchor_usd=max(anchor_scale, 1e-6),
-                release_year=release_year,
-                scale_params=scale_p,
-            )
-            price = float(np.expm1(np.clip(logp_adj, 0, MAX_LOG_PRICE)))
-            price = max(price, _MIN_PRICE_USD)
-        spread = max(price * 0.12, 1.0)
+        )
+        scale_p = grade_delta_scale_params_from_cond(cond_params)
+        price, residual_anchor = vinyl_usd_from_logp_raw(
+            model=model,
+            logp_raw=logp_raw,
+            use_ps_dual_path=use_ps_dual_path,
+            stats=stats,
+            baseline=baseline,
+            media_condition=media_condition,
+            sleeve_condition=sleeve_condition,
+            media_ord=media_ord,
+            sleeve_ord=sleeve_ord,
+            cond_params=cond_params,
+            release_year=release_year,
+            scale_p=scale_p,
+            nm_grade_key=self._nm_grade_key,
+        )
+        price_r = round(float(price), 2)
+        q_lo, q_hi = self._get_quantile_estimators()
+        lo_c, hi_c = resolve_confidence_interval_bounds(
+            model_dir=self.model_dir,
+            model=model,
+            manifest=self._get_manifest(),
+            calibration=self._get_calibration(),
+            x_row=x,
+            logp_raw_point=logp_raw,
+            price_usd_float=float(price),
+            price_usd_rounded=price_r,
+            use_ps_dual_path=use_ps_dual_path,
+            stats=stats,
+            baseline=baseline,
+            media_condition=media_condition,
+            sleeve_condition=sleeve_condition,
+            media_ord=media_ord,
+            sleeve_ord=sleeve_ord,
+            cond_params=cond_params,
+            release_year=release_year,
+            nm_grade_key=self._nm_grade_key,
+            q_low=q_lo,
+            q_high=q_hi,
+            min_half_width_usd=DEFAULT_MIN_HALF_WIDTH_USD,
+        )
         result: dict[str, Any] = {
             "release_id": str(release_id),
-            "estimated_price": round(price, 2),
-            "confidence_interval": [
-                round(max(0.0, price - spread), 2),
-                round(price + spread, 2),
-            ],
+            "estimated_price": price_r,
+            "confidence_interval": [lo_c, hi_c],
             "baseline_median": round(float(baseline), 2) if baseline else None,
             "model_version": f"vinyliq_{model.backend}_v1",
             "status": "ok",
