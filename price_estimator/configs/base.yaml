@@ -110,6 +110,15 @@ vinyliq:
   training_target:
     kind: residual_log_median
     residual_z_clip_abs: null
+  # Optional XGB quantile heads + holdout residual-spread calibration (see training bundle).
+  confidence_intervals:
+    enabled: false
+    lower_alpha: 0.1
+    upper_alpha: 0.9
+    residual_abs_error_quantile: 0.8
+    min_half_width_usd: 1.0
+    min_holdout_n: 50
+    xgboost_overrides: {}
   # Two-head NM-substrings + ordinal-cascade ensemble (sigmoid blend on log1p anchor).
   # Requires tuning.enabled. Each head fits on rows where that policy yields a label (like production: both heads score every row).
   ensemble:
