@@ -42,7 +42,7 @@ include = ["price_estimator*"]
 
 [project.optional-dependencies]
 monitoring = [
-    "great-expectations>=0.18.12,<1",
+    "great-expectations>=1.0.0,<2",
     "evidently>=0.4.50,<1",
 ]
 

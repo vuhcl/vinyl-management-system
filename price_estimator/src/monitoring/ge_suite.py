@@ -3,25 +3,40 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+import uuid
+
 import pandas as pd
 import great_expectations as gx
+from great_expectations.expectations import (
+    ExpectColumnValuesToBeBetween,
+    ExpectColumnValuesToBeUnique,
+    ExpectColumnValuesToNotBeNull,
+    ExpectTableColumnsToMatchOrderedList,
+)
 
 from price_estimator.src.storage.feature_store import RELEASES_FEATURES_COLUMNS
 
 
-def _validator_for(df: pd.DataFrame):
+def _batch_for(df: pd.DataFrame):
     context = gx.get_context(mode="ephemeral")
-    # Fresh datasource name avoids collisions across validations in-process.
-    import uuid
-
     name = f"pandas_{uuid.uuid4().hex[:12]}"
-    src = context.sources.add_pandas(name=name)
+    src = context.data_sources.add_pandas(name=name)
     return src.read_dataframe(df, asset_name="releases")
 
 
+def _expectation_type_from_result(result) -> str:
+    cfg = result.expectation_config
+    if isinstance(cfg, dict):
+        return str(cfg.get("type", "unknown"))
+    t = getattr(cfg, "type", None)
+    return str(t) if t is not None else "unknown"
+
+
 def expect_schema_ordered(df: pd.DataFrame, columns: list[str]) -> bool:
-    v = _validator_for(df)
-    res = v.expect_table_columns_to_match_ordered_list(column_list=columns)
+    batch = _batch_for(df)
+    res = batch.validate(
+        ExpectTableColumnsToMatchOrderedList(column_list=columns),
+    )
     return bool(res.success)
 
 
@@ -36,29 +51,32 @@ class IntegrityResult:
     failed_expectations: list[str]
 
 
-def validate_integrity(df: pd.DataFrame, *, label_tier_max: int = 10) -> IntegrityResult:
+def validate_integrity(
+    df: pd.DataFrame, *, label_tier_max: int = 10
+) -> IntegrityResult:
     """Bounds: year range, unique release_id, label_tier, null caps."""
     failed: list[str] = []
-    v = _validator_for(df)
-    checks = [
-        v.expect_column_values_to_not_be_null("release_id"),
-        v.expect_column_values_to_be_unique("release_id"),
-        v.expect_column_values_to_be_between(
-            "year",
+    batch = _batch_for(df)
+    expectations = [
+        ExpectColumnValuesToNotBeNull(column="release_id"),
+        ExpectColumnValuesToBeUnique(column="release_id"),
+        ExpectColumnValuesToBeBetween(
+            column="year",
             min_value=1900,
             max_value=2035,
             mostly=0.98,
         ),
-        v.expect_column_values_to_be_between(
-            "label_tier",
+        ExpectColumnValuesToBeBetween(
+            column="label_tier",
             min_value=0,
             max_value=label_tier_max,
             mostly=1.0,
         ),
     ]
-    for r in checks:
+    for exp in expectations:
+        r = batch.validate(exp)
         if not r.success:
-            failed.append(str(r.expectation_config.type))
+            failed.append(_expectation_type_from_result(r))
 
     y = pd.to_numeric(df["year"], errors="coerce")
     dec = pd.to_numeric(df["decade"], errors="coerce")
@@ -80,7 +98,9 @@ def validate_integrity(df: pd.DataFrame, *, label_tier_max: int = 10) -> Integri
     return IntegrityResult(success=ok, failed_expectations=failed)
 
 
-def validate_parquet_file(path: Path, *, integrity: bool = True) -> IntegrityResult:
+def validate_parquet_file(
+    path: Path, *, integrity: bool = True
+) -> IntegrityResult:
     df = pd.read_parquet(path)
     cols_ok = expect_schema_releases_features(df)
     if not cols_ok:
