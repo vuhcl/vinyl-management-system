@@ -5,15 +5,16 @@ import great_expectations as gx
 import numpy as np
 import pandas as pd
 import pytest
+from great_expectations.expectations import ExpectColumnValuesToBeBetween
 
 from price_estimator.src.monitoring.drift_stats import categorical_psi_topk
 
 pytestmark = pytest.mark.monitoring
 
 
-def _validator(df: pd.DataFrame):
+def _batch(df: pd.DataFrame):
     ctx = gx.get_context(mode="ephemeral")
-    src = ctx.sources.add_pandas(name="nlp_logs")
+    src = ctx.data_sources.add_pandas(name="nlp_logs")
     return src.read_dataframe(df, asset_name="batch")
 
 
@@ -33,12 +34,16 @@ def test_monitoring_ge_inference_log_schema() -> None:
             "media_confidence": [0.88, 0.65],
         }
     )
-    v = _validator(df)
-    assert v.expect_column_values_to_be_between(
-        "sleeve_confidence", min_value=0.0, max_value=1.0
+    b = _batch(df)
+    assert b.validate(
+        ExpectColumnValuesToBeBetween(
+            column="sleeve_confidence", min_value=0.0, max_value=1.0
+        )
     ).success
-    assert v.expect_column_values_to_be_between(
-        "media_confidence", min_value=0.0, max_value=1.0
+    assert b.validate(
+        ExpectColumnValuesToBeBetween(
+            column="media_confidence", min_value=0.0, max_value=1.0
+        )
     ).success
 
 
