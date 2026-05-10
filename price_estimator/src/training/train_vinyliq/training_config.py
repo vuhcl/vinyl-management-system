@@ -17,6 +17,24 @@ from ..sale_floor_enums import TrainingLabelMode
 from ..vinyliq_tuning_selection import _resolve_single_selection_metric
 
 
+def confidence_interval_settings_from_vinyliq(v: dict | None) -> dict[str, Any]:
+    """Defaults for ``vinyliq.confidence_intervals`` (YAML)."""
+    vv = v if isinstance(v, dict) else {}
+    raw = vv.get("confidence_intervals")
+    if not isinstance(raw, dict):
+        raw = {}
+    xgb_ov = raw.get("xgboost")
+    return {
+        "enabled": bool(raw.get("enabled", False)),
+        "lower_alpha": float(raw.get("lower_alpha", 0.1)),
+        "upper_alpha": float(raw.get("upper_alpha", 0.9)),
+        "residual_abs_error_quantile": float(raw.get("residual_abs_error_quantile", 0.8)),
+        "min_half_width_usd": float(raw.get("min_half_width_usd", 1.0)),
+        "min_holdout_n": int(raw.get("min_holdout_n", 50)),
+        "xgboost_overrides": xgb_ov if isinstance(xgb_ov, dict) else {},
+    }
+
+
 def training_target_kind_from_vinyliq(v: dict | None) -> str:
     raw = (v or {}).get("training_target") or {}
     if not isinstance(raw, dict):

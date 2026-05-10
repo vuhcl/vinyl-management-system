@@ -29,6 +29,7 @@ from ...models.fitted_regressor import (
 from ...models.xgb_vinyliq import XGBVinylIQModel
 from ..label_synthesis import training_label_config_from_vinyliq
 from .catalog_encoders import _write_encoder_artifacts
+from ..confidence_artifacts import write_confidence_training_bundle
 from .training_config import (
     _config_path_for_mlflow,
     _mlflow_flags,
@@ -275,6 +276,43 @@ def main(args: argparse.Namespace | None = None) -> int:
     print(
         f"Holdout MAE $ {mae:.4f} | WAPE {100.0 * wape:.2f}% | median APE {100.0 * mdape:.2f}%"
     )
+
+    if target_kind == TARGET_KIND_RESIDUAL_LOG_MEDIAN:
+        write_confidence_training_bundle(
+            model_dir=md,
+            vinyliq_cfg=v,
+            target_kind=target_kind,
+            champion=fitted,
+            cols=cols,
+            seed=seed,
+            x_train=X_all[train_mask],
+            y_train=y_all[train_mask],
+            sample_weight=None,
+            y_test=y_te,
+            pred_test=pred,
+            median_test=median_all[test_mask],
+            ensemble_active=ensemble_cfg is not None,
+            log1p_y_test=None,
+            log1p_pred_test=None,
+        )
+    else:
+        write_confidence_training_bundle(
+            model_dir=md,
+            vinyliq_cfg=v,
+            target_kind=target_kind,
+            champion=None,
+            cols=cols,
+            seed=seed,
+            x_train=X_all[train_mask],
+            y_train=y_all[train_mask],
+            sample_weight=None,
+            y_test=y_te,
+            pred_test=pred,
+            median_test=None,
+            ensemble_active=ensemble_cfg is not None,
+            log1p_y_test=None,
+            log1p_pred_test=None,
+        )
 
     _write_encoder_artifacts(md, catalog_encoders)
     _write_training_label_config(
