@@ -283,6 +283,8 @@ We deliberately do not run negation-aware contradiction scanning at this iterati
 
 ### LLM label-audit workflow
 
+**Operational runbook (copy-paste commands, monitoring baseline notes):** [`docs/label_audit/README.md`](docs/label_audit/README.md).
+
 For systematically improving the training label quality, the canonical pipeline is:
 
 1. [`grader/src/eval/label_audit_queue_build.py`](src/eval/label_audit_queue_build.py) — build a candidate review queue from disagreements between baseline / transformer / rules and from cleanlab signals.
