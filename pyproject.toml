@@ -21,6 +21,10 @@ test = [
     # (plain `uv sync` omits optional extras and will prune it).
     "cleanlab>=2.1.0",
 ]
+monitoring = [
+    "great-expectations>=0.18.12,<1",
+    "evidently>=0.4.50,<1",
+]
 typecheck = [
     "pyright>=1.1.350",
 ]
@@ -53,6 +57,7 @@ filterwarnings = [
 ]
 markers = [
     "integration: marks tests as integration tests (run separately with -m integration)",
+    "monitoring: data and model monitoring tests (GE, drift stats, fixtures)",
 ]
 
 [tool.uv.sources]

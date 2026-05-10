@@ -1,0 +1,44 @@
+# VinylIQ / price_estimator monitoring (GE + drift_stats). Fixtures only — no prod DB.
+name: ML monitoring (price-estimator)
+
+on:
+  pull_request:
+    paths:
+      - "price_estimator/**"
+      - "shared/**"
+      - "pyproject.toml"
+      - "uv.lock"
+  push:
+    branches: [main]
+    paths:
+      - "price_estimator/**"
+      - "shared/**"
+      - "pyproject.toml"
+      - "uv.lock"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  monitoring:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - name: Install Python 3.12
+        run: uv python install 3.12
+
+      - name: Install dependencies
+        run: uv sync --extra test --extra monitoring
+
+      - name: Run VinylIQ monitoring tests
+        run: |
+          uv run pytest price_estimator/tests/test_monitoring_vinyliq.py \
+            -m monitoring --no-cov -v
