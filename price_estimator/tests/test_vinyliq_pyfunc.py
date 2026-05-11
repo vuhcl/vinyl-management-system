@@ -17,6 +17,7 @@ from price_estimator.src.models.fitted_regressor import (
     TARGET_KIND_RESIDUAL_LOG_MEDIAN,
     FittedVinylIQRegressor,
 )
+from price_estimator.src.models.regressor_constants import CONFIDENCE_CALIBRATION_FILE
 from price_estimator.src.models.vinyliq_pyfunc import (
     VinylIQPricePyFunc,
     build_pyfunc_input_example,
@@ -42,6 +43,31 @@ def test_vinyliq_pyfunc_load_and_predict(tmp_path) -> None:
     assert "estimated_price" in out.columns
     assert len(out) == 1
     assert float(out["estimated_price"].iloc[0]) > 0
+
+
+def test_vinyliq_pyfunc_adds_confidence_interval_with_calibration(tmp_path) -> None:
+    cols = default_feature_columns()
+    X = np.zeros((4, len(cols)))
+    y = np.full(4, np.log1p(25.0))
+    dummy = DummyRegressor(strategy="constant", constant=float(y[0]))
+    dummy.fit(X, y)
+    reg = FittedVinylIQRegressor("xgboost", dummy, cols, target_was_log1p=True)
+    reg.save(tmp_path)
+    save_params(tmp_path / "condition_params.json", default_params())
+    (tmp_path / CONFIDENCE_CALIBRATION_FILE).write_text(
+        json.dumps({"fallback_half_width_usd": 4.0})
+    )
+
+    ctx = SimpleNamespace(artifacts=pyfunc_artifacts_dict(tmp_path))
+    model = VinylIQPricePyFunc()
+    model.load_context(ctx)
+    sample = build_pyfunc_input_example()
+    out = model.predict(ctx, sample)
+    assert "confidence_interval" in out.columns
+    ci = out["confidence_interval"].iloc[0]
+    est = float(out["estimated_price"].iloc[0])
+    assert len(ci) == 2
+    assert float(ci[0]) <= est <= float(ci[1])
 
 
 def test_vinyliq_pyfunc_residual_adds_median(tmp_path) -> None:

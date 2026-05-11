@@ -49,6 +49,7 @@ from ..vinyliq_tuning_selection import (
     pick_champion_trial,
     row_masks_from_release_sets,
 )
+from ..confidence_artifacts import write_confidence_training_bundle
 from .catalog_encoders import _write_encoder_artifacts
 from .ensemble_manifest import _save_ensemble_manifest_and_estimators
 from .release_train_split import train_test_split_by_release
@@ -842,6 +843,62 @@ def _run_tuning(
                 )
             else:
                 champ.save(md)
+
+            if ensemble_cfg:
+                write_confidence_training_bundle(
+                    model_dir=md,
+                    vinyliq_cfg=v,
+                    target_kind=target_kind,
+                    champion=None,
+                    cols=cols,
+                    seed=seed,
+                    x_train=X_tr_full,
+                    y_train=y_tr_full,
+                    sample_weight=sw_full,
+                    y_test=y_test,
+                    pred_test=pred_test_lp,
+                    median_test=med_test,
+                    ensemble_active=True,
+                    log1p_y_test=y_test_lp,
+                    log1p_pred_test=pred_test_lp,
+                )
+            elif target_kind == TARGET_KIND_RESIDUAL_LOG_MEDIAN:
+                write_confidence_training_bundle(
+                    model_dir=md,
+                    vinyliq_cfg=v,
+                    target_kind=target_kind,
+                    champion=champ,
+                    cols=cols,
+                    seed=seed,
+                    x_train=X_tr_full,
+                    y_train=y_tr_full,
+                    sample_weight=sw_full,
+                    y_test=y_test,
+                    pred_test=pred_test,
+                    median_test=med_test,
+                    ensemble_active=False,
+                    log1p_y_test=None,
+                    log1p_pred_test=None,
+                )
+            else:
+                write_confidence_training_bundle(
+                    model_dir=md,
+                    vinyliq_cfg=v,
+                    target_kind=target_kind,
+                    champion=None,
+                    cols=cols,
+                    seed=seed,
+                    x_train=X_tr_full,
+                    y_train=y_tr_full,
+                    sample_weight=sw_full,
+                    y_test=y_test,
+                    pred_test=pred_test,
+                    median_test=None,
+                    ensemble_active=False,
+                    log1p_y_test=None,
+                    log1p_pred_test=None,
+                )
+
             _write_encoder_artifacts(md, catalog_encoders)
             tt_art = (
                 {**(v.get("training_target") or {}), "kind": target_kind}
