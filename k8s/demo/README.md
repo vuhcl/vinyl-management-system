@@ -394,6 +394,9 @@ on another port and adjust `DATABASE_URL` accordingly for local commands only.
 
 ```bash
 set -a && source .env && set +a
+# Required for templated deployments: Without a tag, envsubst emits .../price: or .../grader:
+# which breaks YAML parsing or pulls the wrong image. demo matches the Dockerfile build tags
+# suggested earlier in this doc.
 export IMAGE_TAG="${IMAGE_TAG:-demo}"
 export AR_REPO="${AR_REPO:-vinyl-images}"
 

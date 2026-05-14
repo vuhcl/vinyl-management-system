@@ -12,7 +12,8 @@
 #
 # Render via: envsubst < price-deployment.yaml | kubectl apply -f -
 # Required env: GCP_REGION, GCP_PROJECT_ID, AR_REPO (default vinyl-images),
-# IMAGE_TAG (default :demo).
+# IMAGE_TAG (e.g. demo). If unset, envsubst leaves an empty tag — run:
+#   export IMAGE_TAG="${IMAGE_TAG:-demo}"
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -34,7 +35,7 @@ spec:
       serviceAccountName: vinyl-runtime
       containers:
         - name: price
-          image: ${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT_ID}/${AR_REPO}/price:${IMAGE_TAG}
+          image: "${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT_ID}/${AR_REPO}/price:${IMAGE_TAG}"
           imagePullPolicy: Always
           ports:
             - name: http
