@@ -18,6 +18,7 @@ metadata:
   labels:
     app: grader-api
 spec:
+  progressDeadlineSeconds: 1200
   replicas: 1
   selector:
     matchLabels:
@@ -44,7 +45,9 @@ spec:
             httpGet:
               path: /health
               port: http
-            failureThreshold: 30
+            # MLflow pyfunc load can exceed 5 min and spike RAM; 60 × 10s = 10 min.
+            timeoutSeconds: 120
+            failureThreshold: 60
             periodSeconds: 10
           readinessProbe:
             httpGet:
@@ -61,6 +64,6 @@ spec:
           resources:
             requests:
               cpu: "1"
-              memory: "3Gi"
+              memory: "4Gi"
             limits:
-              memory: "6Gi"
+              memory: "8Gi"

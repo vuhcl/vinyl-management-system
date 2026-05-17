@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import sys
 from pathlib import Path
@@ -50,6 +51,8 @@ from ..models.confidence_calibration import load_calibration
 _MIN_PRICE_USD = 0.50
 _MIN_RELEASE_YEAR = 1877
 _MAX_RELEASE_YEAR = 2030
+
+logger = logging.getLogger(__name__)
 
 
 def _repo_root() -> Path:
@@ -337,15 +340,17 @@ class InferenceService:
         use_cache: bool = True,
         refresh: bool = False,
     ) -> dict[str, Any]:
-        """Read-through cache: Redis -> persistent store (Postgres/SQLite) -> Discogs API.
+        """Read-through cache: Redis -> live Discogs API.
+
+        Postgres/SQLite ``marketplace_stats`` is not consulted on the inference
+        path — bulk-loaded rows are treated as stale. Redis holds fresh
+        projections (30-day TTL); misses call Discogs and warm Redis.
 
         Live hydrate matches ``scripts/collect_marketplace_stats.py`` **full** mode
         (same two calls per ``release_id``): ``GET /releases/{id}`` for listing/community
-        fields (``extract_release_listing_fields``) and ``GET /marketplace/price_suggestions/{id}``
-        for the grade ladder.
-
-        Redis persists the same inference projection as the backing row (listing floor,
-        depth, community counts, ladder when present).
+        fields and ``GET /marketplace/price_suggestions/{id}`` for the grade ladder.
+        Live responses optionally persist to the backing store for training exports
+        only (best-effort; failures do not block the request).
 
         Older Redis entries with only ``release_lowest_price`` / ``num_for_sale`` are
         upgraded on read.
@@ -356,24 +361,8 @@ class InferenceService:
             if cached is not None:
                 core = decode_redis_marketplace_cached_payload(cached)
                 return {**core, "source": "cache_redis"}
-            row = self.marketplace.get(rid)
-            if row:
-                blob = redis_marketplace_cache_blob_from_row(row)
-                self.redis_cache.set(rid, blob)
-                return {
-                    **marketplace_inference_stats_from_row(row),
-                    "source": "cache_db",
-                }
         client = self._get_discogs_client()
         if not client:
-            row = self.marketplace.get(rid)
-            if row:
-                blob = redis_marketplace_cache_blob_from_row(row)
-                self.redis_cache.set(rid, blob)
-                return {
-                    **marketplace_inference_stats_from_row(row),
-                    "source": "cache",
-                }
             return {
                 **marketplace_inference_stats_from_row({}),
                 "source": "none",
@@ -406,12 +395,18 @@ class InferenceService:
         except Exception:
             sugg_pl = {}
 
-        self.marketplace.upsert(
-            rid,
-            {},
-            release_payload=release_pl,
-            price_suggestions_payload=sugg_pl,
-        )
+        try:
+            self.marketplace.upsert(
+                rid,
+                {},
+                release_payload=release_pl,
+                price_suggestions_payload=sugg_pl,
+            )
+        except Exception as e:
+            logger.warning(
+                "marketplace upsert after live fetch failed (%s); estimate uses live fields",
+                e,
+            )
         row = self.marketplace.get(rid) or {}
         blob = redis_marketplace_cache_blob_from_row(row)
         self.redis_cache.set(rid, blob)

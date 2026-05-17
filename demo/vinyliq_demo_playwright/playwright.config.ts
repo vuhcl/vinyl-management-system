@@ -1,16 +1,22 @@
 import { defineConfig } from "@playwright/test";
 
-// Single demo, sequential. Headed Chromium (extension testing requires a
-// real browser, not the headless shell). 1280x800 is the YouTube
-// 720p-friendly recording size used by the README embed.
+// Headed Chromium + extension (see fixtures/extension.ts). 1280x800 matches README embed.
+// Primary demo recordings use fixtures/extension.ts persistent launch recordVideo
+// (see fixtures/demo_video_ann.ts). Keeping video: off here avoids a second capture
+// from the implicit project browser.
 //
-// Primary demo recordings use `fixtures/extension.ts` persistent launch
-// `recordVideo` (see `fixtures/demo_video_ann.ts` → action highlights + scripted
-// chapter overlays when `npm test` runs bundled Chromium). Keeping `video: off`
-// here avoids a second unrelated capture from the implicit project browser.
-//
-// `outputDir` retains Playwright artefacts (reports, screenshots). The runbook:
-// RECORDING.md / README — convert `.webm` from `recordings/` to `demo.mp4`.
+// `demo` — 2-minute recording (demo.spec.ts). `pitch-assist` — live pitch (pitch-assist.spec.ts).
+const sharedUse = {
+  headless: false,
+  viewport: { width: 1280, height: 800 },
+  video: "off" as const,
+  actionTimeout: 60_000,
+  navigationTimeout: 120_000,
+  launchOptions: {
+    slowMo: 75,
+  },
+};
+
 export default defineConfig({
   testDir: "./tests",
   fullyParallel: false,
@@ -20,15 +26,17 @@ export default defineConfig({
   // slow Discogs DOM without tripping default 30s.
   timeout: 180_000,
   expect: { timeout: 60_000 },
-  use: {
-    headless: false,
-    viewport: { width: 1280, height: 800 },
-    video: "off",
-    actionTimeout: 60_000,
-    navigationTimeout: 120_000,
-    launchOptions: {
-      slowMo: 75,
-    },
-  },
   outputDir: "./recordings",
+  projects: [
+    {
+      name: "demo",
+      testMatch: /demo\.spec\.ts/,
+      use: sharedUse,
+    },
+    {
+      name: "pitch-assist",
+      testMatch: /pitch-assist\.spec\.ts/,
+      use: sharedUse,
+    },
+  ],
 });

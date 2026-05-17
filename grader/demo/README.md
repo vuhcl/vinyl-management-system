@@ -6,6 +6,10 @@ demo and the Playwright spec
 
 ## What's here
 
+- [`golden_predict_demo_pitch.json`](golden_predict_demo_pitch.json) — one
+  seller-comment example for release `12830828`; drives
+  [`pitch-assist.spec.ts`](../../demo/vinyliq_demo_playwright/tests/pitch-assist.spec.ts)
+  and [`RECORDING_PITCH.md`](../../demo/vinyliq_demo_playwright/RECORDING_PITCH.md).
 - [`golden_predict_demo.json`](golden_predict_demo.json) — exactly two
   seller-comment examples (A, B) for one release ID
   (`demo_release_id=456663`, the Beatles White Album UK original mono

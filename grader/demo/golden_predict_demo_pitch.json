@@ -1,0 +1,14 @@
+{
+  "demo_release_id": 12830828,
+  "release_description": "REPLACE_AT_CURATION_TIME — Discogs release 12830828 (your copy for the pitch)",
+  "sell_post_url": "https://www.discogs.com/sell/post/REPLACE_WITH_PROJECT_LISTING_ID",
+  "examples": [
+    {
+      "id": "A",
+      "text": "REPLACE_AT_CURATION_TIME_CONDITION_NARRATIVE",
+      "expected_media_condition": "REPLACE_AT_CURATION_TIME",
+      "expected_sleeve_condition": "REPLACE_AT_CURATION_TIME",
+      "notes": "After curation: paste verified estimated_price from /estimate for this release + grade pair."
+    }
+  ]
+}
