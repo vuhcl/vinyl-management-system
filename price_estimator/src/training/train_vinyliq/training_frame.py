@@ -163,16 +163,14 @@ def load_training_frame(
 
     year_by_rid: dict[str, Any] = {}
     if Path(feature_store_db).is_file():
-        conn_y = sqlite3.connect(str(feature_store_db))
-        conn_y.row_factory = sqlite3.Row
+        conn_y = open_sqlite(feature_store_db, wal=False)
         try:
             for r in conn_y.execute("SELECT release_id, year FROM releases_features"):
                 year_by_rid[str(r["release_id"])] = r["year"]
         finally:
             conn_y.close()
 
-    conn_m = sqlite3.connect(str(marketplace_db))
-    conn_m.row_factory = sqlite3.Row
+    conn_m = open_sqlite(marketplace_db, wal=False)
     cur = conn_m.execute(
         """
         SELECT release_id, fetched_at, num_for_sale,
@@ -287,8 +285,7 @@ def load_training_frame(
             }
     conn_m.close()
 
-    conn_f = sqlite3.connect(str(feature_store_db))
-    conn_f.row_factory = sqlite3.Row
+    conn_f = open_sqlite(feature_store_db, wal=False)
     cur = conn_f.execute("SELECT * FROM releases_features")
     rows = [dict(r) for r in cur.fetchall()]
     conn_f.close()

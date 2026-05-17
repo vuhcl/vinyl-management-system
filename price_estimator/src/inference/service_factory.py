@@ -91,6 +91,48 @@ def build_inference_service_from_merged_config(
             inf.get("use_price_suggestion_condition_anchor", True)
         )
 
+    from .anchor_guardrails_config import (
+        AnchorGuardrailsConfig,
+        anchor_guardrails_config_from_raw,
+    )
+    from ..training.sale_floor_blend_config import sale_floor_blend_config_from_raw
+
+    ag_raw = inf.get("anchor_guardrails")
+    ag_cfg = anchor_guardrails_config_from_raw(
+        ag_raw if isinstance(ag_raw, dict) else None
+    )
+    env_ag = (os.environ.get("VINYLIQ_ANCHOR_GUARDRAILS") or "").strip().lower()
+    if env_ag in ("1", "true", "yes"):
+        ag_cfg = AnchorGuardrailsConfig(
+            enabled=True,
+            min_listing_usd=ag_cfg.min_listing_usd,
+            min_listing_to_nm_rung_ratio=ag_cfg.min_listing_to_nm_rung_ratio,
+            min_listing_to_max_rung_ratio=ag_cfg.min_listing_to_max_rung_ratio,
+            inflated_max_rung_to_reference=ag_cfg.inflated_max_rung_to_reference,
+            inflated_max_rung_to_sale_reference=ag_cfg.inflated_max_rung_to_sale_reference,
+            max_ladder_to_reference=ag_cfg.max_ladder_to_reference,
+            mint_outlier_multiple_of_nm=ag_cfg.mint_outlier_multiple_of_nm,
+            ladder_rung_winsorize_multiple_of_nm=ag_cfg.ladder_rung_winsorize_multiple_of_nm,
+        )
+    elif env_ag in ("0", "false", "no"):
+        ag_cfg = AnchorGuardrailsConfig(
+            enabled=False,
+            min_listing_usd=ag_cfg.min_listing_usd,
+            min_listing_to_nm_rung_ratio=ag_cfg.min_listing_to_nm_rung_ratio,
+            min_listing_to_max_rung_ratio=ag_cfg.min_listing_to_max_rung_ratio,
+            inflated_max_rung_to_reference=ag_cfg.inflated_max_rung_to_reference,
+            inflated_max_rung_to_sale_reference=ag_cfg.inflated_max_rung_to_sale_reference,
+            max_ladder_to_reference=ag_cfg.max_ladder_to_reference,
+            mint_outlier_multiple_of_nm=ag_cfg.mint_outlier_multiple_of_nm,
+            ladder_rung_winsorize_multiple_of_nm=ag_cfg.ladder_rung_winsorize_multiple_of_nm,
+        )
+
+    sf_raw = tl_raw.get("sale_floor_blend")
+    blend_cfg = sale_floor_blend_config_from_raw(
+        sf_raw if isinstance(sf_raw, dict) else {},
+        nm_grade_key=nm_grade_key,
+    )
+
     dsn_key = paths.get("postgres_dsn_env")
     if dsn_key:
         dsn = (os.environ.get(str(dsn_key).strip()) or "").strip()
@@ -107,6 +149,8 @@ def build_inference_service_from_merged_config(
                 nm_grade_key=nm_grade_key,
                 yaml_condition_overlay=yaml_overlay,
                 use_price_suggestion_condition_anchor=use_ps_anchor,
+                anchor_guardrails_cfg=ag_cfg,
+                sale_floor_blend_cfg=blend_cfg,
             )
 
     _mdb = root / "data" / "cache" / "marketplace_stats.sqlite"
@@ -126,4 +170,6 @@ def build_inference_service_from_merged_config(
         nm_grade_key=nm_grade_key,
         yaml_condition_overlay=yaml_overlay,
         use_price_suggestion_condition_anchor=use_ps_anchor,
+        anchor_guardrails_cfg=ag_cfg,
+        sale_floor_blend_cfg=blend_cfg,
     )

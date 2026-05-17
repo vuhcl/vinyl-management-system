@@ -29,6 +29,7 @@ from ..training.sale_floor_targets import (
     inference_price_suggestion_anchor_usd_for_side,
     inference_residual_anchor_usd,
 )
+from .anchor_resolution import AnchorGuardrailsContext, resolve_residual_anchor_usd
 
 _MIN_PRICE_USD = 0.50
 
@@ -105,6 +106,7 @@ def residual_price_single_ps_path(
     release_year: float | None,
     scale_p,
     nm_grade_key: str,
+    guardrails_ctx: AnchorGuardrailsContext | None = None,
 ) -> tuple[float, float]:
     anchor_f: float | None = None
     use_ps_path = False
@@ -129,7 +131,12 @@ def residual_price_single_ps_path(
                 if mp_b is not None and float(mp_b) > 0
                 else 0.0
             )
-    anchor = float(anchor_f)
+    anchor = resolve_residual_anchor_usd(
+        stats=stats,
+        raw_anchor_usd=float(anchor_f),
+        guardrails_ctx=guardrails_ctx,
+        nm_grade_key=nm_grade_key,
+    )
     logp = logp_raw + float(np.log1p(max(anchor, 0.0)))
     _dp = default_params()
     anchor_scale = float(anchor) if anchor > 0 else 1.0
@@ -173,6 +180,7 @@ def vinyl_usd_from_logp_raw(
     release_year: float | None,
     scale_p,
     nm_grade_key: str,
+    guardrails_ctx: AnchorGuardrailsContext | None = None,
 ) -> tuple[float, float | None]:
     """Mirror ``InferenceService.estimate`` dollar reconstruction for one ``logp_raw``."""
     if use_ps_dual_path:
@@ -189,6 +197,7 @@ def vinyl_usd_from_logp_raw(
             release_year=release_year,
             scale_p=scale_p,
             nm_grade_key=nm_grade_key,
+            guardrails_ctx=guardrails_ctx,
         )
         ps, aa = residual_price_single_ps_path(
             ladder_side="sleeve",
@@ -203,6 +212,7 @@ def vinyl_usd_from_logp_raw(
             release_year=release_year,
             scale_p=scale_p,
             nm_grade_key=nm_grade_key,
+            guardrails_ctx=guardrails_ctx,
         )
         price = max((float(pm) + float(ps)) / 2.0, _MIN_PRICE_USD)
         residual_anchor = float((float(am) + float(aa)) / 2.0)
@@ -222,7 +232,12 @@ def vinyl_usd_from_logp_raw(
                 if mp_b is not None and float(mp_b) > 0
                 else 0.0
             )
-        anchor = float(anchor_f)
+        anchor = resolve_residual_anchor_usd(
+            stats=stats,
+            raw_anchor_usd=float(anchor_f),
+            guardrails_ctx=guardrails_ctx,
+            nm_grade_key=nm_grade_key,
+        )
         residual_anchor = anchor
         logp = logp_raw + float(np.log1p(max(anchor, 0.0)))
     else:
@@ -291,6 +306,7 @@ def resolve_confidence_interval_bounds(
     q_low: Any | None,
     q_high: Any | None,
     min_half_width_usd: float,
+    guardrails_ctx: AnchorGuardrailsContext | None = None,
 ) -> tuple[float, float]:
     """Return ``(interval_low, interval_high)`` rounded to cents."""
     scale_p = grade_delta_scale_params_from_cond(cond_params)
@@ -312,6 +328,7 @@ def resolve_confidence_interval_bounds(
             release_year=release_year,
             scale_p=scale_p,
             nm_grade_key=nm_grade_key,
+            guardrails_ctx=guardrails_ctx,
         )
         return float(p)
 

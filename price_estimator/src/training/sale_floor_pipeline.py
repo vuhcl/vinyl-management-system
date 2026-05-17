@@ -24,49 +24,17 @@ from .sale_floor_inference import (
     residual_anchor_m_no_sale_history,
 )
 from .sale_floor_nowcast import sold_nowcast_s
+from price_estimator.src.sale_floor.blend import blend_weight_w_eff, sale_floor_blend_y
+
 from .sale_floor_row_parsing import _positive, reference_time_t_ref
 
-
-def blend_weight_w_eff(
-    *,
-    s: float,
-    lo: float,
-    tier: str,
-    cfg: SaleFloorBlendConfig,
-) -> float:
-    w = float(cfg.w_base)
-    if tier == "B":
-        w -= float(cfg.tier_b_delta)
-    elif tier == "C":
-        w -= float(cfg.tier_c_delta)
-    w = max(float(cfg.w_min), min(float(cfg.w_max), w))
-
-    eps = float(cfg.gap_epsilon_log)
-    d_log = math.log(lo) - math.log(s)
-    if d_log < -eps:
-        w += float(cfg.gap_k_down) * min(abs(d_log), float(cfg.gap_delta_cap))
-    elif d_log > eps:
-        w -= float(cfg.gap_k_up) * min(d_log, float(cfg.gap_delta_cap))
-
-    return max(float(cfg.w_min), min(float(cfg.w_max), w))
-
-
-def sale_floor_blend_y(
-    s: float | None,
-    lo: float | None,
-    tier: str,
-    *,
-    cfg: SaleFloorBlendConfig,
-) -> float | None:
-    """§7.1d log-blend; no ``lo`` → ``y = s``; no ``s`` → None (caller excludes or uses other mode)."""
-    if s is not None and s > 0 and lo is not None and lo > 0:
-        w_eff = blend_weight_w_eff(s=s, lo=lo, tier=tier, cfg=cfg)
-        return float(math.exp(w_eff * math.log(s) + (1.0 - w_eff) * math.log(lo)))
-    if s is not None and s > 0:
-        return float(s)
-    if lo is not None and lo > 0:
-        return float(lo)
-    return None
+__all__ = [
+    "blend_weight_w_eff",
+    "sale_floor_blend_bundle",
+    "sale_floor_blend_sf_cfg_for_policy",
+    "sale_floor_blend_y",
+    "sale_floor_label_diagnostics",
+]
 
 
 def _sale_floor_blend_compute(
