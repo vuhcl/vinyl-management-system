@@ -5,7 +5,9 @@ import { defineConfig } from "@playwright/test";
 // (see fixtures/demo_video_ann.ts). Keeping video: off here avoids a second capture
 // from the implicit project browser.
 //
-// `demo` — 2-minute recording (demo.spec.ts). `pitch-assist` — live pitch (pitch-assist.spec.ts).
+// `demo` — 2-minute recording (demo.spec.ts).
+// `pitch-assist` — live pitch (pitch-assist.spec.ts).
+// `warm-profile` — seed CHROME_PROFILE_DIR (warm_profile.spec.ts); no extension loaded.
 const sharedUse = {
   headless: false,
   viewport: { width: 1280, height: 800 },
@@ -36,6 +38,14 @@ export default defineConfig({
     {
       name: "pitch-assist",
       testMatch: /pitch-assist\.spec\.ts/,
+      // Manual Grade dwell (PITCH_GRADE_WAIT_MS) + Discogs navigations
+      timeout: 15 * 60_000,
+      use: sharedUse,
+    },
+    {
+      name: "warm-profile",
+      testMatch: /warm_profile\.spec\.ts/,
+      timeout: 45 * 60_000,
       use: sharedUse,
     },
   ],

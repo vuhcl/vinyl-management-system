@@ -1,12 +1,18 @@
-import { expect, test } from "@playwright/test";
+import { test } from "@playwright/test";
 import * as fs from "fs";
 import * as path from "path";
+import * as readline from "node:readline";
+
+import {
+  commentFieldLocator,
+  focusAndTypeSellerComment,
+  vinyliqSellDockSelector,
+} from "../fixtures/demo_runner";
 import { launchWithExtension } from "../fixtures/extension";
 
 /**
- * Pitch assist: trimmed ``demo.spec.ts`` for a live-narrated screen recording.
- * Release page first, one seller comment (typed only — you click Grade), one
- * price overlay. No Playwright test annotations.
+ * Pitch assist: open release → sell listing → type one golden comment, then stop.
+ * Grade, estimate, and overlay are manual (screen recorder + extension dock).
  *
  * See ``RECORDING_PITCH.md`` and ``grader/demo/golden_predict_demo_pitch.json``.
  *
@@ -15,7 +21,8 @@ import { launchWithExtension } from "../fixtures/extension";
  *   GOLDEN_FILE, VINYLIQ_API_KEY
  *   PITCH_HOLD_ON_RELEASE_MS (default 3000)
  *   PITCH_PAUSE_BEFORE_TYPE_MS (default 3000)
- *   PITCH_HOLD_AFTER_ESTIMATE_MS (default 2000)
+ *
+ * Launch disables Playwright recordVideo/showActions (external capture only).
  */
 
 interface GoldenExample {
@@ -33,19 +40,6 @@ interface GoldenFile {
   examples: GoldenExample[];
 }
 
-interface SwFetchInput {
-  url: string;
-  apiKey: string;
-  body: unknown;
-}
-
-interface SwFetchResult {
-  ok: boolean;
-  status?: number;
-  data?: unknown;
-  errorBody?: string;
-}
-
 function loadGolden(): GoldenFile {
   const fallback = path.resolve(
     __dirname,
@@ -54,7 +48,7 @@ function loadGolden(): GoldenFile {
     "..",
     "grader",
     "demo",
-    "golden_predict_demo_pitch.json"
+    "golden_predict_demo_pitch.json",
   );
   const file = process.env.GOLDEN_FILE ?? fallback;
   const raw = fs.readFileSync(file, "utf8");
@@ -79,6 +73,19 @@ function envMs(name: string, fallback: number): number {
   return Number.isFinite(n) ? n : fallback;
 }
 
+function ttyQuestion(prompt: string): Promise<void> {
+  return new Promise<void>((resolve) => {
+    const rl = readline.createInterface({
+      input: process.stdin,
+      output: process.stderr,
+    });
+    rl.question(prompt, () => {
+      rl.close();
+      resolve();
+    });
+  });
+}
+
 test("vinyliq pitch assist", async () => {
   const golden = loadGolden();
   const example = golden.examples[0];
@@ -89,114 +96,73 @@ test("vinyliq pitch assist", async () => {
   const apiKey = process.env.VINYLIQ_API_KEY ?? "";
   const holdOnRelease = envMs("PITCH_HOLD_ON_RELEASE_MS", 3000);
   const pauseBeforeType = envMs("PITCH_PAUSE_BEFORE_TYPE_MS", 3000);
-  const holdAfterEstimate = envMs("PITCH_HOLD_AFTER_ESTIMATE_MS", 2000);
 
-  const { context, extensionId } = await launchWithExtension();
+  const { context, extensionId } = await launchWithExtension({
+    recordVideo: false,
+    slowMo: 0,
+  });
 
-  const popup = await context.newPage();
-  await popup.goto(`chrome-extension://${extensionId}/popup.html`);
-  await popup.evaluate(
-    async ({ priceApiBase, graderApiBase, apiKey }) => {
-      await new Promise<void>((resolve) =>
-        chrome.storage.sync.set(
-          { priceApiBase, graderApiBase, apiKey },
-          () => resolve()
-        )
-      );
-    },
-    { priceApiBase, graderApiBase, apiKey }
-  );
-  await popup.close();
-
-  const seller = await context.newPage();
-  const releaseUrl = `https://www.discogs.com/release/${releaseId}`;
-
-  await seller.goto(releaseUrl);
-  await seller.waitForLoadState("domcontentloaded");
-  await seller.waitForTimeout(holdOnRelease);
-
-  await seller.goto(sellPostUrl);
-
-  const commentSelector =
-    'textarea[name="comments"], textarea[id*="comment" i], textarea[name="release_comments"], textarea[name="description"]';
-
-  const commentEl = seller.locator(commentSelector).first();
-  await commentEl.waitFor({ state: "visible", timeout: 30_000 });
-  await seller.waitForTimeout(pauseBeforeType);
-
-  await commentEl.fill(example.text);
-
-  // Operator clicks Grade condition while screen recording; resume Inspector when ready.
-  await seller.pause();
-
-  await seller.goto(releaseUrl);
-  await seller.waitForLoadState("domcontentloaded");
-
-  const sw = context
-    .serviceWorkers()
-    .find((s) => s.url().startsWith(`chrome-extension://${extensionId}`));
-  if (!sw) {
-    throw new Error("Extension service worker not found in context");
-  }
-
-  const url = `${priceApiBase.replace(/\/$/, "")}/estimate`;
-  const body = {
-    release_id: releaseId,
-    media_condition: example.expected_media_condition,
-    sleeve_condition: example.expected_sleeve_condition,
-    refresh_stats: false,
-  };
-
-  const result = (await sw.evaluate(async (input: SwFetchInput) => {
-    const headers: Record<string, string> = {
-      "Content-Type": "application/json",
-    };
-    if (input.apiKey) {
-      headers["X-API-Key"] = input.apiKey;
-    }
-    const r = await fetch(input.url, {
-      method: "POST",
-      headers,
-      body: JSON.stringify(input.body),
-    });
-    const text = await r.text();
-    if (!r.ok) {
-      return { ok: false, status: r.status, errorBody: text };
-    }
-    try {
-      return { ok: true, data: JSON.parse(text) };
-    } catch {
-      return { ok: false, status: r.status, errorBody: text };
-    }
-  }, { url, apiKey, body })) as SwFetchResult;
-
-  if (!result.ok) {
-    throw new Error(`Estimate failed: ${JSON.stringify(result)}`);
-  }
-  const data = result.data as { estimated_price?: number } | undefined;
-  if (!data || data.estimated_price == null) {
-    throw new Error(
-      `Estimate response missing estimated_price: ${JSON.stringify(result.data)}`
+  try {
+    const popup = await context.newPage();
+    await popup.goto(`chrome-extension://${extensionId}/popup.html`);
+    await popup.evaluate(
+      async ({ priceApiBase, graderApiBase, apiKey }) => {
+        await new Promise<void>((resolve) =>
+          chrome.storage.sync.set(
+            { priceApiBase, graderApiBase, apiKey },
+            () => resolve(),
+          ),
+        );
+      },
+      { priceApiBase, graderApiBase, apiKey },
     );
+    await popup.close();
+
+    const seller = await context.newPage();
+    const releaseUrl = `https://www.discogs.com/release/${releaseId}`;
+
+    await seller.goto(releaseUrl);
+    await seller.waitForLoadState("domcontentloaded");
+    await seller.waitForTimeout(holdOnRelease);
+
+    await seller.goto(sellPostUrl, {
+      waitUntil: "domcontentloaded",
+      timeout: 120_000,
+    });
+
+    const sellDockTimeout = Number.parseInt(
+      process.env.PLAYWRIGHT_SELL_DOCK_TIMEOUT_MS ?? "",
+      10,
+    );
+    const dockTimeout =
+      Number.isFinite(sellDockTimeout) && sellDockTimeout >= 60_000
+        ? sellDockTimeout
+        : 240_000;
+
+    await seller
+      .locator(vinyliqSellDockSelector())
+      .waitFor({ state: "visible", timeout: dockTimeout });
+
+    const commentEl = commentFieldLocator(seller);
+    await commentEl.waitFor({ state: "visible", timeout: 120_000 });
+    await commentEl.scrollIntoViewIfNeeded();
+    await seller.waitForTimeout(pauseBeforeType);
+
+    await focusAndTypeSellerComment(commentEl, example.text);
+
+    console.error(
+      "\n[pitch-assist] Comment filled. Finish Grade / estimate / overlay yourself, " +
+        "then press Enter here to close Chromium.\n",
+    );
+    if (process.stdin.isTTY) {
+      await ttyQuestion("[pitch-assist] Enter to close browser…\n");
+    } else {
+      console.error(
+        "[pitch-assist] Non-TTY: quit Chromium from the Dock when finished.\n",
+      );
+      await context.waitForEvent("close");
+    }
+  } finally {
+    await context.close().catch(() => undefined);
   }
-
-  await sw.evaluate(
-    async (input: { releaseUrl: string; payload: unknown }) => {
-      const tabs = await chrome.tabs.query({ url: input.releaseUrl });
-      const target = tabs[0];
-      if (target?.id != null) {
-        await chrome.tabs.sendMessage(target.id, {
-          type: "SHOW_OVERLAY",
-          payload: input.payload,
-        });
-      }
-    },
-    { releaseUrl, payload: data }
-  );
-
-  await seller.waitForTimeout(holdAfterEstimate);
-
-  expect(data.estimated_price).toBeGreaterThan(0);
-
-  await context.close();
 });

@@ -9,7 +9,7 @@
     "test:show": "playwright test --project=demo --headed",
     "assist:pitch": "playwright test --project=pitch-assist",
     "install-browsers": "playwright install chromium",
-    "warm-profile": "WARM_PROFILE=1 playwright test tests/warm_profile.spec.ts"
+    "warm-profile": "WARM_PROFILE=1 playwright test --project=warm-profile"
   },
   "devDependencies": {
     "@playwright/test": "^1.55.0",
