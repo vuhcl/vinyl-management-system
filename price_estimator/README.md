@@ -296,10 +296,11 @@ Defaults write feature + marketplace SQLite under **`price_estimator/data/`**. U
 | `REDIS_TTL_SECONDS` | Defaults to `2592000` (30 days); matches the demo system-design slide |
 
 When `REDIS_HOST` is set, `InferenceService.fetch_stats` reads through
-Redis -> SQLite -> Discogs (write-through on live fetches). The
-[`RedisStatsCache`](src/storage/redis_stats_cache.py) gracefully
-degrades to a no-op if Redis is unreachable or the `redis` package is
-missing — local dev keeps working without any Redis at all.
+Redis -> live Discogs (Postgres/SQLite `marketplace_stats` is not used on
+the inference path). Live fetches warm Redis and best-effort persist to
+the backing store for training. [`RedisStatsCache`](src/storage/redis_stats_cache.py)
+gracefully degrades to a no-op if Redis is unreachable — misses go straight
+to Discogs when a token is configured.
 
 ---
 
