@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 import math
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable, Literal
@@ -73,6 +73,35 @@ class SaleFloorBlendConfig:
     min_history_span_days: float = 0.0
     tier_a_shrink_lambda: float = 1.0
     tier_b_center: str = "mean"
+
+
+_BLEND_INFERENCE_OVERRIDE_KEYS: tuple[str, ...] = (
+    "w_base",
+    "w_min",
+    "w_max",
+    "tier_b_delta",
+    "tier_c_delta",
+    "gap_epsilon_log",
+    "gap_k_down",
+    "gap_k_up",
+    "gap_delta_cap",
+)
+
+
+def sale_floor_blend_config_with_inference_overrides(
+    base: SaleFloorBlendConfig,
+    overrides: dict[str, Any] | None,
+) -> SaleFloorBlendConfig:
+    """Overlay ``anchor_guardrails.inference_blend`` onto training blend defaults."""
+    if not isinstance(overrides, dict) or not overrides:
+        return base
+    kwargs: dict[str, float] = {}
+    for key in _BLEND_INFERENCE_OVERRIDE_KEYS:
+        if key in overrides:
+            kwargs[key] = float(overrides[key])
+    if not kwargs:
+        return base
+    return replace(base, **kwargs)
 
 
 def sale_floor_blend_config_from_raw(
