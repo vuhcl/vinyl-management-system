@@ -95,7 +95,10 @@ def build_inference_service_from_merged_config(
         AnchorGuardrailsConfig,
         anchor_guardrails_config_from_raw,
     )
-    from ..training.sale_floor_blend_config import sale_floor_blend_config_from_raw
+    from ..training.sale_floor_blend_config import (
+        sale_floor_blend_config_from_raw,
+        sale_floor_blend_config_with_inference_overrides,
+    )
 
     ag_raw = inf.get("anchor_guardrails")
     ag_cfg = anchor_guardrails_config_from_raw(
@@ -132,6 +135,12 @@ def build_inference_service_from_merged_config(
         sf_raw if isinstance(sf_raw, dict) else {},
         nm_grade_key=nm_grade_key,
     )
+    if isinstance(ag_raw, dict):
+        inf_blend = ag_raw.get("inference_blend")
+        blend_cfg = sale_floor_blend_config_with_inference_overrides(
+            blend_cfg,
+            inf_blend if isinstance(inf_blend, dict) else None,
+        )
 
     dsn_key = paths.get("postgres_dsn_env")
     if dsn_key:

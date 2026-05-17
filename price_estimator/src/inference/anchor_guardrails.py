@@ -5,7 +5,7 @@ import json
 import math
 from typing import Any
 
-from price_estimator.src.sale_floor.blend import sale_floor_blend_y
+from price_estimator.src.sale_floor.blend import sale_floor_blend_y_for_anchor
 from price_estimator.src.storage.marketplace_db import (
     price_suggestions_ladder_from_json,
 )
@@ -16,6 +16,11 @@ from price_estimator.src.training.sale_floor_inference import (
 from price_estimator.src.training.sale_floor_row_parsing import _parse_ps_grade, _positive
 
 from .anchor_guardrails_config import AnchorGuardrailsConfig
+
+
+def _append_warning_once(warnings: list[str], code: str) -> None:
+    if code not in warnings:
+        warnings.append(code)
 
 
 def listing_credible_for_caps(
@@ -212,7 +217,7 @@ def prepare_stats_for_inference(
         return warnings
     if is_inflated_ladder(stats, cfg, nm_grade_key=nm_grade_key):
         if trim_price_suggestions_json(stats, cfg, nm_grade_key=nm_grade_key):
-            warnings.append("anchor_guardrail_applied")
+            _append_warning_once(warnings, "anchor_guardrail_applied")
     return warnings
 
 
@@ -242,9 +247,9 @@ def blend_path_anchor_usd(
     ref = reference_floor_usd(stats, cfg, nm_grade_key=nm_grade_key)
     if ref is None:
         return rung
-    blended = sale_floor_blend_y(ref, rung, "A", cfg=blend_cfg)
+    blended = sale_floor_blend_y_for_anchor(ref, rung, "A", cfg=blend_cfg)
     if warnings is not None:
-        warnings.append("anchor_guardrail_applied")
+        _append_warning_once(warnings, "anchor_guardrail_applied")
     if blended is not None and blended > 0 and math.isfinite(float(blended)):
         return float(blended)
     return rung
