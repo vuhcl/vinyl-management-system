@@ -90,9 +90,18 @@ Bundled **`npm test`** **`recordVideo`** also enables Playwright **`showActions`
 
 ## Run
 
+**2-minute README demo**
+
 ```bash
 set -a && source ../../.env && set +a   # or source the local .env
 npm test
+```
+
+**Pitch assist** (release `12830828`, manual screen capture — see
+[`RECORDING_PITCH.md`](RECORDING_PITCH.md)):
+
+```bash
+npm run assist:pitch
 ```
 
 ### Cannot pass Cloudflare in Playwright’s Chromium?

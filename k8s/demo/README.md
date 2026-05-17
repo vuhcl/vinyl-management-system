@@ -8,6 +8,10 @@ to the application code (`deploy/demo-wave1-app`) and verification
 The plan (`demo_infra_wave1_c99464c4.plan.md`) is the design source of
 truth; this README is the operator-facing companion.
 
+**Resuming infra for a product pitch?** After tear-down, see
+[`demo/vinyliq_demo_playwright/RECORDING_PITCH.md`](../../demo/vinyliq_demo_playwright/RECORDING_PITCH.md)
+for spin-up commands and the pitch Playwright assist flow (release `12830828`).
+
 ## What the demo deploys
 
 ```mermaid
@@ -298,7 +302,8 @@ kubectl -n vinyl-demo create secret generic vinyl-redis \
   --from-literal=REDIS_HOST="$REDIS_HOST"
 
 kubectl -n vinyl-demo create secret generic vinyl-discogs \
-  --from-literal=DISCOGS_USER_TOKEN="$DISCOGS_USER_TOKEN"
+  --from-literal=DISCOGS_TOKEN="${DISCOGS_TOKEN:-$DISCOGS_USER_TOKEN}" \
+  --from-literal=DISCOGS_USER_TOKEN="${DISCOGS_USER_TOKEN:-$DISCOGS_TOKEN}"
 
 kubectl -n vinyl-demo create secret generic vinyl-cloudsql \
   --from-literal=DATABASE_URL="$DATABASE_URL"
@@ -400,6 +405,7 @@ export AR_REPO="${AR_REPO:-vinyl-images}"
 # Static manifests
 kubectl apply -f k8s/demo/grader-service.yaml
 kubectl apply -f k8s/demo/price-service.yaml
+kubectl apply -f k8s/demo/price-healthcheck-policy.yaml
 
 # Templated manifests
 envsubst < k8s/demo/grader-deployment.yaml | kubectl apply -f -
@@ -575,3 +581,6 @@ gcloud artifacts repositories delete "${AR_REPO:-vinyl-images}" --location="$GCP
 
 WIF and runtime service accounts can stay; they cost nothing and
 re-bootstrapping is one `gcloud add-iam-policy-binding` away.
+
+To record a pitch without re-reading this entire README, use
+[`demo/vinyliq_demo_playwright/RECORDING_PITCH.md`](../../demo/vinyliq_demo_playwright/RECORDING_PITCH.md).
