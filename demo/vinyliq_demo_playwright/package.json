@@ -4,8 +4,9 @@
   "private": true,
   "description": "Playwright TypeScript spec that drives the vinyl management system demo (release-page price estimate + seller-page condition grading) and records a 2-minute video.",
   "scripts": {
-    "test": "playwright test",
-    "test:show": "playwright test --headed",
+    "test": "playwright test --project=demo",
+    "test:show": "playwright test --project=demo --headed",
+    "assist:pitch": "playwright test --project=pitch-assist",
     "install-browsers": "playwright install chromium"
   },
   "devDependencies": {

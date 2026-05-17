@@ -58,12 +58,21 @@ lists the canonical defaults.
 
 ## Run
 
+**2-minute README demo**
+
 ```bash
 set -a && source ../../.env && set +a   # or source the local .env
 npm test
 ```
 
-A successful run leaves a `.webm` recording at
+**Pitch assist** (release `12830828`, manual screen capture — see
+[`RECORDING_PITCH.md`](RECORDING_PITCH.md)):
+
+```bash
+npm run assist:pitch
+```
+
+A successful `npm test` run leaves a `.webm` recording at
 `recordings/<spec>/<test>/video.webm`. The recording runbook
 (`RECORDING.md`) documents the ffmpeg conversion and GitHub upload
 steps that turn that into the embeddable `demo.mp4`.
