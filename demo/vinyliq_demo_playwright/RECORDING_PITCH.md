@@ -4,7 +4,8 @@ Operator script for a **short, live-narrated** product pitch: one record you own
 condition grading on the seller form, one price estimate on the release page.
 
 - Playwright assist: [`tests/pitch-assist.spec.ts`](tests/pitch-assist.spec.ts)
-  (trimmed [`demo.spec.ts`](tests/demo.spec.ts), fewer beats, no test annotations).
+  opens release → your sell listing → **types the golden comment only**; you do
+  Grade, estimate, and overlay yourself while screen recording.
 - Golden file: [`grader/demo/golden_predict_demo_pitch.json`](../../grader/demo/golden_predict_demo_pitch.json)
 - **You** capture screen + mic (QuickTime / OBS); Playwright drives the browser only.
 - The 2-minute README demo stays on [`RECORDING.md`](RECORDING.md) + `golden_predict_demo.json`.
@@ -17,6 +18,9 @@ condition grading on the seller form, one price estimate on the release page.
 - Repo-root [`.env`](../../.env) from your last demo deploy (`GCP_*`, `DEMO_HOSTNAME`,
   `REDIS_HOST`, `DATABASE_URL`, `MLFLOW_*`, `DISCOGS_USER_TOKEN`, `IMAGE_TAG`, …).
 - `CHROME_PROFILE_DIR` — persistent profile logged into the **project** Discogs account.
+  If bundled Chromium keeps asking you to log in, seed it first (same as the 2-minute demo):
+  `cd demo/vinyliq_demo_playwright && npm run warm-profile` (login-only; press Enter when done).
+  See [`README.md`](README.md#cannot-pass-cloudflare-in-playwrights-chromium).
 - `EXTENSION_PATH` — absolute path to [`vinyliq-extension/`](../../vinyliq-extension/).
 - Golden file curated (§4); all `REPLACE_*` placeholders removed.
 
@@ -198,10 +202,13 @@ export GRADER_API_BASE="https://${DEMO_HOSTNAME}/grader"
 # optional timing:
 # export PITCH_HOLD_ON_RELEASE_MS=3000
 # export PITCH_PAUSE_BEFORE_TYPE_MS=3000
-# export PITCH_HOLD_AFTER_ESTIMATE_MS=2000
+# export DEMO_COMMENT_TYPING_DELAY_MS=38
 
 npm run assist:pitch
 ```
+
+When typing finishes, the browser **stays open** until you press **Enter** in the
+terminal (finish Grade / estimate / overlay on your own timeline).
 
 ### Scene budget
 
@@ -210,13 +217,11 @@ npm run assist:pitch
 | 1 | Open `/release/12830828` (brief hold) | Playwright |
 | 2 | Open your `sell_post_url` | Playwright |
 | 3 | Pause on empty comment field (narrate) | You (timing via `PITCH_PAUSE_BEFORE_TYPE_MS`) |
-| 4 | Condition comment typed | Playwright |
-| 5 | Playwright Inspector **pause** — click **Grade condition** | You |
-| 6 | Resume Inspector → release page + price overlay | Playwright |
-| 7 | Hold on overlay | Playwright (`PITCH_HOLD_AFTER_ESTIMATE_MS`) |
+| 4 | Condition comment typed | Playwright — **assist stops here** |
+| 5 | Grade on sell dock → release page → estimate overlay | You (extension) |
+| 6 | Press **Enter** in terminal to close Chromium | You |
 
-4. Stop your recorder; export e.g. `pitch-demo.mp4` locally.
-5. Playwright may also write `recordings/**/video.webm` — optional for review only.
+4. Stop your screen recorder; export e.g. `pitch-demo.mp4` locally.
 
 **Audio:** Playwright video has no mic track. Your QuickTime/OBS file is the pitch asset.
 
@@ -237,5 +242,6 @@ Full cleanup: [`k8s/demo/README.md` — Tear down](../../k8s/demo/README.md).
 | Estimate null for `12830828` | §3 data reload; DB rows for release |
 | Hang on comment field | Discogs layout; selectors in `demo.spec.ts` / `pitch-assist.spec.ts` |
 | Grade does nothing | Extension on sell page; `GRADER_API_BASE` in `chrome.storage.sync` |
+| “type …” caption on screen | Re-run with current `pitch-assist` (`recordVideo` off). Update repo if you still see captions |
 | No price overlay | Service worker present; see [`README.md`](README.md#troubleshooting) |
 | Inspector never appears | Run headed; `assist:pitch` uses `headless: false` |

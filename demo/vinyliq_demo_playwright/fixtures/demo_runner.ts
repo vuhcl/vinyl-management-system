@@ -148,7 +148,10 @@ function demoCommentTypingDelayMs(): number {
   return Number.isFinite(raw) && raw >= 0 && raw <= 120 ? raw : 38;
 }
 
-async function focusAndTypeSellerComment(commentEl: ReturnType<typeof commentFieldLocator>, text: string): Promise<void> {
+export async function focusAndTypeSellerComment(
+  commentEl: ReturnType<typeof commentFieldLocator>,
+  text: string,
+): Promise<void> {
   await commentEl.click({ timeout: 30_000 });
   await commentEl.fill("");
   const delay = demoCommentTypingDelayMs();
