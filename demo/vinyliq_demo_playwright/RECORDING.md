@@ -3,8 +3,9 @@
 End-to-end procedure for producing the 2-minute `demo.mp4` that the
 root [`README.md`](../../README.md) embeds via a `<video>` tag.
 
-This runbook is the ONLY source of truth for the recording steps —
-plan documents are the design intent, this is the operator script.
+This runbook is the ONLY source of truth for the **2-minute README demo**.
+For a short **pitch clip** (release `12830828`, live narration, manual screen
+capture), use [`RECORDING_PITCH.md`](RECORDING_PITCH.md) instead.
 
 ## 0. Prerequisites
 
