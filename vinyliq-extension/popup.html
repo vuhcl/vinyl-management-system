@@ -3,35 +3,24 @@
 <head>
   <meta charset="utf-8" />
   <style>
-    body { width: 320px; font-family: system-ui, sans-serif; font-size: 13px; padding: 10px; }
-    label { display: block; margin-top: 8px; font-weight: 600; }
-    select, input[type="text"] { width: 100%; margin-top: 4px; box-sizing: border-box; }
+    body { width: 300px; font-family: system-ui, sans-serif; font-size: 13px; padding: 10px; box-sizing: border-box; margin: 0; }
+    .hint { font-size: 11px; color: #666; margin-top: 6px; margin-bottom: 0; }
+    .err { color: #b00; font-size: 12px; margin-top: 8px; white-space: pre-wrap; }
     button { margin-top: 12px; width: 100%; padding: 8px; cursor: pointer; }
-    .hint { font-size: 11px; color: #666; margin-top: 6px; }
-    .err { color: #b00; font-size: 12px; margin-top: 8px; }
-    h4 { margin: 8px 0 0 0; font-size: 12px; color: #444; }
+    button:disabled { cursor: not-allowed; opacity: 0.55; }
+    button.hidden { display: none; margin-top: 0; }
+    a.options-link { display: inline-block; margin-top: 10px; font-size: 12px; }
   </style>
 </head>
 <body>
   <strong>VinylIQ</strong>
-  <p class="hint" id="release-line">Release: —</p>
+  <p class="hint" id="release-line">Detecting Discogs tab…</p>
 
-  <h4>Price API</h4>
-  <label for="priceApiBase">Price API base URL</label>
-  <input type="text" id="priceApiBase" placeholder="http://127.0.0.1:8801" />
-
-  <h4>Grader API</h4>
-  <label for="graderApiBase">Grader API base URL</label>
-  <input type="text" id="graderApiBase" placeholder="http://127.0.0.1:8090" />
-
-  <label for="apiKey">API key (optional, sent to both)</label>
-  <input type="text" id="apiKey" placeholder="if VINYLIQ_API_KEY set on server" />
-
-  <label for="media">Media condition</label>
-  <select id="media"></select>
-  <label for="sleeve">Sleeve condition</label>
-  <select id="sleeve"></select>
+  <button type="button" id="grade" class="hidden">Grade condition</button>
   <button type="button" id="estimate">Get estimate</button>
+  <a href="#" id="open-options" class="options-link">Options (API backends & key)</a>
+  <div class="hint">On seller drafts (<code>/sell/post/</code>): use the <strong>VinylIQ panel docked</strong> to the listing page so controls stay visible while you edit. Toolbar popup repeats the same actions.</div>
+
   <div class="err" id="err"></div>
   <script src="popup.js"></script>
 </body>

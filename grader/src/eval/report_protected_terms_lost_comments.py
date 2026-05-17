@@ -18,17 +18,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
-import yaml
-
+from grader.src.config_io import load_yaml_mapping
 from grader.src.data.preprocess import Preprocessor
-
-
-def _load_yaml(path: Path) -> dict[str, Any]:
-    with open(path, "r", encoding="utf-8") as f:
-        data = yaml.safe_load(f)
-    if not isinstance(data, dict):
-        raise SystemExit(f"Expected mapping YAML at {path}")
-    return data
 
 
 def _iter_jsonl(path: Path):
@@ -79,7 +70,10 @@ def main() -> None:
     if not gl_path.is_file():
         raise SystemExit(f"Guidelines not found: {gl_path.resolve()}")
 
-    config = _load_yaml(cfg_path)
+    try:
+        config = load_yaml_mapping(cfg_path)
+    except TypeError as e:
+        raise SystemExit(str(e)) from e
     if args.input_jsonl:
         in_path = Path(args.input_jsonl)
     else:

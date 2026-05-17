@@ -31,11 +31,12 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
-import yaml
+
+from grader.src.config_io import load_yaml_mapping
 
 from grader.src.evaluation.grade_analysis import resolve_rule_owned_grades
 from grader.src.models.transformer import TransformerTrainer
-from grader.src.pipeline import Pipeline
+from grader.src.schemas import merge_description_quality_metadata
 from grader.src.rules.rule_engine import RuleEngine
 
 
@@ -120,10 +121,8 @@ def main() -> None:
     )
     args = p.parse_args()
 
-    with open(args.config, "r", encoding="utf-8") as f:
-        cfg = yaml.safe_load(f)
-    with open(args.guidelines, "r", encoding="utf-8") as f:
-        guidelines = yaml.safe_load(f)
+    cfg = load_yaml_mapping(args.config)
+    guidelines = load_yaml_mapping(args.guidelines)
 
     rule_owned = resolve_rule_owned_grades(guidelines).get(args.target, [])
     if not rule_owned:
@@ -151,7 +150,7 @@ def main() -> None:
     trainer.load_model()
 
     raw = trainer.predict(texts=texts, item_ids=item_ids, records=records)
-    Pipeline._merge_description_metadata(raw, records)
+    merge_description_quality_metadata(raw, records)
     rules_cfg = cfg.get("rules") or {}
     allow_ex = bool(rules_cfg.get("allow_excellent_soft_override", False))
     engine = RuleEngine(

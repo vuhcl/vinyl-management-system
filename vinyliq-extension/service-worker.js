@@ -1,18 +1,19 @@
+importScripts("defaults.js");
+
 /**
  * VinylIQ extension service worker.
  *
- * Proxies API calls from page-context content scripts to the VinylIQ
- * FastAPI backends. The MV3 service worker bypasses page CORS and uses
- * host_permissions declared in manifest.json (discogs.com, localhost,
- * 127.0.0.1, *.nip.io) so requests succeed without server-side CORS.
+ * Proxies API calls from page-context scripts to VinylIQ backends
+ * (`host_permissions` in manifest bypass CORS).
  *
- * Supported message types:
- *   - "ESTIMATE": POST /estimate on the price API
- *   - "GRADE":    POST /predict  on the grader API
- *
- * Both messages share the same response envelope: ``{ ok: bool, data?,
- * status?, error? }`` to keep callers symmetric.
+ * Resolve order (see planner): bundled **defaults.js** <
+ * chrome.storage.sync (Options overrides) <
+ * GRADE / ESTIMATE message explicit apiBase overrides (backward compat dev).
  */
+
+function trimStr(v) {
+  return v != null ? String(v).trim() : "";
+}
 
 function buildUrl(apiBase, path) {
   return `${String(apiBase || "").replace(/\/$/, "")}${path}`;
@@ -24,6 +25,30 @@ function buildHeaders(apiKey) {
     headers["X-API-Key"] = apiKey;
   }
   return headers;
+}
+
+async function resolveApiRuntimeConfig() {
+  const defs = globalThis.__VINYLIQ_API_DEFAULTS ?? {
+    priceApiBase: "http://127.0.0.1:8801",
+    graderApiBase: "http://127.0.0.1:8090",
+  };
+  const synced = await chrome.storage.sync.get([
+    "priceApiBase",
+    "graderApiBase",
+    "apiKey",
+    "apiBase",
+  ]);
+  const priceApiBase =
+    trimStr(synced.priceApiBase) ||
+    trimStr(synced.apiBase) ||
+    trimStr(defs.priceApiBase) ||
+    "http://127.0.0.1:8801";
+  const graderApiBase =
+    trimStr(synced.graderApiBase) ||
+    trimStr(defs.graderApiBase) ||
+    "http://127.0.0.1:8090";
+  const apiKey = trimStr(synced.apiKey) || "";
+  return { priceApiBase, graderApiBase, apiKey };
 }
 
 async function callApi(url, headers, body) {
@@ -47,19 +72,29 @@ async function callApi(url, headers, body) {
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message?.type === "ESTIMATE") {
-    const { apiBase, apiKey, body } = message;
-    const url = buildUrl(apiBase, "/estimate");
-    callApi(url, buildHeaders(apiKey), body)
-      .then(sendResponse)
+    const { apiBase: msgPriceBase, apiKey: msgKey, body } = message;
+    resolveApiRuntimeConfig()
+      .then((cfg) => {
+        const apiBase =
+          trimStr(msgPriceBase).length > 0 ? trimStr(msgPriceBase) : cfg.priceApiBase;
+        const apiKey = trimStr(msgKey).length > 0 ? trimStr(msgKey) : cfg.apiKey;
+        const url = buildUrl(apiBase, "/estimate");
+        return callApi(url, buildHeaders(apiKey), body).then(sendResponse);
+      })
       .catch((err) => sendResponse({ ok: false, error: String(err) }));
     return true;
   }
 
   if (message?.type === "GRADE") {
-    const { apiBase, apiKey, text } = message;
-    const url = buildUrl(apiBase, "/predict");
-    callApi(url, buildHeaders(apiKey), { text })
-      .then(sendResponse)
+    const { apiBase: msgGrader, apiKey: msgKey, text } = message;
+    resolveApiRuntimeConfig()
+      .then((cfg) => {
+        const apiBase =
+          trimStr(msgGrader).length > 0 ? trimStr(msgGrader) : cfg.graderApiBase;
+        const apiKey = trimStr(msgKey).length > 0 ? trimStr(msgKey) : cfg.apiKey;
+        const url = buildUrl(apiBase, "/predict");
+        return callApi(url, buildHeaders(apiKey), { text }).then(sendResponse);
+      })
       .catch((err) => sendResponse({ ok: false, error: String(err) }));
     return true;
   }

@@ -8,6 +8,7 @@ from psycopg.rows import dict_row
 from psycopg_pool import ConnectionPool
 
 from .marketplace_db import compute_marketplace_upsert_values
+from .marketplace_projection import marketplace_stats_public_dict
 
 
 class PostgresMarketplaceStats:
@@ -32,26 +33,7 @@ class PostgresMarketplaceStats:
                 row = cur.fetchone()
         if not row:
             return None
-        d = dict(row)
-        out: dict[str, Any] = {
-            "release_id": d["release_id"],
-            "fetched_at": d["fetched_at"],
-            "num_for_sale": d["num_for_sale"],
-            "raw_json": d["raw_json"],
-        }
-        if "blocked_from_sale" in d:
-            out["blocked_from_sale"] = d["blocked_from_sale"]
-        for k in (
-            "release_raw_json",
-            "price_suggestions_json",
-            "release_lowest_price",
-            "release_num_for_sale",
-            "community_want",
-            "community_have",
-        ):
-            if k in d:
-                out[k] = d[k]
-        return out
+        return marketplace_stats_public_dict(dict(row))
 
     def upsert(
         self,

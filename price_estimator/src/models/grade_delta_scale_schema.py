@@ -6,6 +6,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from .grade_delta_artifact_keys import GRADE_DELTA_FIT_TOP_LEVEL_NUMERIC_KEYS
+
 
 def build_placeholder_grade_delta_fit(
     *,
@@ -54,17 +56,17 @@ def validate_grade_delta_scale_fit_json(blob: Any) -> None:
         raise ValueError("fit_metadata must be an object")
     if "fitted_at" not in meta:
         raise ValueError("fit_metadata.fitted_at is required")
-    for key in (
-        "price_ref_usd",
-        "price_gamma",
-        "price_scale_min",
-        "price_scale_max",
-        "age_k",
-        "age_center_year",
-    ):
+    for key in GRADE_DELTA_FIT_TOP_LEVEL_NUMERIC_KEYS:
         if key not in blob:
             raise ValueError(f"missing top-level scaler key: {key}")
         try:
             float(blob[key])
         except (TypeError, ValueError) as e:
             raise ValueError(f"{key} must be numeric") from e
+    for opt in ("alpha", "beta"):
+        if opt not in blob or blob[opt] is None:
+            continue
+        try:
+            float(blob[opt])
+        except (TypeError, ValueError) as e:
+            raise ValueError(f"{opt} must be numeric when present") from e

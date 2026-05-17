@@ -54,5 +54,19 @@ def test_parse_release_listings_fixture() -> None:
     assert b["comments"] == ""
 
 
+def test_parse_jacket_synonym_maps_to_sleeve_field() -> None:
+    html = (
+        '<div id="pjax_container"><table><tbody><tr>'
+        '<td class="item_description">'
+        '<strong><a href="/sell/item/999003/release/1">X - Y</a></strong>'
+        '<p class="item_condition">Media: Near Mint (NM or M-)<br/>'
+        "Jacket: Good (G)</p></td></tr></tbody></table></div>"
+    )
+    p = parse_release_listings_html(html, "1", page=1)
+    assert len(p.listings) == 1
+    assert p.listings[0]["condition"] == "Near Mint (NM or M-)"
+    assert p.listings[0]["sleeve_condition"] == "Good (G)"
+
+
 def test_looks_like_login_fixture() -> None:
     assert looks_like_login_or_challenge(FIXTURE_HTML) is False

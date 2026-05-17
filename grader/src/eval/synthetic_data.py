@@ -11,7 +11,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-import yaml
+from grader.src.config_io import load_yaml_mapping
 
 # Representative seller-note text per sleeve grade (test-fixture style)
 GRADE_TEXTS: dict[str, str] = {
@@ -89,8 +89,7 @@ def load_canonical_grades(
     guidelines_path: str | Path,
 ) -> tuple[list[str], list[str]]:
     path = Path(guidelines_path)
-    with open(path, encoding="utf-8") as f:
-        g = yaml.safe_load(f)
+    g = load_yaml_mapping(path)
     return list(g["sleeve_grades"]), list(g["media_grades"])
 
 

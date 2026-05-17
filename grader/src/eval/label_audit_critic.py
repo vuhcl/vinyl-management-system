@@ -7,6 +7,10 @@ from dataclasses import dataclass
 from typing import Any
 
 from grader.src.eval.label_audit_backend import parse_llm_json
+from grader.src.eval.label_audit_constants import (
+    REVIEWED_HUMAN_ACTIONS,
+    REVIEWED_HUMAN_ACTIONS_WITH_AUTO_APPLY,
+)
 
 
 def derive_gold_label(row: sqlite3.Row | dict[str, Any]) -> tuple[str, str]:
@@ -45,9 +49,11 @@ def load_human_gold_examples(
     *,
     include_auto_apply: bool = False,
 ) -> list[CriticExample]:
-    actions = ["accept_llm", "keep_assigned", "manual_set"]
-    if include_auto_apply:
-        actions.append("auto_apply")
+    actions = list(
+        REVIEWED_HUMAN_ACTIONS_WITH_AUTO_APPLY
+        if include_auto_apply
+        else REVIEWED_HUMAN_ACTIONS
+    )
     placeholders = ",".join("?" for _ in actions)
     rows = conn.execute(
         f"""

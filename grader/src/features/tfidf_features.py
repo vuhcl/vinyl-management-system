@@ -32,10 +32,10 @@ from typing import Any, Optional
 import mlflow
 import numpy as np
 import scipy.sparse as sp
-import yaml
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.preprocessing import LabelEncoder
 
+from grader.src.config_io import load_yaml_mapping
 from grader.src.data.preprocess import (
     Preprocessor,
     build_protected_term_token_patterns,
@@ -48,10 +48,6 @@ from grader.src.mlflow_tracking import (
 # ---------------------------------------------------------------------------
 # Logging
 # ---------------------------------------------------------------------------
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-)
 logger = logging.getLogger(__name__)
 
 # Targets — sleeve and media are always processed together
@@ -86,7 +82,7 @@ class TFIDFFeatureBuilder:
         if config is not None:
             self.config = copy.deepcopy(config)
         else:
-            self.config = self._load_yaml(config_path)
+            self.config = load_yaml_mapping(config_path)
 
         tfidf_cfg = self.config["models"]["baseline"]["tfidf"]
         self.max_features: int = tfidf_cfg["max_features"]
@@ -218,11 +214,6 @@ class TFIDFFeatureBuilder:
     # -----------------------------------------------------------------------
     # Config loading
     # -----------------------------------------------------------------------
-    @staticmethod
-    def _load_yaml(path: str) -> dict:
-        with open(path, "r") as f:
-            return yaml.safe_load(f)
-
     # -----------------------------------------------------------------------
     # Data loading
     # -----------------------------------------------------------------------
@@ -281,13 +272,11 @@ class TFIDFFeatureBuilder:
         gp = self.config.get("rules", {}).get("guidelines_path")
         if gp:
             try:
-                with open(gp, "r", encoding="utf-8") as gf:
-                    guidelines = yaml.safe_load(gf)
-                if isinstance(guidelines, dict):
-                    protected_term_patterns = (
-                        build_protected_term_token_patterns(guidelines)
-                    )
-            except OSError as exc:
+                guidelines = load_yaml_mapping(gp)
+                protected_term_patterns = (
+                    build_protected_term_token_patterns(guidelines)
+                )
+            except (OSError, TypeError) as exc:
                 logger.warning(
                     "Could not load guidelines for TF-IDF promo gating (%s): %s",
                     gp,
@@ -516,7 +505,7 @@ class TFIDFFeatureBuilder:
             "guidelines_path",
             "grader/configs/grading_guidelines.yaml",
         )
-        gl = self._load_yaml(gp)
+        gl = load_yaml_mapping(gp)
         key = "sleeve_grades" if target == "sleeve" else "media_grades"
         if key not in gl:
             raise KeyError(f"{gp} missing '{key}' for label encoder")
@@ -903,6 +892,10 @@ class TFIDFFeatureBuilder:
 def main() -> None:
     import argparse
 
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    )
     parser = argparse.ArgumentParser(
         description="Build TF-IDF features for vinyl grader baseline"
     )

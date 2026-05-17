@@ -10,6 +10,7 @@ from price_estimator.src.features.vinyliq_features import (
     GradeDeltaScaleParams,
     apply_condition_log_adjustment,
     grade_delta_scale_params_from_cond,
+    log1p_nm_equivalent_from_sale_usd,
     scaled_condition_log_adjustment,
 )
 from price_estimator.src.models.condition_adjustment import (
@@ -296,7 +297,7 @@ def test_sale_floor_blend_bundle_legacy_policy_flag() -> None:
 def test_scaled_condition_matches_legacy_when_scale_off() -> None:
     logp = 4.0
     m, s = 7.0, 7.0
-    a, b, ref = -0.06, -0.04, 8.0
+    a, b, ref = 0.06, 0.04, 8.0
     leg = apply_condition_log_adjustment(logp, m, s, alpha=a, beta=b, ref_grade=ref)
     p = GradeDeltaScaleParams(price_gamma=0.0, age_k=0.0)
     adj = scaled_condition_log_adjustment(
@@ -316,7 +317,7 @@ def test_scaled_condition_matches_legacy_when_scale_off() -> None:
 def test_scaled_condition_with_price_gamma_differs() -> None:
     logp = 4.0
     m, s = 6.0, 6.0
-    a, b, ref = -0.06, -0.04, 8.0
+    a, b, ref = 0.06, 0.04, 8.0
     p = GradeDeltaScaleParams(price_ref_usd=50.0, price_gamma=0.5, price_scale_min=0.1, price_scale_max=10.0)
     adj = scaled_condition_log_adjustment(
         logp,
@@ -333,8 +334,33 @@ def test_scaled_condition_with_price_gamma_differs() -> None:
     assert adj != pytest.approx(leg)
 
 
+def test_nm_equivalent_uplift_decreases_as_media_grade_improves() -> None:
+    """Better observed media grade ⇒ less uplift to NM ⇒ lower log NM-equivalent."""
+    sp = GradeDeltaScaleParams(price_gamma=0.0, age_k=0.0)
+    sale_usd = 50.0
+    sleeve_ord = 7.0
+    nm_m, nm_s = 7.0, 7.0
+    prev: float | None = None
+    for media_ord in range(1, 8):
+        log_nm = log1p_nm_equivalent_from_sale_usd(
+            sale_usd,
+            float(media_ord),
+            sleeve_ord,
+            nm_m,
+            nm_s,
+            base_alpha=0.06,
+            base_beta=0.04,
+            anchor_usd=50.0,
+            release_year=2000.0,
+            scale_params=sp,
+        )
+        if prev is not None:
+            assert log_nm < prev
+        prev = log_nm
+
+
 def test_grade_delta_scale_params_from_cond_nested() -> None:
-    cond = {"alpha": -0.06, "grade_delta_scale": {"price_gamma": 0.0, "age_k": 0.0}}
+    cond = {"alpha": 0.06, "grade_delta_scale": {"price_gamma": 0.0, "age_k": 0.0}}
     g = grade_delta_scale_params_from_cond(cond)
     assert g is not None
     assert g.price_gamma == 0.0
@@ -342,7 +368,7 @@ def test_grade_delta_scale_params_from_cond_nested() -> None:
 
 def test_load_params_with_grade_delta_overlays(tmp_path) -> None:
     (tmp_path / "condition_params.json").write_text(
-        json.dumps({"alpha": -0.06, "beta": -0.04, "ref_grade": 8.0})
+        json.dumps({"alpha": 0.06, "beta": 0.04, "ref_grade": 8.0})
     )
     (tmp_path / "grade_delta_scale.json").write_text(
         json.dumps({"price_ref_usd": 40.0, "price_gamma": 0.2, "age_k": 0.0})
@@ -355,7 +381,7 @@ def test_load_params_with_grade_delta_overlays(tmp_path) -> None:
 
 
 def test_merge_grade_delta_scale_dict() -> None:
-    base = {"alpha": -0.06, "grade_delta_scale": {"price_gamma": 0.1}}
+    base = {"alpha": 0.06, "grade_delta_scale": {"price_gamma": 0.1}}
     out = merge_grade_delta_scale_dict(base, {"price_ref_usd": 30.0})
     assert out["grade_delta_scale"]["price_gamma"] == 0.1
     assert out["grade_delta_scale"]["price_ref_usd"] == 30.0

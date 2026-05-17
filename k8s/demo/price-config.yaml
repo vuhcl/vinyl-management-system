@@ -11,7 +11,9 @@ metadata:
   namespace: vinyl-demo
 data:
   config.yaml: |
-    inherits: configs/base.yaml
+    # VinylIQ defaults (incl. vinyliq.inference) live here — NOT monorepo
+    # root ``configs/base.yaml`` (collector/shared paths only).
+    inherits: price_estimator/configs/base.yaml
     vinyliq:
       # Demo secret ships DISCOGS_TOKEN (see k8s/demo/README.md Phase 4).
       discogs_token_env: DISCOGS_TOKEN

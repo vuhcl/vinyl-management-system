@@ -26,6 +26,7 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any, Iterator
 
+from grader.src.config_io import load_yaml_mapping
 from grader.src.data.ingest_discogs import DiscogsIngester
 from grader.src.data.vinyl_format import (
     DISCOGS_SALE_HISTORY_SOURCE,
@@ -700,10 +701,7 @@ def main() -> int:
     if not guidelines_path.is_absolute():
         guidelines_path = (repo_root / guidelines_path).resolve()
 
-    import yaml
-
-    with open(cfg_path, encoding="utf-8") as f:
-        config = yaml.safe_load(f)
+    config = load_yaml_mapping(cfg_path)
 
     default_sale_db, default_out = _default_paths_from_config(config, repo_root)
     sale_db = args.sale_db or default_sale_db

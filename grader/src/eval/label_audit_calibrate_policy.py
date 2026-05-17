@@ -10,6 +10,10 @@ from pathlib import Path
 from typing import Any
 
 from grader.src.eval.label_audit_backend import ensure_db
+from grader.src.eval.label_audit_constants import (
+    REVIEWED_HUMAN_ACTIONS,
+    REVIEWED_HUMAN_ACTIONS_WITH_AUTO_APPLY,
+)
 
 
 SOURCE_NAMES = ("llm", "pred", "assigned")
@@ -272,9 +276,11 @@ def _stratified_split(
 def _load_reviewed_rows(
     conn: sqlite3.Connection, include_auto_apply: bool
 ) -> list[sqlite3.Row]:
-    actions = ["accept_llm", "keep_assigned", "manual_set"]
-    if include_auto_apply:
-        actions.append("auto_apply")
+    actions = list(
+        REVIEWED_HUMAN_ACTIONS_WITH_AUTO_APPLY
+        if include_auto_apply
+        else REVIEWED_HUMAN_ACTIONS
+    )
     placeholders = ",".join("?" for _ in actions)
     rows = conn.execute(
         f"""

@@ -1,7 +1,7 @@
 """Tests for frequency-capped primary_artist_id / primary_label_id encoders."""
 from __future__ import annotations
 
-from price_estimator.src.training.train_vinyliq import (
+from price_estimator.src.training.train_vinyliq.catalog_encoders import (
     _auto_top_k_id_encoder,
     _fit_frequency_capped_id_encoder,
 )

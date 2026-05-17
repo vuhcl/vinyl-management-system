@@ -1,0 +1,56 @@
+# Dual-gate drift thresholds (Phase 1). Tune per environment; CI uses the same file.
+version: 1
+
+numeric:
+  year:
+    max_psi: 0.10
+    min_ks_pvalue: 0.05
+  decade:
+    max_psi: 0.10
+    min_ks_pvalue: 0.05
+  label_tier:
+    max_psi: 0.10
+    min_ks_pvalue: 0.05
+  pred_log1p_usd:
+    max_psi: 0.10
+    min_ks_pvalue: 0.05
+
+categorical:
+  genre:
+    top_k: 15
+    max_psi_topk: 0.10
+    min_chi2_pvalue: 0.05
+  country:
+    top_k: 15
+    max_psi_topk: 0.10
+    min_chi2_pvalue: 0.05
+  style:
+    top_k: 15
+    max_psi_topk: 0.10
+    min_chi2_pvalue: 0.05
+
+binary:
+  is_promo:
+    max_psi: 0.10
+    min_z_pvalue: 0.05
+  is_colored_vinyl:
+    max_psi: 0.10
+    min_z_pvalue: 0.05
+
+integrality:
+  year_min: 1900
+  year_max: 2035
+  label_tier_max: 10
+  min_rows: 200
+
+challenge_detect:
+  # Stricter than "no drift" so challenge fixture must exceed these
+  numeric:
+    min_psi: 0.10
+    max_ks_pvalue: 0.01
+  categorical:
+    max_chi2_pvalue: 0.01
+    min_psi_topk: 0.10
+  model_shift:
+    min_psi: 0.10
+    max_ks_pvalue: 0.01

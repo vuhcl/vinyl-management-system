@@ -308,6 +308,33 @@ class DiscogsClient:
             return {}
         return out
 
+    def get_release_stats_with_retries(
+        self,
+        release_id: str | int,
+        *,
+        max_retries: int = 8,
+        backoff_base: float = 1.5,
+        backoff_max: float = 120.0,
+        timeout: float = 45.0,
+    ) -> dict[str, Any]:
+        """
+        GET /releases/{release_id}/stats — community ``num_want``, ``num_have``.
+
+        Lightweight alternative to fetching the full release resource when only
+        community counts matter (see Marketplace Statistics for listing floor).
+        """
+        rid = str(release_id).strip()
+        out = self.get_with_retries(
+            f"/releases/{rid}/stats",
+            max_retries=max_retries,
+            backoff_base=backoff_base,
+            backoff_max=backoff_max,
+            timeout=timeout,
+        )
+        if not isinstance(out, dict):
+            return {}
+        return out
+
     def get_release_with_retries(
         self,
         release_id: str | int,

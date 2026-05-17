@@ -12,23 +12,45 @@ import numpy as np
 import yaml
 
 from ..features.vinyliq_features import (
+    clamp_ordinals_for_inference,
     condition_string_to_ordinal,
     default_feature_columns,
     first_artist_id,
     first_label_id,
     grade_delta_scale_params_from_cond,
     row_dict_for_inference,
-    scaled_condition_log_adjustment,
 )
-from ..models.condition_adjustment import load_params_with_grade_delta_overlays
+from ..models.condition_adjustment import (
+    default_params,
+    load_params_with_grade_delta_overlays,
+    merge_inference_condition_params,
+)
 from ..models.fitted_regressor import (
     TARGET_KIND_RESIDUAL_LOG_MEDIAN,
     FittedVinylIQRegressor,
     load_fitted_regressor,
 )
 from ..storage.feature_store import FeatureStoreDB
-from ..storage.marketplace_db import MarketplaceStatsDB, compute_marketplace_upsert_values
+from ..storage.marketplace_db import (
+    MarketplaceStatsDB,
+    decode_redis_marketplace_cached_payload,
+    marketplace_inference_stats_from_row,
+    merge_marketplace_client_overlay,
+    redis_marketplace_cache_blob_from_row,
+)
 from ..storage.redis_stats_cache import RedisStatsCache
+from .confidence_interval import (
+    DEFAULT_MIN_HALF_WIDTH_USD,
+    read_manifest,
+    resolve_confidence_interval_bounds,
+    try_load_quantile_estimators,
+    vinyl_usd_from_logp_raw,
+)
+from ..models.confidence_calibration import load_calibration
+
+_MIN_PRICE_USD = 0.50
+_MIN_RELEASE_YEAR = 1877
+_MAX_RELEASE_YEAR = 2030
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +60,90 @@ def _repo_root() -> Path:
     return Path(__file__).resolve().parents[2]
 
 
+def _workspace_root_for_yaml_inherits() -> Path:
+    """Monorepo root (parent of ``price_estimator``); Docker image layout is ``/app``."""
+    return _repo_root().parent
+
+
+def _deep_merge_vinyliq_yaml(base: dict[str, Any], overrides: dict[str, Any]) -> None:
+    for k, v in overrides.items():
+        if (
+            k in base
+            and isinstance(base[k], dict)
+            and isinstance(v, dict)
+        ):
+            _deep_merge_vinyliq_yaml(base[k], v)
+        else:
+            base[k] = v
+
+
+def _load_yaml_with_inherits_file(
+    path: Path,
+    *,
+    workspace_root: Path | None,
+) -> dict[str, Any]:
+    if not path.is_file():
+        return {}
+    with open(path, encoding="utf-8") as f:
+        cfg = yaml.safe_load(f) or {}
+    if not isinstance(cfg, dict):
+        return {}
+    parent_raw = cfg.pop("inherits", None)
+    ws = workspace_root if workspace_root is not None else _workspace_root_for_yaml_inherits()
+    if parent_raw:
+        raw = str(parent_raw).strip()
+        if raw:
+            parent_path = Path(raw)
+            if not parent_path.is_absolute():
+                parent_path = ws / parent_path
+            base = (
+                _load_yaml_with_inherits_file(parent_path, workspace_root=ws)
+                if parent_path.is_file()
+                else {}
+            )
+            _deep_merge_vinyliq_yaml(base, cfg)
+            return base
+    return cfg
+
+
+def yaml_inference_condition_overlay(cfg: dict[str, Any]) -> dict[str, Any] | None:
+    """
+    Read ``ordinal_cascade.{condition_adjustment,grade_delta_scale}`` into a dict
+    suitable for :func:`merge_inference_condition_params`.
+
+    Mirrors the training nesting under ``vinyliq.training_label.sale_floor_blend``.
+    """
+    v = cfg.get("vinyliq")
+    if not isinstance(v, dict):
+        return None
+    tl = v.get("training_label")
+    if not isinstance(tl, dict):
+        return None
+    sf = tl.get("sale_floor_blend")
+    if not isinstance(sf, dict):
+        return None
+    oc = sf.get("ordinal_cascade")
+    if not isinstance(oc, dict):
+        return None
+
+    out: dict[str, Any] = {}
+    ca = oc.get("condition_adjustment")
+    if isinstance(ca, dict):
+        for k in ("alpha", "beta", "ref_grade"):
+            if k not in ca or ca[k] is None:
+                continue
+            try:
+                out[k] = float(ca[k])
+            except (TypeError, ValueError):
+                continue
+
+    gds = oc.get("grade_delta_scale")
+    if isinstance(gds, dict) and gds:
+        out["grade_delta_scale"] = dict(gds)
+
+    return out or None
+
+
 def _ensure_shared_path() -> None:
     root = _repo_root().parent
     shared = root / "shared"
@@ -45,16 +151,25 @@ def _ensure_shared_path() -> None:
         sys.path.insert(0, str(root))
 
 
-def load_yaml_config(path: Path | None) -> dict[str, Any]:
-    import os
-
-    root = _repo_root()
+def load_yaml_config(
+    path: Path | None = None,
+    *,
+    workspace_root: Path | None = None,
+) -> dict[str, Any]:
+    """
+    Load VinylIQ YAML. When ``inherits:`` is set (e.g. GKE ``price-config``), merge the
+    parent chain (**parent → child**) so bundled ``configs/base.yaml`` shipped with the
+    Docker image (under the monorepo root, ``/app`` in the cluster image) participates.
+    """
+    root_pkg = _repo_root()
     env = os.environ.get("VINYLIQ_CONFIG")
-    p = path or (Path(env) if env else root / "configs" / "base.yaml")
-    if not p.exists():
-        return {}
-    with open(p) as f:
-        return yaml.safe_load(f) or {}
+    p_raw = path or (Path(env) if env else root_pkg / "configs" / "base.yaml")
+    p = Path(p_raw)
+    merged = _load_yaml_with_inherits_file(
+        p,
+        workspace_root=workspace_root,
+    )
+    return merged if isinstance(merged, dict) else {}
 
 
 def _parse_encoder_json(raw: dict[str, Any]) -> dict[str, dict[str, float]]:
@@ -116,6 +231,10 @@ class InferenceService:
         discogs_token: str | None = None,
         genre_encoder_path: Path | None = None,
         redis_cache: RedisStatsCache | None = None,
+        model_source: str = "local",
+        nm_grade_key: str = "Near Mint (NM or M-)",
+        yaml_condition_overlay: dict[str, Any] | None = None,
+        use_price_suggestion_condition_anchor: bool = True,
     ) -> None:
         if marketplace_store is not None:
             self.marketplace = marketplace_store
@@ -145,6 +264,42 @@ class InferenceService:
         # ``RedisStatsCache()`` and the host comes from REDIS_HOST. Disabled
         # cache is a no-op fallthrough to SQLite (the existing behavior).
         self.redis_cache = redis_cache if redis_cache is not None else RedisStatsCache()
+        self.model_source = str(model_source).strip().lower() or "local"
+        self._nm_grade_key = str(nm_grade_key).strip() or "Near Mint (NM or M-)"
+        self._yaml_condition_overlay = yaml_condition_overlay or None
+        self._use_ps_condition_anchor = bool(use_price_suggestion_condition_anchor)
+        self._manifest_fetched = False
+        self._manifest_memo: dict[str, Any] = {}
+        self._calibration_fetched = False
+        self._calibration_memo: dict[str, Any] | None = None
+        self._quantile_pair_fetched = False
+        self._q_low: Any = None
+        self._q_high: Any = None
+
+    def _get_manifest(self) -> dict[str, Any]:
+        if not self._manifest_fetched:
+            self._manifest_memo = read_manifest(self.model_dir)
+            self._manifest_fetched = True
+        return self._manifest_memo
+
+    def _get_calibration(self) -> dict[str, Any] | None:
+        if not self._calibration_fetched:
+            self._calibration_memo = load_calibration(self.model_dir)
+            self._calibration_fetched = True
+        return self._calibration_memo
+
+    def _get_quantile_estimators(self) -> tuple[Any | None, Any | None]:
+        if not self._quantile_pair_fetched:
+            self._q_low, self._q_high = try_load_quantile_estimators(
+                self.model_dir,
+                self._get_manifest(),
+            )
+            self._quantile_pair_fetched = True
+        return self._q_low, self._q_high
+
+    def _effective_condition_params(self) -> dict[str, Any]:
+        base = load_params_with_grade_delta_overlays(self.model_dir)
+        return merge_inference_condition_params(base, self._yaml_condition_overlay)
 
     def _get_discogs_client(self):
         _ensure_shared_path()
@@ -163,6 +318,21 @@ class InferenceService:
         self._model = loaded
         return self._model
 
+    def invalidate_marketplace_redis_cache(self, release_id: str) -> dict[str, Any]:
+        """Remove ``vinyliq:marketplace:stats:{release_id}`` so the next fetch repopulates.
+
+        Postgres/SQLite rows are untouched. When Redis is disabled, this is a no-op.
+
+        Returns a small summary for APIs (does not indicate whether DEL matched a key).
+        """
+        rid = str(release_id).strip()
+        enabled_before = self.redis_cache.enabled()
+        self.redis_cache.invalidate(rid)
+        return {
+            "release_id": rid,
+            "redis_cache_enabled": enabled_before,
+        }
+
     def fetch_stats(
         self,
         release_id: str,
@@ -174,62 +344,73 @@ class InferenceService:
 
         Postgres/SQLite ``marketplace_stats`` is not consulted on the inference
         path — bulk-loaded rows are treated as stale. Redis holds fresh
-        projections (30-day TTL); misses call Discogs and warm Redis. Live
-        responses optionally persist to the backing store for training exports
+        projections (30-day TTL); misses call Discogs and warm Redis.
+
+        Live hydrate matches ``scripts/collect_marketplace_stats.py`` **full** mode
+        (same two calls per ``release_id``): ``GET /releases/{id}`` for listing/community
+        fields and ``GET /marketplace/price_suggestions/{id}`` for the grade ladder.
+        Live responses optionally persist to the backing store for training exports
         only (best-effort; failures do not block the request).
+
+        Older Redis entries with only ``release_lowest_price`` / ``num_for_sale`` are
+        upgraded on read.
         """
         rid = str(release_id).strip()
         if use_cache and not refresh:
             cached = self.redis_cache.get(rid)
             if cached is not None:
-                return {
-                    "release_lowest_price": cached.get("release_lowest_price"),
-                    "num_for_sale": cached.get("num_for_sale"),
-                    "source": "cache_redis",
-                }
+                core = decode_redis_marketplace_cached_payload(cached)
+                return {**core, "source": "cache_redis"}
         client = self._get_discogs_client()
         if not client:
             return {
-                "release_lowest_price": None,
-                "num_for_sale": 0,
+                **marketplace_inference_stats_from_row({}),
                 "source": "none",
             }
-        release_pl = None
+        release_pl: dict[str, Any] | None = None
         try:
-            release_pl = client.get_release_with_retries(
-                rid, max_retries=4, backoff_base=1.5, backoff_max=60.0, timeout=45.0
+            raw_rel = client.get_release_with_retries(
+                rid,
+                max_retries=4,
+                backoff_base=1.5,
+                backoff_max=60.0,
+                timeout=45.0,
             )
         except Exception:
             release_pl = None
-        if not isinstance(release_pl, dict):
-            release_pl = None
-        comp = compute_marketplace_upsert_values(
-            rid,
-            {},
-            {},
-            release_payload=release_pl,
-        )
+        else:
+            release_pl = raw_rel if isinstance(raw_rel, dict) else None
+
+        sugg_pl: dict[str, Any] = {}
         try:
-            self.marketplace.upsert(rid, {}, release_payload=release_pl)
+            raw_sugg = client.get_price_suggestions_with_retries(
+                rid,
+                max_retries=4,
+                backoff_base=1.5,
+                backoff_max=60.0,
+                timeout=45.0,
+            )
+            if isinstance(raw_sugg, dict):
+                sugg_pl = raw_sugg
+        except Exception:
+            sugg_pl = {}
+
+        try:
+            self.marketplace.upsert(
+                rid,
+                {},
+                release_payload=release_pl,
+                price_suggestions_payload=sugg_pl,
+            )
         except Exception as e:
             logger.warning(
                 "marketplace upsert after live fetch failed (%s); estimate uses live fields",
                 e,
             )
-        redis_payload = {
-            "release_lowest_price": comp.get("release_lowest_price"),
-            "num_for_sale": comp.get("num_for_sale"),
-        }
-        self.redis_cache.set(rid, redis_payload)
-        return {
-            "release_lowest_price": comp.get("release_lowest_price"),
-            "num_for_sale": comp.get("num_for_sale"),
-            "release_num_for_sale": comp.get("release_num_for_sale"),
-            "community_want": comp.get("community_want"),
-            "community_have": comp.get("community_have"),
-            "blocked_from_sale": comp.get("blocked_from_sale"),
-            "source": "live",
-        }
+        row = self.marketplace.get(rid) or {}
+        blob = redis_marketplace_cache_blob_from_row(row)
+        self.redis_cache.set(rid, blob)
+        return {**marketplace_inference_stats_from_row(row), "source": "live"}
 
     def estimate(
         self,
@@ -238,9 +419,16 @@ class InferenceService:
         sleeve_condition: str | None,
         *,
         refresh_stats: bool = False,
+        marketplace_client: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        stats = self.fetch_stats(release_id, refresh=refresh_stats)
+        fetched = self.fetch_stats(release_id, refresh=refresh_stats)
+        stats_flat = {k: v for k, v in fetched.items() if k != "source"}
+        stats = merge_marketplace_client_overlay(stats_flat, marketplace_client)
         baseline = stats.get("release_lowest_price")
+        nfs = int(stats.get("num_for_sale") or 0)
+        warnings: list[str] = []
+        if nfs < 3:
+            warnings.append("low_market_depth")
         cat = self.features.get(str(release_id).strip())
         enc = self._catalog_encoders
         genre = (cat or {}).get("genre") or ""
@@ -260,8 +448,8 @@ class InferenceService:
 
         row = row_dict_for_inference(
             str(release_id),
-            media_condition,
-            sleeve_condition,
+            "Near Mint (NM or M-)",
+            "Near Mint (NM or M-)",
             stats,
             cat,
             genre_index=genre_index,
@@ -272,9 +460,10 @@ class InferenceService:
         )
         cols = list(model.feature_columns) if model is not None else default_feature_columns()
         x = np.array([[float(row[c]) for c in cols]], dtype=np.float64)
-        cond_params = load_params_with_grade_delta_overlays(self.model_dir)
+        cond_params = self._effective_condition_params()
         media_ord = condition_string_to_ordinal(media_condition)
         sleeve_ord = condition_string_to_ordinal(sleeve_condition)
+        media_ord, sleeve_ord = clamp_ordinals_for_inference(media_ord, sleeve_ord)
 
         if model is None:
             # Fallback: baseline only
@@ -288,21 +477,12 @@ class InferenceService:
                 "baseline_median": round(b, 2) if b else None,
                 "model_version": "fallback_baseline",
                 "status": "no_model",
+                "num_for_sale": nfs,
+                "warnings": warnings,
             }
 
         logp_raw = float(model.predict_log1p(x)[0])
-        anchor = 0.0
-        if model.target_kind == TARGET_KIND_RESIDUAL_LOG_MEDIAN:
-            mp = stats.get("release_lowest_price")
-            anchor = float(mp) if mp is not None and float(mp) > 0 else 0.0
-            if anchor <= 0.0 and baseline is not None:
-                anchor = float(baseline)
-            logp = logp_raw + float(np.log1p(max(anchor, 0.0)))
-        else:
-            logp = logp_raw
-            mp2 = stats.get("release_lowest_price")
-            if mp2 is not None and float(mp2) > 0:
-                anchor = float(mp2)
+
         yr_raw = (cat or {}).get("year")
         try:
             release_year = float(yr_raw) if yr_raw is not None else None
@@ -310,32 +490,73 @@ class InferenceService:
             release_year = None
         if release_year is not None and not np.isfinite(release_year):
             release_year = None
-        scale_p = grade_delta_scale_params_from_cond(cond_params)
-        anchor_scale = float(anchor) if anchor > 0 else 1.0
-        logp_adj = scaled_condition_log_adjustment(
-            logp,
-            media_ord,
-            sleeve_ord,
-            base_alpha=float(cond_params.get("alpha", -0.06)),
-            base_beta=float(cond_params.get("beta", -0.04)),
-            ref_grade=float(cond_params.get("ref_grade", 8.0)),
-            anchor_usd=max(anchor_scale, 1e-6),
-            release_year=release_year,
-            scale_params=scale_p,
+        if release_year is not None:
+            release_year = float(
+                max(_MIN_RELEASE_YEAR, min(_MAX_RELEASE_YEAR, release_year))
+            )
+
+        use_ps_dual_path = (
+            model.target_kind == TARGET_KIND_RESIDUAL_LOG_MEDIAN
+            and self._use_ps_condition_anchor
         )
-        price = float(np.expm1(np.clip(logp_adj, 0, 25)))
-        spread = max(price * 0.12, 1.0)
-        return {
+        scale_p = grade_delta_scale_params_from_cond(cond_params)
+        price, residual_anchor = vinyl_usd_from_logp_raw(
+            model=model,
+            logp_raw=logp_raw,
+            use_ps_dual_path=use_ps_dual_path,
+            stats=stats,
+            baseline=baseline,
+            media_condition=media_condition,
+            sleeve_condition=sleeve_condition,
+            media_ord=media_ord,
+            sleeve_ord=sleeve_ord,
+            cond_params=cond_params,
+            release_year=release_year,
+            scale_p=scale_p,
+            nm_grade_key=self._nm_grade_key,
+        )
+        price_r = round(float(price), 2)
+        q_lo, q_hi = self._get_quantile_estimators()
+        lo_c, hi_c = resolve_confidence_interval_bounds(
+            model_dir=self.model_dir,
+            model=model,
+            manifest=self._get_manifest(),
+            calibration=self._get_calibration(),
+            x_row=x,
+            logp_raw_point=logp_raw,
+            price_usd_float=float(price),
+            price_usd_rounded=price_r,
+            use_ps_dual_path=use_ps_dual_path,
+            stats=stats,
+            baseline=baseline,
+            media_condition=media_condition,
+            sleeve_condition=sleeve_condition,
+            media_ord=media_ord,
+            sleeve_ord=sleeve_ord,
+            cond_params=cond_params,
+            release_year=release_year,
+            nm_grade_key=self._nm_grade_key,
+            q_low=q_lo,
+            q_high=q_hi,
+            min_half_width_usd=DEFAULT_MIN_HALF_WIDTH_USD,
+        )
+        result: dict[str, Any] = {
             "release_id": str(release_id),
-            "estimated_price": round(price, 2),
-            "confidence_interval": [
-                round(max(0.0, price - spread), 2),
-                round(price + spread, 2),
-            ],
+            "estimated_price": price_r,
+            "confidence_interval": [lo_c, hi_c],
             "baseline_median": round(float(baseline), 2) if baseline else None,
             "model_version": f"vinyliq_{model.backend}_v1",
             "status": "ok",
+            "num_for_sale": nfs,
+            "warnings": warnings,
         }
+        if (
+            model.target_kind == TARGET_KIND_RESIDUAL_LOG_MEDIAN
+            and residual_anchor is not None
+            and residual_anchor > 0.0
+        ):
+            result["residual_anchor_usd"] = round(float(residual_anchor), 2)
+        return result
 
     def estimate_batch(
         self,
@@ -345,10 +566,13 @@ class InferenceService:
         total = 0.0
         for it in items:
             rid = str(it.get("release_id", ""))
+            mc = it.get("marketplace_client")
+            overlay = mc if isinstance(mc, dict) else None
             out = self.estimate(
                 rid,
                 it.get("media_condition"),
                 it.get("sleeve_condition"),
+                marketplace_client=overlay,
             )
             breakdown.append(out)
             if out.get("estimated_price") is not None:
@@ -365,38 +589,6 @@ def load_service_from_config(config_path: Path | None = None) -> InferenceServic
 
     load_project_dotenv()
     cfg = load_yaml_config(config_path)
-    root = _repo_root()
-    v = cfg.get("vinyliq") or {}
-    paths = v.get("paths") or {}
-    md = Path(paths.get("model_dir", root / "artifacts" / "vinyliq"))
-    if not md.is_absolute():
-        md = root / md
-    key = v.get("discogs_token_env", "DISCOGS_USER_TOKEN")
-    explicit = (os.environ.get(key) or "").strip() if key else ""
+    from .service_factory import build_inference_service_from_merged_config
 
-    dsn_key = paths.get("postgres_dsn_env")
-    if dsn_key:
-        dsn = (os.environ.get(str(dsn_key).strip()) or "").strip()
-        if dsn:
-            from ..storage.postgres_feature_store import PostgresFeatureStore
-            from ..storage.postgres_marketplace_stats import PostgresMarketplaceStats
-
-            return InferenceService(
-                model_dir=md,
-                marketplace_store=PostgresMarketplaceStats(dsn),
-                feature_store=PostgresFeatureStore(dsn),
-                discogs_token=explicit or None,
-            )
-
-    mp = Path(paths.get("marketplace_db", root / "data" / "cache" / "marketplace_stats.sqlite"))
-    fs = Path(paths.get("feature_store_db", root / "data" / "feature_store.sqlite"))
-    if not mp.is_absolute():
-        mp = root / mp
-    if not fs.is_absolute():
-        fs = root / fs
-    return InferenceService(
-        marketplace_db=mp,
-        feature_store_db=fs,
-        model_dir=md,
-        discogs_token=explicit or None,
-    )
+    return build_inference_service_from_merged_config(cfg)

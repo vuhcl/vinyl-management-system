@@ -2,16 +2,20 @@
 
 The price API is read-heavy at the edge (the Chrome extension calls
 ``/estimate`` once per release page). Memorystore (Redis) absorbs those
-hits without paying SQLite's per-request open/close cost and without
+hits without paying Postgres/SQLite per-request cost and without
 hammering Discogs on cold-cache misses.
 
 Bulk ``marketplace_stats`` in SQLite/Postgres remains for training
 pipelines and exports; inference does **not** read it (stale). Redis
-caches the small JSON projection from :meth:`InferenceService.fetch_stats`
-(Redis hit -> else live Discogs -> warm Redis). TTL defaults to 30 days.
+caches the inference marketplace projection from
+:meth:`InferenceService.fetch_stats` (Redis hit -> else live Discogs ->
+warm Redis): listing floor, depth, community counts, optional grade ladder.
+Legacy entries with only ``release_lowest_price`` + ``num_for_sale`` are
+normalized on hydrate. TTL defaults to 30 days.
 
 Failure mode: Redis errors log a warning and the caller falls through to
-live Discogs when credentials are configured.
+live Discogs when credentials are configured. Local dev (no ``REDIS_HOST``
+set) disables the cache.
 """
 from __future__ import annotations
 

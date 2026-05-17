@@ -30,11 +30,13 @@ from price_estimator.src.training.sale_floor_targets import (
     sale_floor_label_diagnostics,
 )
 from price_estimator.src.training.train_vinyliq import (
-    _load_sale_history_sidecars,
-    _pick_newer_marketplace_row_dict,
     load_training_frame,
     residual_z_clip_abs_from_vinyliq,
     training_target_kind_from_vinyliq,
+)
+from price_estimator.src.training.train_vinyliq.training_frame import (
+    _load_sale_history_sidecars,
+    _pick_newer_marketplace_row_dict,
 )
 
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from .release_row import release_row_from_fields
 from ..features.vinyliq_features import (
     format_flags_from_text,
     is_original_pressing_from_formats_list,
@@ -111,23 +112,23 @@ def release_to_feature_row(
 
     is_original = is_original_pressing_from_formats_list(formats_list)
 
-    return {
-        "release_id": rid,
-        "master_id": master_id_s,
-        "genre": genre,
-        "style": style,
-        "decade": decade,
-        "year": year,
-        "country": country_s,
-        "label_tier": 0,
-        "is_original_pressing": is_original,
-        "is_colored_vinyl": flags["is_colored_vinyl"],
-        "is_picture_disc": flags["is_picture_disc"],
-        "is_promo": flags["is_promo"],
-        "format_desc": format_desc,
-        "artists_json": json.dumps(artists, separators=(",", ":")) if artists else None,
-        "labels_json": json.dumps(labels, separators=(",", ":")) if labels else None,
-        "genres_json": json.dumps(genres, separators=(",", ":")) if genres else None,
-        "styles_json": json.dumps(styles, separators=(",", ":")) if styles else None,
-        "formats_json": formats_json,
-    }
+    return release_row_from_fields(
+        release_id=rid,
+        master_id=master_id_s,
+        genre=genre,
+        style=style,
+        decade=decade,
+        year=year,
+        country=country_s,
+        label_tier=0,
+        is_original_pressing=is_original,
+        is_colored_vinyl=flags["is_colored_vinyl"],
+        is_picture_disc=flags["is_picture_disc"],
+        is_promo=flags["is_promo"],
+        format_desc=format_desc,
+        artists_json=json.dumps(artists, separators=(",", ":")) if artists else None,
+        labels_json=json.dumps(labels, separators=(",", ":")) if labels else None,
+        genres_json=json.dumps(genres, separators=(",", ":")) if genres else None,
+        styles_json=json.dumps(styles, separators=(",", ":")) if styles else None,
+        formats_json=formats_json,
+    )

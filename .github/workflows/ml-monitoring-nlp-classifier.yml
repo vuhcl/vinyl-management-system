@@ -1,0 +1,46 @@
+# Grader / NLP classifier monitoring smoke tests.
+name: ML monitoring (nlp-classifier)
+
+on:
+  pull_request:
+    paths:
+      - "grader/**"
+      - "shared/**"
+      - "price_estimator/**"
+      - "pyproject.toml"
+      - "uv.lock"
+  push:
+    branches: [main]
+    paths:
+      - "grader/**"
+      - "shared/**"
+      - "price_estimator/**"
+      - "pyproject.toml"
+      - "uv.lock"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  monitoring:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - name: Install Python 3.12
+        run: uv python install 3.12
+
+      - name: Install dependencies
+        run: uv sync --extra test --extra monitoring
+
+      - name: Run grader monitoring tests
+        run: |
+          uv run pytest grader/tests/test_monitoring_nlp.py \
+            -m monitoring --no-cov -v

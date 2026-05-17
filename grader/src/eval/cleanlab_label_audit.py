@@ -37,20 +37,15 @@ from typing import Any, Optional
 
 import numpy as np
 import scipy.sparse as sp
-import yaml
 from sklearn.linear_model import LogisticRegression
 from sklearn.model_selection import StratifiedKFold
 from sklearn.preprocessing import LabelEncoder
 
+from grader.src.config_io import load_yaml_mapping
 from grader.src.features.tfidf_features import TFIDFFeatureBuilder
 from grader.src.models.baseline import TARGETS, BaselineModel
 
 logger = logging.getLogger(__name__)
-
-
-def _load_yaml(path: Path) -> dict[str, Any]:
-    with open(path, "r", encoding="utf-8") as f:
-        return yaml.safe_load(f)
 
 
 def _load_split_records(splits_dir: Path, split: str) -> list[dict]:
@@ -418,7 +413,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     args = parser.parse_args(argv)
 
     cfg_path = Path(args.config)
-    config = _load_yaml(cfg_path)
+    config = load_yaml_mapping(cfg_path)
     splits_dir = Path(config["paths"]["splits"])
     out_dir = Path(args.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)

@@ -50,6 +50,8 @@ class PredictionRow(BaseModel):
     contradiction_detected: bool = False
     rule_override_applied: bool = False
     rule_override_target: Optional[str] = None
+    guidelines_version: Optional[str] = None
+    model_guidelines_version: Optional[str] = None
 
 
 class PredictResponse(BaseModel):

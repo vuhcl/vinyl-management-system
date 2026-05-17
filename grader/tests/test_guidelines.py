@@ -9,11 +9,25 @@ and eBay JP harmonization covers all expected grades.
 import pytest
 import yaml
 
+from grader.src.guidelines_identity import (
+    guidelines_version_from_mapping,
+    is_valid_guidelines_version_format,
+)
+
 
 @pytest.fixture
 def guidelines(guidelines_path):
     with open(guidelines_path) as f:
         return yaml.safe_load(f)
+
+
+class TestGuidelinesVersion:
+    def test_version_present(self, guidelines):
+        assert "guidelines_version" in guidelines
+
+    def test_version_format(self, guidelines):
+        v = guidelines_version_from_mapping(guidelines)
+        assert is_valid_guidelines_version_format(v)
 
 
 class TestCanonicalGrades:

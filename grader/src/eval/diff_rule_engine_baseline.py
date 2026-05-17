@@ -102,6 +102,26 @@ def diff_baselines(
     a_time = after.get("captured_at", after.get("timestamp", ""))
     out.append(f"  before commit: {b_commit}  @ {b_time}")
     out.append(f"  after  commit: {a_commit}  @ {a_time}")
+    b_ver = before.get("guidelines_version")
+    a_ver = after.get("guidelines_version")
+    out.append(
+        f"  before guidelines_version: "
+        f"{b_ver if b_ver is not None else 'n/a'}"
+    )
+    out.append(
+        f"  after  guidelines_version: "
+        f"{a_ver if a_ver is not None else 'n/a'}"
+    )
+    b_sha = before.get("canonical_grades_sha256")
+    a_sha = after.get("canonical_grades_sha256")
+    out.append(
+        f"  before canonical_grades_sha256: "
+        f"{b_sha if b_sha is not None else 'n/a'}"
+    )
+    out.append(
+        f"  after  canonical_grades_sha256: "
+        f"{a_sha if a_sha is not None else 'n/a'}"
+    )
     out.append("")
 
     sb = _splits_dict(before)

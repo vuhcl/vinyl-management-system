@@ -65,8 +65,19 @@ def main() -> None:
     )
     p.add_argument("--min-bin-rows", type=int, default=30)
     p.add_argument("--min-grade-rows", type=int, default=5)
-    p.add_argument("--base-alpha", type=float, default=-0.06)
-    p.add_argument("--base-beta", type=float, default=-0.04)
+    p.add_argument("--base-alpha", type=float, default=0.06)
+    p.add_argument("--base-beta", type=float, default=0.04)
+    p.add_argument(
+        "--no-fit-alpha-beta",
+        action="store_true",
+        help="Keep base-alpha/base-beta fixed; only grid-search price_gamma and age_k (legacy).",
+    )
+    p.add_argument(
+        "--beta-per-alpha-fallback",
+        type=float,
+        default=None,
+        help="When asymmetric strata are too sparse, split s=α+β with β=(ratio)*α (default: base-beta/base-alpha).",
+    )
     p.add_argument("--price-scale-min", type=float, default=0.25)
     p.add_argument("--price-scale-max", type=float, default=4.0)
     p.add_argument(
@@ -114,6 +125,8 @@ def main() -> None:
             nm_grade_key=args.nm_grade_key,
             base_alpha=args.base_alpha,
             base_beta=args.base_beta,
+            fit_alpha_beta=not args.no_fit_alpha_beta,
+            beta_per_alpha_fallback=args.beta_per_alpha_fallback,
             min_bin_rows=args.min_bin_rows,
             min_grade_rows=args.min_grade_rows,
             price_scale_min=args.price_scale_min,
@@ -128,7 +141,10 @@ def main() -> None:
     write_grade_delta_scale_json(args.out, blob)
     meta = blob["fit_metadata"]
     bins = meta.get("bins_used")
-    print(f"Wrote {args.out} (rows={len(df)}, bins={bins})")
+    ab = ""
+    if "fitted_alpha" in meta:
+        ab = f", alpha={meta['fitted_alpha']:.5g}, beta={meta['fitted_beta']:.5g}"
+    print(f"Wrote {args.out} (rows={len(df)}, bins={bins}{ab})")
 
 
 if __name__ == "__main__":

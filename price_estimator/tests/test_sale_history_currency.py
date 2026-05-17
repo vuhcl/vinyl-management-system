@@ -8,6 +8,7 @@ from price_estimator.src.scrape.sale_history_currency import (
     format_usd_money_string,
     parse_eur_amount,
     parse_gbp_amount,
+    parse_loose_money_amount,
     parse_usd_listing_amount,
     parse_usd_user_amount,
     usd_per_eur_from_pairs,
@@ -36,6 +37,22 @@ def test_parse_usd_listing_amount_rejects_non_usd(text: str) -> None:
 
 def test_parse_usd_listing_none_when_ambiguous() -> None:
     assert parse_usd_listing_amount("") is None
+
+
+@pytest.mark.parametrize(
+    "text,expected",
+    [
+        ("1,234.56", 1234.56),
+        ("12,34", 12.34),
+        ("  Average: $10.50 ", 10.5),
+        ("", None),
+    ],
+)
+def test_parse_loose_money_amount(text: str, expected: float | None) -> None:
+    if expected is None:
+        assert parse_loose_money_amount(text) is None
+    else:
+        assert parse_loose_money_amount(text) == pytest.approx(expected)
 
 
 @pytest.mark.parametrize(

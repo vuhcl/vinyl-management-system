@@ -1,13 +1,16 @@
 # Build from repository root:
 #   docker build -f price_estimator/Dockerfile -t vinyl-price-estimator:latest .
 #
-# Two-stage build (matches grader/Dockerfile):
+# Two-stage build (same pattern as grader/Dockerfile):
 #   - deps:    stub pyproject.toml for every workspace member; `uv export`
 #              writes a lean requirements.txt (no full source needed thanks
 #              to --frozen).
 #   - runtime: pip install + selective source COPY. Drops `core/`, `grader/`,
 #              `recommender/`, `web/`, plus `price_estimator/{scripts,tests,
 #              data,artifacts}/` — none of which the API serves from.
+#              The whole `price_estimator/src/` tree is copied (api, inference,
+#              models, storage, features, ingest, scrape, training, …); no per-module
+#              COPY lines needed when layout under `src/` changes.
 #
 # The price API loads its trained model from the local filesystem at
 # `vinyliq.paths.model_dir`. In the GKE deploy the path is overridden to
@@ -44,7 +47,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-ENV PIP_NO_CACHE_DIR=1
+ENV PIP_NO_CACHE_DIR=1 \
+    PYTHONUNBUFFERED=1
 
 COPY --from=deps /tmp/requirements.txt /tmp/requirements.txt
 
@@ -64,9 +68,9 @@ COPY price_estimator/__init__.py       ./price_estimator/__init__.py
 COPY price_estimator/src               ./price_estimator/src
 COPY price_estimator/configs           ./price_estimator/configs
 
-# Root-level configs/base.yaml is `inherits:`-referenced by
-# price_estimator/configs/base.yaml; ship it so the default config
-# resolves cleanly (the GKE deploy overrides it via VINYLIQ_CONFIG anyway).
+# Repo-root ``configs/`` exists for collector/recommender; VinylIQ merges use
+# ``price_estimator/configs/base.yaml``. GKE should inherit the latter via
+# ``VINYLIQ_CONFIG`` so ``vinyliq.inference.*`` survives path overrides.
 COPY configs ./configs
 
 RUN pip install --upgrade pip && pip install -r /tmp/requirements.txt

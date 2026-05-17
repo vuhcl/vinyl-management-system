@@ -31,9 +31,9 @@ import matplotlib
 matplotlib.use("Agg")  # non-interactive backend — safe for server/CI use
 import matplotlib.pyplot as plt
 import numpy as np
-import yaml
 from sklearn.calibration import calibration_curve
 
+from grader.src.config_io import load_yaml_mapping
 from grader.src.evaluation.metrics import compute_ece
 
 # ---------------------------------------------------------------------------
@@ -85,7 +85,7 @@ class CalibrationEvaluator:
     }
 
     def __init__(self, config_path: str) -> None:
-        self.config = self._load_yaml(config_path)
+        self.config = load_yaml_mapping(config_path)
 
         cal_cfg = self.config["evaluation"]["calibration"]
         self.n_bins: int = cal_cfg.get("n_bins", 10)
@@ -93,14 +93,6 @@ class CalibrationEvaluator:
         reports_dir = Path(self.config["paths"]["reports"])
         self.output_dir = reports_dir / "calibration"
         self.output_dir.mkdir(parents=True, exist_ok=True)
-
-    # -----------------------------------------------------------------------
-    # Config loading
-    # -----------------------------------------------------------------------
-    @staticmethod
-    def _load_yaml(path: str) -> dict:
-        with open(path, "r") as f:
-            return yaml.safe_load(f)
 
     # -----------------------------------------------------------------------
     # Plot 1 — Reliability diagram (overall)

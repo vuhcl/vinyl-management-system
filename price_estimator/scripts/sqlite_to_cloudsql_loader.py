@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 """Bulk-load SQLite releases_features + marketplace_stats into Postgres.
 
+``releases_features`` rows are merged with ``ON CONFLICT (release_id) DO UPDATE``
+so rerunning the loader against a nonempty Cloud SQL DB does not abort on PK
+violations.
+
 Run from repo root::
 
   uv run python price_estimator/scripts/sqlite_to_cloudsql_loader.py \\
@@ -63,6 +67,20 @@ ON CONFLICT (release_id) DO UPDATE SET
     community_have = EXCLUDED.community_have
 """
 
+_RELEASES_FEATURES_STAGING_TABLE = "_sqlite_rf_bulk_staging"
+
+
+def _releases_features_upsert_sql(cols: list[str]) -> str:
+    cols_csv = ", ".join(cols)
+    update_cols = [c for c in cols if c != "release_id"]
+    set_clause = ", ".join(f"{c} = EXCLUDED.{c}" for c in update_cols)
+    return f"""
+INSERT INTO releases_features ({cols_csv})
+SELECT {cols_csv}
+FROM {_RELEASES_FEATURES_STAGING_TABLE}
+ON CONFLICT (release_id) DO UPDATE SET {set_clause}
+"""
+
 
 def _sqlite_table_columns(conn: sqlite3.Connection, table: str) -> set[str]:
     cur = conn.execute(f"PRAGMA table_info({table})")
@@ -91,18 +109,31 @@ def load_releases_features(
         sel_cols = ", ".join(c for c in cols if c in existing)
         q = f"SELECT {sel_cols} FROM releases_features"
 
-        stmt = f"COPY releases_features ({cols_csv}) FROM STDIN"
+        copy_stmt = (
+            f"COPY {_RELEASES_FEATURES_STAGING_TABLE} ({cols_csv}) FROM STDIN"
+        )
+        upsert_sql = _releases_features_upsert_sql(cols)
         n = 0
         chunk: list[tuple] = []
         chunk_cap = max(1, int(copy_chunk_rows))
+        staging_ready = False
 
         def flush_chunk() -> None:
+            nonlocal staging_ready
             if not chunk:
                 return
             with pg_conn.cursor() as cur:
-                with cur.copy(stmt) as copy:
+                if not staging_ready:
+                    cur.execute(
+                        f"CREATE TEMP TABLE {_RELEASES_FEATURES_STAGING_TABLE} "
+                        "(LIKE releases_features INCLUDING ALL)"
+                    )
+                    staging_ready = True
+                cur.execute(f"TRUNCATE {_RELEASES_FEATURES_STAGING_TABLE}")
+                with cur.copy(copy_stmt) as copy:
                     for t in chunk:
                         copy.write_row(t)
+                cur.execute(upsert_sql)
             pg_conn.commit()
             chunk.clear()
 
@@ -115,7 +146,7 @@ def load_releases_features(
                     flush_chunk()
                 if log_every > 0 and n % log_every == 0:
                     logging.info(
-                        "releases_features COPY progress: %s rows",
+                        "releases_features UPSERT progress: %s rows",
                         n,
                     )
             flush_chunk()

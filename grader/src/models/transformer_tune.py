@@ -26,6 +26,7 @@ from typing import Any
 import mlflow
 import yaml
 
+from grader.src.config_io import load_yaml_mapping
 from grader.src.mlflow_tracking import (
     configure_mlflow_from_config,
     mlflow_enabled,
@@ -35,16 +36,11 @@ from grader.src.mlflow_tracking import (
 from grader.src.models.grader_pyfunc import log_pyfunc_model
 from grader.src.models.transformer import TransformerTrainer
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-)
 logger = logging.getLogger(__name__)
 
 
 def _load_tuning_presets(path: Path) -> dict[str, dict[str, Any]]:
-    with open(path, "r", encoding="utf-8") as f:
-        data = yaml.safe_load(f)
+    data = load_yaml_mapping(path)
     presets = data.get("presets") or {}
     if not presets:
         raise ValueError(f"No presets found in {path}")
@@ -131,8 +127,7 @@ def _register_best_on_remote(
     registry_model_name: str,
 ) -> None:
     """Log pyfunc from disk under *remote* tracking, then register_model."""
-    with open(base_config_path, "r", encoding="utf-8") as f:
-        cfg = yaml.safe_load(f)
+    cfg = load_yaml_mapping(base_config_path)
     art = artifacts_dir / "tuning" / preset_key
     w = art / "transformer_weights.pt"
     if not w.is_file():
@@ -250,8 +245,11 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    with open(args.config, "r", encoding="utf-8") as f:
-        cfg = yaml.safe_load(f)
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    )
+    cfg = load_yaml_mapping(args.config)
 
     ml = cfg.setdefault("mlflow", {})
     if args.skip_mlflow or args.no_mlflow:

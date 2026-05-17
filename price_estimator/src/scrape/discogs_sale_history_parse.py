@@ -17,12 +17,52 @@ from typing import Any
 
 from bs4 import BeautifulSoup
 
+from price_estimator.src.scrape.sale_history_currency import parse_loose_money_amount
+
 _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+# Headers normalized via ``_norm_header`` — lookup order prefers explicit wording
+# so we never attach the jacket column to ``media_condition`` or vice versa
+# when Discogs revises labels (some locales use ``Media Condition`` only).
+_MEDIA_HEADER_KEYS: tuple[str, ...] = (
+    "media condition",
+    "vinyl condition",
+    "record condition",
+    "vinyl grading",
+    "record grading",
+    "disc condition",
+    # Legacy single column name on English sales history tables (vinyl/record).
+    "condition",
+)
+_SLEEVE_HEADER_KEYS: tuple[str, ...] = (
+    "sleeve condition",
+    "jacket condition",
+    "cover condition",
+    "cover grading",
+    "sleeve grading",
+)
+
+
+def _first_nonempty_header_cell(
+    hdr: dict[str, int],
+    row_cells: list[str],
+    normalized_keys: tuple[str, ...],
+) -> str:
+    for nk in normalized_keys:
+        ix = hdr.get(nk)
+        if ix is None or ix >= len(row_cells):
+            continue
+        val = row_cells[ix].strip()
+        if val:
+            return val
+    return ""
 
 
 def sale_history_url(release_id: str) -> str:
     rid = str(release_id).strip()
     return f"https://www.discogs.com/sell/history/{rid}"
+
+
 @dataclass
 class SaleHistorySummary:
     last_sold_on: str | None = None
@@ -64,17 +104,6 @@ class ParsedSaleHistory:
     parse_warnings: list[str] = field(default_factory=list)
 
 
-def _strip_money(s: str) -> float | None:
-    t = (s or "").strip()
-    if not t:
-        return None
-    t = re.sub(r"[^\d.,-]", "", t.replace(",", ""))
-    if not t:
-        return None
-    try:
-        return float(t)
-    except ValueError:
-        return None
 
 
 def _parse_summary_from_text(text: str) -> SaleHistorySummary:
@@ -90,19 +119,19 @@ def _parse_summary_from_text(text: str) -> SaleHistorySummary:
         elif low.startswith("average"):
             m = re.search(r"average:?\s*(.+)$", ln, re.I)
             if m:
-                out.average = _strip_money(m.group(1))
+                out.average = parse_loose_money_amount(m.group(1))
         elif low.startswith("median"):
             m = re.search(r"median:?\s*(.+)$", ln, re.I)
             if m:
-                out.median = _strip_money(m.group(1))
+                out.median = parse_loose_money_amount(m.group(1))
         elif low.startswith("high"):
             m = re.search(r"high:?\s*(.+)$", ln, re.I)
             if m:
-                out.high = _strip_money(m.group(1))
+                out.high = parse_loose_money_amount(m.group(1))
         elif low.startswith("low"):
             m = re.search(r"low:?\s*(.+)$", ln, re.I)
             if m:
-                out.low = _strip_money(m.group(1))
+                out.low = parse_loose_money_amount(m.group(1))
     return out
 
 
@@ -206,8 +235,8 @@ def _parse_table(table: Any, warnings: list[str]) -> list[SaleHistoryRow]:
                     )
             continue
 
-        media = cell("condition")
-        sleeve = cell("sleeve condition")
+        media = _first_nonempty_header_cell(hdr, texts, _MEDIA_HEADER_KEYS)
+        sleeve = _first_nonempty_header_cell(hdr, texts, _SLEEVE_HEADER_KEYS)
         p_user = cell_sub("your currency") or cell_sub("price in your")
         p_orig = cell("price")
         if not p_orig:

@@ -23,8 +23,8 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
-import yaml
 
+from grader.src.config_io import load_yaml_mapping
 from grader.src.models.transformer import TransformerTrainer
 
 
@@ -118,8 +118,7 @@ def main() -> None:
     )
     args = p.parse_args()
 
-    with open(args.config, "r", encoding="utf-8") as f:
-        cfg = yaml.safe_load(f)
+    cfg = load_yaml_mapping(args.config)
 
     splits_dir = Path(cfg["paths"]["splits"])
     split_path = splits_dir / f"{args.split}.jsonl"

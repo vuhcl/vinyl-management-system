@@ -10,9 +10,12 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-import yaml
-
+from grader.src.config_io import load_yaml_mapping
 from grader.src.data.label_patches import append_csv_to_label_patches
+from grader.src.eval.label_audit_constants import (
+    COMMIT_QUEUE_HUMAN_ACTIONS,
+    human_action_sql_in_list,
+)
 
 
 VALID_SPLITS = ("train", "val", "test")
@@ -300,8 +303,7 @@ def _to_float(x: Any) -> float | None:
 def load_guideline_prompt_bits(
     guidelines_path: Path, target: str
 ) -> dict[str, Any]:
-    with guidelines_path.open(encoding="utf-8") as f:
-        cfg = yaml.safe_load(f)
+    cfg = load_yaml_mapping(guidelines_path)
     if target == "media":
         allowed = [str(x) for x in (cfg.get("media_grades") or [])]
     else:
@@ -338,7 +340,15 @@ def load_guideline_prompt_bits(
             # Keep prompt length bounded while still conveying broader rubric intent.
             rubric_lines.append(f"{grade_name} {key}: {', '.join(cleaned[:25])}")
     rubric_text = "\n".join(rubric_lines)
-    return {"allowed": allowed, "descriptions": descs, "rubric_text": rubric_text}
+    gv = cfg.get("guidelines_version")
+    return {
+        "allowed": allowed,
+        "descriptions": descs,
+        "rubric_text": rubric_text,
+        "guidelines_version": str(gv).strip()
+        if gv is not None and str(gv).strip()
+        else "",
+    }
 
 
 def prompt_version_hash(
@@ -347,13 +357,15 @@ def prompt_version_hash(
     model_id: str,
     guideline_descriptions: list[tuple[str, str]],
     allowed_labels: list[str],
+    guidelines_version: str = "",
 ) -> str:
     payload = json.dumps(
         {
-            "target": target,
-            "model_id": model_id,
             "allowed": allowed_labels,
             "descriptions": guideline_descriptions,
+            "guidelines_version": guidelines_version,
+            "model_id": model_id,
+            "target": target,
         },
         ensure_ascii=False,
         sort_keys=True,
@@ -580,10 +592,10 @@ def commit_queue_to_label_patches(
     rows_by_key: dict[tuple[str, str], dict[str, str]] = {}
     with sqlite3.connect(db_path) as conn:
         cur = conn.execute(
-            """
+            f"""
             SELECT source,item_id,target,assigned_label,llm_verdict,final_label,human_action
             FROM queue
-            WHERE human_action IN ('accept_llm','accept_edit','manual_set','auto_apply')
+            WHERE human_action IN ({human_action_sql_in_list(COMMIT_QUEUE_HUMAN_ACTIONS)})
             """
         )
         for (

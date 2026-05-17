@@ -23,7 +23,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-import yaml
+from grader.src.config_io import load_yaml
 
 logger = logging.getLogger(__name__)
 
@@ -592,8 +592,8 @@ def main() -> int:
         return 0
 
     if args.export_from:
-        with open(args.config, encoding="utf-8") as f:
-            cfg = yaml.safe_load(f) or {}
+        _raw = load_yaml(args.config)
+        cfg = _raw if isinstance(_raw, dict) else {}
         inp = _resolve_path(args.export_from.strip())
         if not inp.is_file():
             print(f"--export-from not found: {inp}", file=sys.stderr)
@@ -613,8 +613,8 @@ def main() -> int:
         print(json.dumps(exp, indent=2))
         return 0
 
-    with open(args.config, encoding="utf-8") as f:
-        cfg = yaml.safe_load(f) or {}
+    _raw = load_yaml(args.config)
+    cfg = _raw if isinstance(_raw, dict) else {}
     out = apply_label_patches_after_ingest(cfg, dry_run=args.dry_run)
     print(json.dumps(out, indent=2))
     if not out.get("enabled") and out.get("hint"):

@@ -13,6 +13,7 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Any, Iterator
 
+from .release_row import release_row_from_fields
 from ..features.vinyliq_features import (
     format_flags_from_text,
     is_original_pressing_from_formats_list,
@@ -201,32 +202,26 @@ def release_element_to_row(
     flags = format_flags_from_text(format_desc)
     is_original = is_original_pressing_from_formats_list(formats_list)
 
-    return {
-        "release_id": rid,
-        "master_id": master_id_s,
-        "genre": genre,
-        "style": style,
-        "decade": decade,
-        "year": year,
-        "country": country_s,
-        "label_tier": 0,
-        "is_original_pressing": is_original,
-        "is_colored_vinyl": flags["is_colored_vinyl"],
-        "is_picture_disc": flags["is_picture_disc"],
-        "is_promo": flags["is_promo"],
-        "format_desc": format_desc,
-        "artists_json": json.dumps(artists, separators=(",", ":")) if artists else None,
-        "labels_json": json.dumps(labels, separators=(",", ":")) if labels else None,
-        "genres_json": json.dumps(genres_list, separators=(",", ":"))
-        if genres_list
-        else None,
-        "styles_json": json.dumps(styles_list, separators=(",", ":"))
-        if styles_list
-        else None,
-        "formats_json": json.dumps(formats_list, separators=(",", ":"))
-        if formats_list
-        else None,
-    }
+    return release_row_from_fields(
+        release_id=rid,
+        master_id=master_id_s,
+        genre=genre,
+        style=style,
+        decade=decade,
+        year=year,
+        country=country_s,
+        label_tier=0,
+        is_original_pressing=is_original,
+        is_colored_vinyl=flags["is_colored_vinyl"],
+        is_picture_disc=flags["is_picture_disc"],
+        is_promo=flags["is_promo"],
+        format_desc=format_desc,
+        artists_json=json.dumps(artists, separators=(",", ":")) if artists else None,
+        labels_json=json.dumps(labels, separators=(",", ":")) if labels else None,
+        genres_json=json.dumps(genres_list, separators=(",", ":")) if genres_list else None,
+        styles_json=json.dumps(styles_list, separators=(",", ":")) if styles_list else None,
+        formats_json=json.dumps(formats_list, separators=(",", ":")) if formats_list else None,
+    )
 
 
 def open_dump_binary(path: Path):
