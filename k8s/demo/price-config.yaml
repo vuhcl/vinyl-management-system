@@ -13,10 +13,24 @@ data:
   config.yaml: |
     # VinylIQ defaults (incl. vinyliq.inference) live here — NOT monorepo
     # root ``configs/base.yaml`` (collector/shared paths only).
-    inherits: price_estimator/configs/base.yaml
+    # Absolute path: inherit resolution must not depend on package __file__ layout.
+    inherits: /app/price_estimator/configs/base.yaml
     vinyliq:
       # Demo secret ships DISCOGS_TOKEN (see k8s/demo/README.md Phase 4).
       discogs_token_env: DISCOGS_TOKEN
       paths:
         postgres_dsn_env: DATABASE_URL
         model_dir: /data/artifacts/vinyliq
+      # Inline serving guardrails so guardrails stay enabled even if inherit fails.
+      inference:
+        use_price_suggestion_condition_anchor: true
+        anchor_guardrails:
+          enabled: true
+          min_listing_usd: 50
+          min_listing_to_nm_rung_ratio: 0.12
+          min_listing_to_max_rung_ratio: 0.08
+          inflated_max_rung_to_reference: 2.5
+          inflated_max_rung_to_sale_reference: 2.5
+          max_ladder_to_reference: 5.0
+          mint_outlier_multiple_of_nm: 1.15
+          ladder_rung_winsorize_multiple_of_nm: 0
