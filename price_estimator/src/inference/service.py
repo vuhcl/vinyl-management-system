@@ -39,6 +39,11 @@ from ..storage.marketplace_db import (
     redis_marketplace_cache_blob_from_row,
 )
 from ..storage.redis_stats_cache import RedisStatsCache
+from ..models.confidence_calibration import load_calibration
+from ..training.sale_floor_blend_config import SaleFloorBlendConfig
+from .anchor_guardrails import prepare_stats_for_inference
+from .anchor_guardrails_config import AnchorGuardrailsConfig
+from .anchor_resolution import AnchorGuardrailsContext
 from .confidence_interval import (
     DEFAULT_MIN_HALF_WIDTH_USD,
     read_manifest,
@@ -46,7 +51,6 @@ from .confidence_interval import (
     try_load_quantile_estimators,
     vinyl_usd_from_logp_raw,
 )
-from ..models.confidence_calibration import load_calibration
 
 _MIN_PRICE_USD = 0.50
 _MIN_RELEASE_YEAR = 1877
@@ -235,6 +239,8 @@ class InferenceService:
         nm_grade_key: str = "Near Mint (NM or M-)",
         yaml_condition_overlay: dict[str, Any] | None = None,
         use_price_suggestion_condition_anchor: bool = True,
+        anchor_guardrails_cfg: AnchorGuardrailsConfig | None = None,
+        sale_floor_blend_cfg: SaleFloorBlendConfig | None = None,
     ) -> None:
         if marketplace_store is not None:
             self.marketplace = marketplace_store
@@ -268,6 +274,12 @@ class InferenceService:
         self._nm_grade_key = str(nm_grade_key).strip() or "Near Mint (NM or M-)"
         self._yaml_condition_overlay = yaml_condition_overlay or None
         self._use_ps_condition_anchor = bool(use_price_suggestion_condition_anchor)
+        self._anchor_guardrails_cfg = (
+            anchor_guardrails_cfg
+            if anchor_guardrails_cfg is not None
+            else AnchorGuardrailsConfig()
+        )
+        self._sale_floor_blend_cfg = sale_floor_blend_cfg
         self._manifest_fetched = False
         self._manifest_memo: dict[str, Any] = {}
         self._calibration_fetched = False
@@ -429,6 +441,22 @@ class InferenceService:
         warnings: list[str] = []
         if nfs < 3:
             warnings.append("low_market_depth")
+
+        guardrails_ctx: AnchorGuardrailsContext | None = None
+        if self._anchor_guardrails_cfg.enabled and self._sale_floor_blend_cfg is not None:
+            guardrails_ctx = AnchorGuardrailsContext(
+                cfg=self._anchor_guardrails_cfg,
+                blend_cfg=self._sale_floor_blend_cfg,
+                warnings=warnings,
+            )
+            warnings.extend(
+                prepare_stats_for_inference(
+                    stats,
+                    self._anchor_guardrails_cfg,
+                    nm_grade_key=self._nm_grade_key,
+                )
+            )
+
         cat = self.features.get(str(release_id).strip())
         enc = self._catalog_encoders
         genre = (cat or {}).get("genre") or ""
@@ -514,6 +542,7 @@ class InferenceService:
             release_year=release_year,
             scale_p=scale_p,
             nm_grade_key=self._nm_grade_key,
+            guardrails_ctx=guardrails_ctx,
         )
         price_r = round(float(price), 2)
         q_lo, q_hi = self._get_quantile_estimators()
@@ -539,6 +568,7 @@ class InferenceService:
             q_low=q_lo,
             q_high=q_hi,
             min_half_width_usd=DEFAULT_MIN_HALF_WIDTH_USD,
+            guardrails_ctx=guardrails_ctx,
         )
         result: dict[str, Any] = {
             "release_id": str(release_id),
