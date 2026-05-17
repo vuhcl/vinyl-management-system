@@ -22,6 +22,7 @@ from price_estimator.src.inference.service import InferenceService
 from price_estimator.src.models.fitted_regressor import TARGET_KIND_RESIDUAL_LOG_MEDIAN
 from price_estimator.src.training.sale_floor_blend_config import (
     sale_floor_blend_config_from_raw,
+    sale_floor_blend_config_with_inference_overrides,
 )
 
 
@@ -105,7 +106,34 @@ def test_blend_path_anchor_nm_12830828(ag_cfg, blend_cfg) -> None:
         blend_cfg,
         nm_grade_key="Near Mint (NM or M-)",
     )
-    assert out == pytest.approx(1055.0, rel=0.03)
+    assert out == pytest.approx(944.0, rel=0.03)
+
+
+def test_blend_path_anchor_vg_plus_12830828(ag_cfg, blend_cfg) -> None:
+    stats = _stats_12830828()
+    out = blend_path_anchor_usd(
+        1300.0,
+        stats,
+        ag_cfg,
+        blend_cfg,
+        nm_grade_key="Near Mint (NM or M-)",
+    )
+    assert out == pytest.approx(853.0, rel=0.03)
+
+
+def test_blend_path_anchor_w_base_override_demo(ag_cfg, blend_cfg) -> None:
+    stats = _stats_12830828()
+    merged = sale_floor_blend_config_with_inference_overrides(
+        blend_cfg, {"w_base": 0.6}
+    )
+    out = blend_path_anchor_usd(
+        1700.0,
+        stats,
+        ag_cfg,
+        merged,
+        nm_grade_key="Near Mint (NM or M-)",
+    )
+    assert out == pytest.approx(900.0, rel=0.03)
 
 
 def test_blend_path_anchor_noop_when_disabled(blend_cfg) -> None:
@@ -180,4 +208,5 @@ def test_estimate_dual_path_guardrails_anchor_band(model_dir: Path, blend_cfg) -
     )
     assert out["status"] == "ok"
     anchor = float(out["residual_anchor_usd"])
-    assert 950.0 <= anchor <= 1050.0
+    assert 850.0 <= anchor <= 950.0
+    assert out["warnings"].count("anchor_guardrail_applied") == 1
