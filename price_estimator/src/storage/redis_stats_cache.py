@@ -5,17 +5,13 @@ The price API is read-heavy at the edge (the Chrome extension calls
 hits without paying SQLite's per-request open/close cost and without
 hammering Discogs on cold-cache misses.
 
-SQLite remains the persistent source of truth: training labels, full
-Discogs payloads, and every column on ``marketplace_stats`` continue
-to live there. Redis caches **only** the inference response shape
-returned by :meth:`InferenceService.fetch_stats` (a small JSON dict),
-keyed by release id, with a configurable TTL (30 days by default to
-match the demo system-design slide).
+Bulk ``marketplace_stats`` in SQLite/Postgres remains for training
+pipelines and exports; inference does **not** read it (stale). Redis
+caches the small JSON projection from :meth:`InferenceService.fetch_stats`
+(Redis hit -> else live Discogs -> warm Redis). TTL defaults to 30 days.
 
-Failure mode: every Redis interaction is wrapped in a broad ``except``
-that downgrades to a warning log and lets the caller fall through to
-SQLite. Local dev (no ``REDIS_HOST`` set) and outages both end up at
-the same SQLite-only behavior the service had before this layer.
+Failure mode: Redis errors log a warning and the caller falls through to
+live Discogs when credentials are configured.
 """
 from __future__ import annotations
 

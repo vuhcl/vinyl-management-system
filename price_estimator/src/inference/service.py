@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import sys
 from pathlib import Path
@@ -26,8 +27,10 @@ from ..models.fitted_regressor import (
     load_fitted_regressor,
 )
 from ..storage.feature_store import FeatureStoreDB
-from ..storage.marketplace_db import MarketplaceStatsDB
+from ..storage.marketplace_db import MarketplaceStatsDB, compute_marketplace_upsert_values
 from ..storage.redis_stats_cache import RedisStatsCache
+
+logger = logging.getLogger(__name__)
 
 
 def _repo_root() -> Path:
@@ -167,13 +170,13 @@ class InferenceService:
         use_cache: bool = True,
         refresh: bool = False,
     ) -> dict[str, Any]:
-        """Read-through cache: Redis -> persistent store (Postgres/SQLite) -> Discogs API.
+        """Read-through cache: Redis -> live Discogs API.
 
-        Cache-hit response shape is preserved exactly as before this layer
-        existed: ``{release_lowest_price, num_for_sale, source}``. Redis
-        stores the same two fields keyed by release id; misses fall through
-        to the backing database and then to live Discogs. Live fetches write
-        through to Redis and the persistent store.
+        Postgres/SQLite ``marketplace_stats`` is not consulted on the inference
+        path — bulk-loaded rows are treated as stale. Redis holds fresh
+        projections (30-day TTL); misses call Discogs and warm Redis. Live
+        responses optionally persist to the backing store for training exports
+        only (best-effort; failures do not block the request).
         """
         rid = str(release_id).strip()
         if use_cache and not refresh:
@@ -184,25 +187,8 @@ class InferenceService:
                     "num_for_sale": cached.get("num_for_sale"),
                     "source": "cache_redis",
                 }
-            row = self.marketplace.get(rid)
-            if row:
-                payload = {
-                    "release_lowest_price": row.get("release_lowest_price"),
-                    "num_for_sale": row["num_for_sale"],
-                }
-                # Backfill Redis from DB so the next hit is warm.
-                self.redis_cache.set(rid, payload)
-                return {**payload, "source": "cache"}
         client = self._get_discogs_client()
         if not client:
-            row = self.marketplace.get(rid)
-            if row:
-                payload = {
-                    "release_lowest_price": row.get("release_lowest_price"),
-                    "num_for_sale": row["num_for_sale"],
-                }
-                self.redis_cache.set(rid, payload)
-                return {**payload, "source": "cache"}
             return {
                 "release_lowest_price": None,
                 "num_for_sale": 0,
@@ -217,29 +203,31 @@ class InferenceService:
             release_pl = None
         if not isinstance(release_pl, dict):
             release_pl = None
-        self.marketplace.upsert(
+        comp = compute_marketplace_upsert_values(
             rid,
+            {},
             {},
             release_payload=release_pl,
         )
-        row = self.marketplace.get(rid) or {}
-        # Cache only the minimal projection (matches cache-hit shape) but
-        # return the full live shape so the model sees community + listing
-        # depth signals on fresh fetches (existing behavior).
-        self.redis_cache.set(
-            rid,
-            {
-                "release_lowest_price": row.get("release_lowest_price"),
-                "num_for_sale": row.get("num_for_sale"),
-            },
-        )
+        try:
+            self.marketplace.upsert(rid, {}, release_payload=release_pl)
+        except Exception as e:
+            logger.warning(
+                "marketplace upsert after live fetch failed (%s); estimate uses live fields",
+                e,
+            )
+        redis_payload = {
+            "release_lowest_price": comp.get("release_lowest_price"),
+            "num_for_sale": comp.get("num_for_sale"),
+        }
+        self.redis_cache.set(rid, redis_payload)
         return {
-            "release_lowest_price": row.get("release_lowest_price"),
-            "num_for_sale": row.get("num_for_sale"),
-            "release_num_for_sale": row.get("release_num_for_sale"),
-            "community_want": row.get("community_want"),
-            "community_have": row.get("community_have"),
-            "blocked_from_sale": row.get("blocked_from_sale"),
+            "release_lowest_price": comp.get("release_lowest_price"),
+            "num_for_sale": comp.get("num_for_sale"),
+            "release_num_for_sale": comp.get("release_num_for_sale"),
+            "community_want": comp.get("community_want"),
+            "community_have": comp.get("community_have"),
+            "blocked_from_sale": comp.get("blocked_from_sale"),
             "source": "live",
         }
 

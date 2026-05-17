@@ -13,6 +13,8 @@ data:
   config.yaml: |
     inherits: configs/base.yaml
     vinyliq:
+      # Demo secret ships DISCOGS_TOKEN (see k8s/demo/README.md Phase 4).
+      discogs_token_env: DISCOGS_TOKEN
       paths:
         postgres_dsn_env: DATABASE_URL
         model_dir: /data/artifacts/vinyliq
