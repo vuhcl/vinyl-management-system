@@ -41,6 +41,31 @@ def blend_weight_w_eff(
     return max(float(cfg.w_min), min(float(cfg.w_max), w))
 
 
+def blend_weight_w_eff_for_anchor(
+    *,
+    reference_usd: float,
+    rung_usd: float,
+    tier: str,
+    cfg: SaleFloorLogBlendConfig,
+) -> float:
+    """Inference anchor blend: ``d_log = log(reference) - log(rung)`` (vs training ``log(lo)-log(s)``)."""
+    w = float(cfg.w_base)
+    if tier == "B":
+        w -= float(cfg.tier_b_delta)
+    elif tier == "C":
+        w -= float(cfg.tier_c_delta)
+    w = max(float(cfg.w_min), min(float(cfg.w_max), w))
+
+    eps = float(cfg.gap_epsilon_log)
+    d_log = math.log(reference_usd) - math.log(rung_usd)
+    if d_log < -eps:
+        w += float(cfg.gap_k_down) * min(abs(d_log), float(cfg.gap_delta_cap))
+    elif d_log > eps:
+        w -= float(cfg.gap_k_up) * min(d_log, float(cfg.gap_delta_cap))
+
+    return max(float(cfg.w_min), min(float(cfg.w_max), w))
+
+
 def sale_floor_blend_y(
     s: float | None,
     lo: float | None,
@@ -56,4 +81,37 @@ def sale_floor_blend_y(
         return float(s)
     if lo is not None and lo > 0:
         return float(lo)
+    return None
+
+
+def sale_floor_blend_y_for_anchor(
+    reference_usd: float | None,
+    rung_usd: float | None,
+    tier: str,
+    *,
+    cfg: SaleFloorLogBlendConfig,
+) -> float | None:
+    """Log-blend reference floor toward grade rung for serving anchors."""
+    if (
+        reference_usd is not None
+        and reference_usd > 0
+        and rung_usd is not None
+        and rung_usd > 0
+    ):
+        w_eff = blend_weight_w_eff_for_anchor(
+            reference_usd=reference_usd,
+            rung_usd=rung_usd,
+            tier=tier,
+            cfg=cfg,
+        )
+        return float(
+            math.exp(
+                w_eff * math.log(reference_usd)
+                + (1.0 - w_eff) * math.log(rung_usd)
+            )
+        )
+    if reference_usd is not None and reference_usd > 0:
+        return float(reference_usd)
+    if rung_usd is not None and rung_usd > 0:
+        return float(rung_usd)
     return None
