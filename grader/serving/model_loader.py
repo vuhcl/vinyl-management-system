@@ -12,7 +12,7 @@ import mlflow
 import torch
 from google.auth.exceptions import InvalidOperation as GoogleAuthInvalidOperation
 
-from grader.src.project_env import load_project_dotenv
+from shared.project_env import load_project_dotenv
 
 logger = logging.getLogger(__name__)
 

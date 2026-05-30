@@ -21,7 +21,7 @@ from typing import Any, Iterator, Mapping, MutableMapping
 from urllib.parse import urlparse
 
 from grader.src.config_io import load_yaml
-from grader.src.project_env import load_project_dotenv
+from shared.project_env import load_project_dotenv
 
 logger = logging.getLogger(__name__)
 

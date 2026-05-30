@@ -47,7 +47,6 @@ Set in **`recommender/configs/base.yaml`** (or override `--config`):
   2. `scripts/build_discogs_release_to_aoty_artifact.py` — compose `artifacts/discogs_release_to_aoty.json` + Mongo `discogs_release_aoty`.
   3. **Refresh after master-map edits** (e.g. Phase 2a dump-join): from repo root, run **Phase B** then **`build_discogs_master_stats_artifact.py`** — same two commands as in *Phase 2a → Refresh downstream artifacts* below. Phase B needs Mongo with `discogs_release_master`; use `--help` on each script for paths and `MONGO_URI` / `MONGO_DB`.
   Then set `discogs.release_to_aoty_map_path` / `skip_live_discogs_aoty_mapping` in **`recommender/configs/base.yaml`**.
-- **Legacy monolithic script**: `scripts/build_discogs_aoty_release_map.py` (full old flow; avoid for large catalogs).
 - **AOTY**: `aoty_scraped.dir: "recommender/data/aoty_scraped"` (or path to your scraped output).
 
 ### Reranker (optional second stage)

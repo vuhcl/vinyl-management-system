@@ -10,7 +10,7 @@ from typing import Any, Optional
 import requests
 
 from grader.src.config_io import load_yaml_mapping
-from grader.src.project_env import load_project_dotenv
+from shared.project_env import load_project_dotenv
 
 from .constants import (
     DEFAULT_DISCOGS_FORMAT_FILTER,
