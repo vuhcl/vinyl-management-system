@@ -5,7 +5,7 @@
   "examples": [
     {
       "id": "A",
-      "text": "The vinyl is in perfect condition with no marks. The jacket has one corner ding and one edge mark.",
+      "text": "The vinyl is in perfect condition with no marks. The jacket has one corner bump.",
       "expected_media_condition": "Near Mint",
       "expected_sleeve_condition": "Very Good Plus",
       "notes": "After curation: paste verified estimated_price from /estimate for this release + grade pair."

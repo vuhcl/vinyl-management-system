@@ -172,8 +172,9 @@ TEXT=$(jq -r '.examples[0].text' grader/demo/golden_predict_demo_pitch.json)
 M=$(jq -r '.examples[0].expected_media_condition' grader/demo/golden_predict_demo_pitch.json)
 S=$(jq -r '.examples[0].expected_sleeve_condition' grader/demo/golden_predict_demo_pitch.json)
 
-curl -sI "https://$DEMO_HOSTNAME/grader/health" | head -n1
-curl -sI "https://$DEMO_HOSTNAME/price/health"  | head -n1
+# Liveness (GET — ``curl -I`` uses HEAD which returns HTTP 405 on FastAPI /health)
+curl -sS -D - -o /dev/null "https://$DEMO_HOSTNAME/grader/health" | head -n1
+curl -sS -D - -o /dev/null "https://$DEMO_HOSTNAME/price/health" | head -n1
 
 curl -sX POST "https://$DEMO_HOSTNAME/grader/predict" \
   -H 'Content-Type: application/json' \
