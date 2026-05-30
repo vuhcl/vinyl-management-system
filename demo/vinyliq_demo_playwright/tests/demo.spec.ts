@@ -7,6 +7,7 @@ import {
   disposeDemoBrowser,
 } from "../fixtures/extension";
 import { loadDemoScript, runDemoScript, demoHybridOperatorMode, demoHybridSuggestedTestTimeoutMs } from "../fixtures/demo_runner";
+import { envOr } from "../fixtures/env";
 import { readGoldenPredictDemo } from "../fixtures/golden";
 
 /**
@@ -33,11 +34,6 @@ import { readGoldenPredictDemo } from "../fixtures/golden";
  * is asserted after **`goto_seller_listing`** (skips **`goto`** when already **`SELL_POST_URL`** **and**
  * catalog UX is off).
  */
-
-function envOr(name: string, fallback: string): string {
-  const v = process.env[name];
-  return v && v.trim().length > 0 ? v : fallback;
-}
 
 test("vinyliq demo scripted", async ({}, testInfo) => {
   if (demoHybridOperatorMode()) {

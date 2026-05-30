@@ -58,7 +58,7 @@ Scripted Demo (Playwright):
 ```bash
 set -a && source ../../.env && set +a    # repo-root .env
 
-# Liveness (GET — ``curl -I`` uses HEAD which often returns HTTP 405 on FastAPI mounts)
+# Liveness (``curl -I`` / HEAD supported on FastAPI /health)
 curl -sS -D - -o /dev/null "https://$DEMO_HOSTNAME/grader/health" | head -n1
 curl -sS -D - -o /dev/null "https://$DEMO_HOSTNAME/price/health" | head -n1
 

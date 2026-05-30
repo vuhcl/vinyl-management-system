@@ -1,14 +1,18 @@
 import { test } from "@playwright/test";
-import * as fs from "fs";
-import * as path from "path";
 import * as readline from "node:readline";
 
 import {
   commentFieldLocator,
   focusAndTypeSellerComment,
+  sellDockVisibilityTimeoutMs,
   vinyliqSellDockSelector,
 } from "../fixtures/demo_runner";
-import { launchWithExtension } from "../fixtures/extension";
+import { envMs, envOr } from "../fixtures/env";
+import {
+  injectVinyliqStorageViaExtensionPopup,
+  launchWithExtension,
+} from "../fixtures/extension";
+import { readGoldenPredictDemoPitch } from "../fixtures/golden";
 
 /**
  * Pitch assist: open release → sell listing → type one golden comment, then stop.
@@ -25,54 +29,6 @@ import { launchWithExtension } from "../fixtures/extension";
  * Launch disables Playwright recordVideo/showActions (external capture only).
  */
 
-interface GoldenExample {
-  id: string;
-  text: string;
-  expected_media_condition: string;
-  expected_sleeve_condition: string;
-  notes?: string;
-}
-
-interface GoldenFile {
-  demo_release_id: number | string;
-  release_description: string;
-  sell_post_url: string;
-  examples: GoldenExample[];
-}
-
-function loadGolden(): GoldenFile {
-  const fallback = path.resolve(
-    __dirname,
-    "..",
-    "..",
-    "..",
-    "grader",
-    "demo",
-    "golden_predict_demo_pitch.json",
-  );
-  const file = process.env.GOLDEN_FILE ?? fallback;
-  const raw = fs.readFileSync(file, "utf8");
-  const parsed = JSON.parse(raw) as GoldenFile;
-  if (!parsed.examples || parsed.examples.length < 1) {
-    throw new Error(`Golden file ${file} must contain at least 1 example.`);
-  }
-  return parsed;
-}
-
-function envOr(name: string, fallback: string): string {
-  const v = process.env[name];
-  return v && v.trim().length > 0 ? v : fallback;
-}
-
-function envMs(name: string, fallback: number): number {
-  const v = process.env[name];
-  if (!v || v.trim().length === 0) {
-    return fallback;
-  }
-  const n = Number(v);
-  return Number.isFinite(n) ? n : fallback;
-}
-
 function ttyQuestion(prompt: string): Promise<void> {
   return new Promise<void>((resolve) => {
     const rl = readline.createInterface({
@@ -87,8 +43,8 @@ function ttyQuestion(prompt: string): Promise<void> {
 }
 
 test("vinyliq pitch assist", async () => {
-  const golden = loadGolden();
-  const example = golden.examples[0];
+  const golden = readGoldenPredictDemoPitch({ minExamples: 1 });
+  const example = golden.examples![0];
   const releaseId = envOr("DEMO_RELEASE_ID", String(golden.demo_release_id));
   const sellPostUrl = envOr("SELL_POST_URL", golden.sell_post_url);
   const priceApiBase = envOr("PRICE_API_BASE", "http://127.0.0.1:8801");
@@ -103,20 +59,11 @@ test("vinyliq pitch assist", async () => {
   });
 
   try {
-    const popup = await context.newPage();
-    await popup.goto(`chrome-extension://${extensionId}/popup.html`);
-    await popup.evaluate(
-      async ({ priceApiBase, graderApiBase, apiKey }) => {
-        await new Promise<void>((resolve) =>
-          chrome.storage.sync.set(
-            { priceApiBase, graderApiBase, apiKey },
-            () => resolve(),
-          ),
-        );
-      },
-      { priceApiBase, graderApiBase, apiKey },
-    );
-    await popup.close();
+    await injectVinyliqStorageViaExtensionPopup(context, extensionId, {
+      priceApiBase,
+      graderApiBase,
+      apiKey,
+    });
 
     const seller = await context.newPage();
     const releaseUrl = `https://www.discogs.com/release/${releaseId}`;
@@ -130,14 +77,7 @@ test("vinyliq pitch assist", async () => {
       timeout: 120_000,
     });
 
-    const sellDockTimeout = Number.parseInt(
-      process.env.PLAYWRIGHT_SELL_DOCK_TIMEOUT_MS ?? "",
-      10,
-    );
-    const dockTimeout =
-      Number.isFinite(sellDockTimeout) && sellDockTimeout >= 60_000
-        ? sellDockTimeout
-        : 240_000;
+    const dockTimeout = sellDockVisibilityTimeoutMs({ minMs: 60_000 });
 
     await seller
       .locator(vinyliqSellDockSelector())
