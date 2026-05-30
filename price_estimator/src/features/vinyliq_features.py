@@ -266,18 +266,6 @@ def first_label_id(cat: dict[str, Any]) -> str:
     return ""
 
 
-def build_model_feature_matrix(
-    rows: list[dict[str, Any]],
-    *,
-    feature_columns: list[str],
-) -> np.ndarray:
-    """Stack dict rows into a numeric matrix aligned to feature_columns."""
-    out = []
-    for r in rows:
-        out.append([float(r.get(c, 0.0) or 0.0) for c in feature_columns])
-    return np.asarray(out, dtype=np.float64)
-
-
 def _int_nonneg_or_zero(v: Any) -> int:
     if v is None:
         return 0
