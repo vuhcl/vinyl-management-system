@@ -9,6 +9,8 @@ from typing import Any
 
 import yaml
 
+from shared.config_yaml import deep_merge_yaml, load_yaml_mapping_with_inherits
+
 
 def get_project_root() -> Path:
     """Project root = directory containing configs/ and pyproject.toml."""
@@ -18,24 +20,7 @@ def get_project_root() -> Path:
 
 
 def _load_yaml_with_inherits(path: Path, *, root: Path) -> dict[str, Any]:
-    """
-    Load YAML; if ``inherits`` is set (path relative to project root), load and
-    deep-merge parent first so the current file overrides. ``inherits`` is removed
-    from the result.
-    """
-    if not path.exists():
-        return {}
-    with open(path) as f:
-        cfg = yaml.safe_load(f) or {}
-    parent = cfg.pop("inherits", None)
-    if parent:
-        parent_path = Path(parent)
-        if not parent_path.is_absolute():
-            parent_path = root / parent_path
-        base = _load_yaml_with_inherits(parent_path, root=root)
-        _deep_merge(base, cfg)
-        return base
-    return cfg
+    return load_yaml_mapping_with_inherits(path, root=root)
 
 
 def load_config(
@@ -82,8 +67,4 @@ def load_config(
 
 
 def _deep_merge(base: dict[str, Any], overrides: dict[str, Any]) -> None:
-    for k, v in overrides.items():
-        if k in base and isinstance(base[k], dict) and isinstance(v, dict):
-            _deep_merge(base[k], v)
-        else:
-            base[k] = v
+    deep_merge_yaml(base, overrides)

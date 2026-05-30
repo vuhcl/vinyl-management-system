@@ -166,12 +166,16 @@ export function vinyliqSellDockSelector(): string {
   return "#vinyliq-sell-dock";
 }
 
-function sellDockVisibilityTimeoutMs(): number {
+/** Wait for ``#vinyliq-sell-dock``; pitch-assist uses a higher ``minMs`` floor. */
+export function sellDockVisibilityTimeoutMs(opts?: {
+  minMs?: number;
+}): number {
+  const minMs = opts?.minMs ?? 10_000;
   const raw = Number.parseInt(
     process.env.PLAYWRIGHT_SELL_DOCK_TIMEOUT_MS ?? "",
     10,
   );
-  return Number.isFinite(raw) && raw >= 10_000 ? raw : 240_000;
+  return Number.isFinite(raw) && raw >= minMs ? raw : 240_000;
 }
 
 /** Normalize ``/sell/post/id`` pathname match (handles trailing slashes, querystrings). */

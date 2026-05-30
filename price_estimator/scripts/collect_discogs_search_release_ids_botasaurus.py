@@ -46,6 +46,11 @@ import sys
 import time
 from pathlib import Path
 
+from core.config import get_project_root
+from price_estimator.src.scrape.botasaurus_discogs_session import (
+    discogs_navigate_resilient,
+)
+
 _DEFAULT_DECADES = (2020, 2010, 2000, 1990, 1980, 1970, 1960)
 
 
@@ -61,7 +66,7 @@ def _pe_root() -> Path:
 
 
 def _repo_root() -> Path:
-    return _pe_root().parent
+    return get_project_root()
 
 
 def _ensure_repo_path() -> None:
@@ -153,32 +158,6 @@ def _cf_banner(*, kind: str, url: str, hint: str) -> None:
     )
 
 
-def _is_cloudflare_just_a_moment_title(driver) -> bool:
-    try:
-        return (driver.title or "").strip() == "Just a moment..."
-    except Exception:
-        return False
-
-
-def _discogs_get(
-    driver,
-    url: str,
-    *,
-    timeout: float,
-    force_bypass_inside_get: bool,
-    skip_detect_bypass: bool,
-) -> None:
-    if force_bypass_inside_get:
-        driver.get(url, bypass_cloudflare=True, timeout=timeout)
-        return
-    driver.get(url, bypass_cloudflare=False, timeout=timeout)
-    if skip_detect_bypass:
-        return
-    if _is_cloudflare_just_a_moment_title(driver):
-        _detail("Cloudflare interstitial — detect_and_bypass_cloudflare once …")
-        driver.detect_and_bypass_cloudflare()
-
-
 def _discogs_get_resilient(
     driver,
     url: str,
@@ -187,30 +166,14 @@ def _discogs_get_resilient(
     force_bypass_inside_get: bool,
     skip_detect_bypass: bool,
 ) -> None:
-    for attempt in (1, 2):
-        try:
-            _discogs_get(
-                driver,
-                url,
-                timeout=timeout,
-                force_bypass_inside_get=force_bypass_inside_get,
-                skip_detect_bypass=skip_detect_bypass,
-            )
-            return
-        except BaseException as e:
-            msg = str(e).lower()
-            if attempt == 1 and any(
-                s in msg
-                for s in (
-                    "no longer available",
-                    "target closed",
-                    "disconnected",
-                    "connection",
-                )
-            ):
-                time.sleep(2.0)
-                continue
-            raise
+    discogs_navigate_resilient(
+        driver,
+        url,
+        timeout=timeout,
+        force_bypass_inside_get=force_bypass_inside_get,
+        skip_detect_bypass=skip_detect_bypass,
+        log=_detail if out.verbose else None,
+    )
 
 
 def _parse_decades(s: str) -> tuple[int, ...]:

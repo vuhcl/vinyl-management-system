@@ -43,6 +43,10 @@ import threading
 import time
 from pathlib import Path
 
+from core.config import get_project_root
+from price_estimator.src.scrape.botasaurus_discogs_session import (
+    discogs_navigate_resilient,
+)
 from price_estimator.src.scrape.discogs_sale_history_parse import looks_like_login_or_challenge
 
 
@@ -57,7 +61,7 @@ out = _Output()
 
 def _repo_root() -> Path:
     """Monorepo root (parent of the ``price_estimator`` package)."""
-    return Path(__file__).resolve().parents[2]
+    return get_project_root()
 
 
 def iter_release_ids_from_file(path: Path):
@@ -159,39 +163,6 @@ def _cloudflare_blocks_scrape(kind: str, html: str, parsed) -> bool:
     return kind in ("challenge_markup", "challenge_iframe")
 
 
-def _is_cloudflare_just_a_moment_title(driver) -> bool:
-    """Match Botasaurus ``solve_full_cf`` gate (``driver.title == "Just a moment..."``)."""
-    try:
-        return (driver.title or "").strip() == "Just a moment..."
-    except Exception:
-        return False
-
-
-def _discogs_get(
-    driver,
-    url: str,
-    *,
-    timeout: float,
-    force_bypass_inside_get: bool,
-) -> None:
-    """
-    Navigate without in-get bypass (avoids spurious Turnstile matches on Discogs).
-
-    If the tab shows Cloudflare's interstitial title, run Botasaurus bypass once —
-    that path uses ``solve_full_cf`` instead of the widget loop that can hang.
-    """
-    if force_bypass_inside_get:
-        driver.get(url, bypass_cloudflare=True, timeout=timeout)
-        return
-    driver.get(url, bypass_cloudflare=False, timeout=timeout)
-    if _is_cloudflare_just_a_moment_title(driver):
-        _detail(
-            '         Cloudflare interstitial (title "Just a moment...") — '
-            "running Botasaurus bypass once …"
-        )
-        driver.detect_and_bypass_cloudflare()
-
-
 def _discogs_get_resilient(
     driver,
     url: str,
@@ -199,33 +170,13 @@ def _discogs_get_resilient(
     timeout: float,
     force_bypass_inside_get: bool,
 ) -> None:
-    """``driver.get`` can detach the CDP target on some navigations; retry once."""
-    for attempt in (1, 2):
-        try:
-            _discogs_get(
-                driver,
-                url,
-                timeout=timeout,
-                force_bypass_inside_get=force_bypass_inside_get,
-            )
-            return
-        except BaseException as e:
-            msg = str(e).lower()
-            if attempt == 1 and any(
-                s in msg
-                for s in (
-                    "no longer available",
-                    "target closed",
-                    "disconnected",
-                    "connection",
-                )
-            ):
-                _detail(
-                    f"         Navigation CDP error ({e!r}); sleeping 2s and retrying once …"
-                )
-                time.sleep(2.0)
-                continue
-            raise
+    discogs_navigate_resilient(
+        driver,
+        url,
+        timeout=timeout,
+        force_bypass_inside_get=force_bypass_inside_get,
+        log=_detail if out.verbose else None,
+    )
 
 
 def _heartbeat_while(

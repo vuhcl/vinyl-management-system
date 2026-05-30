@@ -64,9 +64,16 @@ def fetch_mlflow_run_guidelines_version(model_uri: str) -> str | None:
         run = client.get_run(run_id)
         tag = run.data.tags.get("guidelines_version")
         return tag.strip() if isinstance(tag, str) and tag.strip() else None
-    except Exception as exc:
+    except (OSError, ConnectionError) as exc:
         logger.debug("Could not fetch MLflow guidelines_version tag: %s", exc)
         return None
+    except Exception as exc:
+        from mlflow.exceptions import MlflowException
+
+        if isinstance(exc, MlflowException):
+            logger.debug("Could not fetch MLflow guidelines_version tag: %s", exc)
+            return None
+        raise
 
 
 def verify_serving_guidelines_pairing(model_uri: str | None = None) -> None:
@@ -84,7 +91,7 @@ def verify_serving_guidelines_pairing(model_uri: str | None = None) -> None:
     _last_model_guidelines_version = model_ver
     try:
         from grader.serving.rule_postprocess import get_rule_engine
-    except Exception:
+    except ImportError:
         return
     try:
         rule_engine = get_rule_engine()

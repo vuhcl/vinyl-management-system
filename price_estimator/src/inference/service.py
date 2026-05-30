@@ -11,6 +11,9 @@ from typing import Any
 import numpy as np
 import yaml
 
+from core.config import get_project_root
+from shared.config_yaml import load_yaml_mapping_with_inherits, require_mapping
+
 from ..features.vinyliq_features import (
     clamp_ordinals_for_inference,
     condition_string_to_ordinal,
@@ -69,45 +72,13 @@ def _workspace_root_for_yaml_inherits() -> Path:
     return _repo_root().parent
 
 
-def _deep_merge_vinyliq_yaml(base: dict[str, Any], overrides: dict[str, Any]) -> None:
-    for k, v in overrides.items():
-        if (
-            k in base
-            and isinstance(base[k], dict)
-            and isinstance(v, dict)
-        ):
-            _deep_merge_vinyliq_yaml(base[k], v)
-        else:
-            base[k] = v
-
-
 def _load_yaml_with_inherits_file(
     path: Path,
     *,
     workspace_root: Path | None,
 ) -> dict[str, Any]:
-    if not path.is_file():
-        return {}
-    with open(path, encoding="utf-8") as f:
-        cfg = yaml.safe_load(f) or {}
-    if not isinstance(cfg, dict):
-        return {}
-    parent_raw = cfg.pop("inherits", None)
     ws = workspace_root if workspace_root is not None else _workspace_root_for_yaml_inherits()
-    if parent_raw:
-        raw = str(parent_raw).strip()
-        if raw:
-            parent_path = Path(raw)
-            if not parent_path.is_absolute():
-                parent_path = ws / parent_path
-            base = (
-                _load_yaml_with_inherits_file(parent_path, workspace_root=ws)
-                if parent_path.is_file()
-                else {}
-            )
-            _deep_merge_vinyliq_yaml(base, cfg)
-            return base
-    return cfg
+    return load_yaml_mapping_with_inherits(path, root=ws)
 
 
 def yaml_inference_condition_overlay(cfg: dict[str, Any]) -> dict[str, Any] | None:

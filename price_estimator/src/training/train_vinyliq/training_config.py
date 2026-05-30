@@ -9,6 +9,9 @@ from typing import Any
 
 import yaml
 
+from core.config import get_project_root
+from shared.config_yaml import load_yaml_mapping_with_inherits, require_mapping
+
 from ...models.fitted_regressor import (
     TARGET_KIND_DOLLAR_LOG1P,
     TARGET_KIND_RESIDUAL_LOG_MEDIAN,
@@ -134,9 +137,15 @@ def _root() -> Path:
 
 def load_config() -> dict:
     env = os.environ.get("VINYLIQ_CONFIG")
-    p = Path(env) if env else (_root() / "configs" / "base.yaml")
-    with open(p) as f:
-        return yaml.safe_load(f) or {}
+    ws = get_project_root()
+    if env:
+        p = Path(env)
+        if not p.is_absolute():
+            p = ws / p
+    else:
+        p = _root() / "configs" / "base.yaml"
+    doc = load_yaml_mapping_with_inherits(p, root=ws)
+    return require_mapping(doc, path=p)
 
 
 def _mlflow_flags(cfg: dict) -> tuple[bool, bool]:

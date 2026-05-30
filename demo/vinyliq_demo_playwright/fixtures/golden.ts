@@ -26,28 +26,27 @@ export interface GoldenPredictDemoJson {
   examples?: GoldenExample[];
 }
 
-export function goldenPredictDemoPath(): string {
-  const fallback = path.resolve(
-    __dirname,
-    "..",
-    "..",
-    "..",
-    "grader",
-    "demo",
-    "golden_predict_demo.json",
-  );
+function resolveGoldenPath(defaultRelative: string): string {
   const fromEnv = process.env.GOLDEN_FILE?.trim();
   if (fromEnv && fromEnv.length > 0) {
     return path.resolve(fromEnv);
   }
-  return fallback;
+  return path.resolve(__dirname, "..", "..", "..", defaultRelative);
+}
+
+export function goldenPredictDemoPath(): string {
+  return resolveGoldenPath("grader/demo/golden_predict_demo.json");
+}
+
+export function goldenPredictDemoPitchPath(): string {
+  return resolveGoldenPath("grader/demo/golden_predict_demo_pitch.json");
 }
 
 /** ``minExamples``: when set, require at least that many golden examples */
 export function readGoldenPredictDemo(
-  opts: { minExamples?: number } = {},
+  opts: { minExamples?: number; path?: string } = {},
 ): GoldenPredictDemoJson {
-  const file = goldenPredictDemoPath();
+  const file = opts.path ?? goldenPredictDemoPath();
   const raw = fs.readFileSync(file, "utf8");
   const parsed = JSON.parse(raw) as GoldenPredictDemoJson;
   const min = opts.minExamples;
@@ -59,4 +58,14 @@ export function readGoldenPredictDemo(
     }
   }
   return parsed;
+}
+
+/** Pitch assist default golden (``golden_predict_demo_pitch.json`` unless ``GOLDEN_FILE`` set). */
+export function readGoldenPredictDemoPitch(
+  opts: { minExamples?: number } = {},
+): GoldenPredictDemoJson {
+  return readGoldenPredictDemo({
+    ...opts,
+    path: goldenPredictDemoPitchPath(),
+  });
 }
