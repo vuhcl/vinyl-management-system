@@ -4,6 +4,8 @@ grader/tests/conftest.py
 Shared pytest fixtures for vinyl condition grader tests.
 """
 
+from __future__ import annotations
+
 import json
 import pickle
 from pathlib import Path
@@ -15,6 +17,18 @@ import yaml
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.linear_model import LogisticRegression
 from sklearn.preprocessing import LabelEncoder
+
+
+def pytest_ignore_collect(collection_path: Path, config) -> bool | None:
+    """Skip NLP monitoring tests when great_expectations is not installed."""
+    if collection_path.name != "test_monitoring_nlp.py":
+        return None
+    try:
+        import great_expectations  # noqa: F401
+    except ImportError:
+        return True
+    return None
+
 
 SLEEVE_GRADES = [
     "Mint",

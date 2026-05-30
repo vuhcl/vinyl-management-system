@@ -44,6 +44,7 @@ include = ["price_estimator*"]
 monitoring = [
     "great-expectations>=1.0.0,<2",
     "evidently>=0.4.50,<1",
+    "statsmodels>=0.14.0",
 ]
 
 [tool.uv.sources]

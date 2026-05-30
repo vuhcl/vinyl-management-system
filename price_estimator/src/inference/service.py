@@ -375,6 +375,12 @@ class InferenceService:
                 return {**core, "source": "cache_redis"}
         client = self._get_discogs_client()
         if not client:
+            row = self.marketplace.get(rid) or {}
+            if row:
+                return {
+                    **marketplace_inference_stats_from_row(row),
+                    "source": "marketplace_store",
+                }
             return {
                 **marketplace_inference_stats_from_row({}),
                 "source": "none",
