@@ -5,9 +5,11 @@ from __future__ import annotations
 import logging
 from contextlib import asynccontextmanager
 from importlib.metadata import PackageNotFoundError, version
+from typing import Any
 
 import pandas as pd
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import Response
 
 from grader.serving.guidelines_pairing import (
     get_model_guidelines_version_tag,
@@ -28,6 +30,7 @@ from grader.serving.schemas import (
 logger = logging.getLogger(__name__)
 
 _model = None
+_health_snapshot: dict[str, Any] | None = None
 
 
 def _pkg_version() -> str:
@@ -37,15 +40,39 @@ def _pkg_version() -> str:
         return "0.0.0-dev"
 
 
+def _build_health_snapshot() -> dict[str, Any]:
+    from grader.serving.rule_postprocess import get_rule_engine
+    from grader.src.guidelines_identity import guidelines_version_from_mapping
+
+    gv = guidelines_version_from_mapping(get_rule_engine().guidelines)
+    return {
+        "status": "ok",
+        "model_loaded": True,
+        "guidelines_version": gv,
+        "model_guidelines_version_tag": get_model_guidelines_version_tag(),
+    }
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global _model
+    global _model, _health_snapshot
     _model = load_grader_pyfunc()
     logger.info("Grader pyfunc model loaded successfully")
     init_rule_stack()
     verify_serving_guidelines_pairing()
+    try:
+        _health_snapshot = _build_health_snapshot()
+    except RuntimeError as exc:
+        logger.warning("Health snapshot unavailable at startup: %s", exc)
+        _health_snapshot = {
+            "status": "ok",
+            "model_loaded": True,
+            "guidelines_version": None,
+            "model_guidelines_version_tag": get_model_guidelines_version_tag(),
+        }
     yield
     _model = None
+    _health_snapshot = None
 
 
 app = FastAPI(
@@ -69,24 +96,25 @@ def root():
     }
 
 
-@app.get("/health")
-def health():
+@app.api_route("/health", methods=["GET", "HEAD"])
+def health(request: Request):
     if _model is None:
         raise HTTPException(status_code=503, detail="model not loaded")
-    from grader.src.guidelines_identity import guidelines_version_from_mapping
-
-    try:
-        from grader.serving.rule_postprocess import get_rule_engine
-
-        gv = guidelines_version_from_mapping(get_rule_engine().guidelines)
-    except RuntimeError:
-        gv = None
-    return {
-        "status": "ok",
-        "model_loaded": True,
-        "guidelines_version": gv,
-        "model_guidelines_version_tag": get_model_guidelines_version_tag(),
-    }
+    body = _health_snapshot
+    if body is None:
+        try:
+            body = _build_health_snapshot()
+        except RuntimeError as exc:
+            logger.warning("Health snapshot rebuild failed: %s", exc)
+            body = {
+                "status": "ok",
+                "model_loaded": True,
+                "guidelines_version": None,
+                "model_guidelines_version_tag": get_model_guidelines_version_tag(),
+            }
+    if request.method == "HEAD":
+        return Response(status_code=200)
+    return body
 
 
 @app.post("/predict", response_model=PredictResponse)
@@ -97,7 +125,11 @@ def predict(body: PredictRequest):
     if body.text is not None and body.text.strip():
         df = pd.DataFrame([{"text": body.text.strip(), "item_id": 0}])
     else:
-        assert body.items is not None
+        if body.items is None:
+            raise HTTPException(
+                status_code=422,
+                detail="Provide non-empty 'items' when 'text' is omitted",
+            )
         rows = []
         for i, it in enumerate(body.items):
             rows.append(
@@ -123,8 +155,14 @@ def predict(body: PredictRequest):
         out, raw_texts, item_ids, metadata_list
     )
 
+    model_gv = get_model_guidelines_version_tag()
+    sleeve_confidences = out["sleeve_confidence"].tolist()
+    media_confidences = out["media_confidence"].tolist()
+
     predictions = []
-    for pred, (_, prow) in zip(final, out.iterrows()):
+    for pred, sleeve_confidence, media_confidence in zip(
+        final, sleeve_confidences, media_confidences
+    ):
         meta = pred["metadata"]
         predictions.append(
             PredictionRow(
@@ -135,8 +173,8 @@ def predict(body: PredictRequest):
                 predicted_media_condition=str(
                     pred["predicted_media_condition"]
                 ),
-                sleeve_confidence=float(prow["sleeve_confidence"]),
-                media_confidence=float(prow["media_confidence"]),
+                sleeve_confidence=float(sleeve_confidence),
+                media_confidence=float(media_confidence),
                 contradiction_detected=bool(
                     meta.get("contradiction_detected", False)
                 ),
@@ -145,7 +183,7 @@ def predict(body: PredictRequest):
                 ),
                 rule_override_target=meta.get("rule_override_target"),
                 guidelines_version=meta.get("guidelines_version"),
-                model_guidelines_version=get_model_guidelines_version_tag(),
+                model_guidelines_version=model_gv,
             )
         )
     return PredictResponse(predictions=predictions)

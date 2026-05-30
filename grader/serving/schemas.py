@@ -8,7 +8,7 @@ from whichever mode was used.
 
 from __future__ import annotations
 
-from typing import Any, Optional, Union
+from typing import Optional, Union
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -40,7 +40,7 @@ class PredictRequest(BaseModel):
 
 
 class PredictionRow(BaseModel):
-    item_id: Any
+    item_id: Union[str, int]
     predicted_sleeve_condition: str
     predicted_media_condition: str
     sleeve_confidence: float

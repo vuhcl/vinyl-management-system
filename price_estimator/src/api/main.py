@@ -12,7 +12,8 @@ import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, Header, HTTPException
+from fastapi import FastAPI, Header, HTTPException, Request
+from fastapi.responses import Response
 
 from price_estimator.src.api.schemas import (
     CollectionValueRequest,
@@ -66,9 +67,7 @@ def _check_api_key(x_api_key: str | None) -> None:
         )
 
 
-@app.get("/health", response_model=HealthResponse)
-async def health(x_api_key: str | None = Header(None, alias="X-API-Key")):
-    _check_api_key(x_api_key)
+def _health_payload() -> HealthResponse:
     svc = get_service()
     # COUNT(*) can exceed kube probes on multi-million-row Postgres; ping only.
     svc.features.ping()
@@ -84,6 +83,15 @@ async def health(x_api_key: str | None = Header(None, alias="X-API-Key")):
         model_loaded=loaded,
         model_source=svc.model_source,
     )
+
+
+@app.api_route("/health", methods=["GET", "HEAD"], response_model=HealthResponse)
+async def health(request: Request):
+    # Probes and ``curl -I`` do not send X-API-Key; health is unauthenticated.
+    if request.method == "HEAD":
+        _health_payload()
+        return Response(status_code=200)
+    return _health_payload()
 
 
 @app.post("/estimate", response_model=EstimateResponse)
