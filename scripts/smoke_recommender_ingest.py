@@ -123,7 +123,7 @@ def main() -> int:
         default=None,
         help=(
             "JSON map discogs_release_id → aoty_album_id "
-            "(from scripts/build_discogs_aoty_release_map.py)"
+            "(from scripts/build_discogs_release_to_aoty_artifact.py)"
         ),
     )
     parser.add_argument(

@@ -24,7 +24,6 @@ export {
   listingPriceInputCompareKey,
   readListingPriceFingerprintExtensionOrder,
   visibleMediaConditionSelect,
-  visibleSellerPriceInput,
   visibleSleeveConditionSelect,
 } from "./seller_listing_locators";
 

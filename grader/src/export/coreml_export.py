@@ -45,7 +45,6 @@ from grader.src.mlflow_tracking import configure_mlflow_from_config
 from grader.src.data.preprocess import Preprocessor
 from grader.src.features.tfidf_features import TFIDFFeatureBuilder
 from grader.src.models.baseline import BaselineModel
-from grader.src.mlflow_tracking import configure_mlflow_from_config
 from grader.src.models.transformer import TwoHeadClassifier
 
 # ---------------------------------------------------------------------------

@@ -127,9 +127,10 @@ debug_preprocessor.py
 debug_test_config.py
 DDS Group Project/
 
-# Cursor / local notes (optional)
+# Cursor / local notes and agent config (keep local; do not commit)
 .notes/*
 .cursor/
 .cursorrules
 .cursorignore
+.cursorindexingignore
 .specstory/*

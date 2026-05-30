@@ -231,20 +231,6 @@ def _write_training_label_config(
         payload["training_target"] = dict(training_target)
     (model_dir / "training_label.json").write_text(json.dumps(payload, indent=2))
 
-def _resolve_tuning_selection_metric(
-    tuning: dict | None,
-) -> tuple[str, str]:
-    """
-    Legacy single-metric resolution (``composite`` falls back to MdAPE here).
-
-    Prefer ``parse_selection_objective`` for full tuning behavior.
-    """
-    raw = str((tuning or {}).get("selection_metric", "median_ape")).strip().lower()
-    if raw == "composite":
-        return ("mdape", "val_median_ape_dollars")
-    return _resolve_single_selection_metric(tuning)
-
-
 def _enabled_families(v: dict) -> list[str]:
     mf = v.get("model_families") or {}
     order = [
