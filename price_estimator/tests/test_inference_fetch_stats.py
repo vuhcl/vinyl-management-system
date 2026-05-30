@@ -6,6 +6,8 @@ import json
 from pathlib import Path
 from unittest.mock import MagicMock
 
+import pytest
+
 from price_estimator.src.inference.service import InferenceService
 from price_estimator.src.storage.marketplace_db import (
     compute_marketplace_upsert_values,
@@ -91,6 +93,37 @@ def test_fetch_stats_live_upserts_price_suggestions_payload(
     blob = set_calls[-1][0][1]
     assert blob.get("price_suggestions_json")
     assert "99" in str(blob.get("price_suggestions_json"))
+
+
+def test_fetch_stats_falls_back_to_marketplace_store_without_discogs(
+    tmp_path: Path,
+) -> None:
+    """Unit tests mock marketplace rows; inference must not require a live token."""
+    mp = MagicMock()
+    mp.get.return_value = {
+        "release_lowest_price": 25.0,
+        "num_for_sale": 5,
+        "price_suggestions_json": '{"Near Mint (NM or M-)": {"value": 42.0}}',
+    }
+    fs = MagicMock()
+    (tmp_path / "condition_params.json").write_text(
+        json.dumps({"alpha": 0.06, "beta": 0.04, "ref_grade": 8.0})
+    )
+    svc = InferenceService(
+        model_dir=tmp_path,
+        marketplace_store=mp,
+        feature_store=fs,
+    )
+    svc.redis_cache = MagicMock()
+    svc.redis_cache.get.return_value = None
+    svc._get_discogs_client = lambda: None
+
+    out = svc.fetch_stats("42", use_cache=True, refresh=False)
+
+    assert out["source"] == "marketplace_store"
+    assert out["num_for_sale"] == 5
+    assert out["release_lowest_price"] == pytest.approx(25.0)
+    mp.get.assert_called_once_with("42")
 
 
 def test_invalidate_marketplace_redis_cache_strips_release_id(tmp_path: Path) -> None:
