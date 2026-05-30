@@ -369,6 +369,16 @@ this package:
 
 ---
 
+## Local diagnostics (scripts)
+
+Ad-hoc sale-floor / queue inspection (not part of CI):
+
+- `price_estimator/scripts/inspect_training_label.py` — single-release training label breakdown
+- `price_estimator/scripts/inspect_num_for_sale.py` — marketplace depth spot-check
+- `price_estimator/scripts/inspect_queue_popularity.py` — queue popularity audit
+
+---
+
 ## Quick local demo
 
 ```bash
