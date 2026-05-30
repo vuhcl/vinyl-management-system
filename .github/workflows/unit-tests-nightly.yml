@@ -1,0 +1,58 @@
+# Full workspace unit regression (scheduled + manual). Excludes monitoring marker
+# (see ml-monitoring-*.yml). Integration tests run in a separate job.
+name: Unit tests (nightly)
+
+on:
+  schedule:
+    - cron: "0 11 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  unit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      OPENBLAS_NUM_THREADS: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - name: Install Python 3.12
+        run: uv python install 3.12
+
+      - name: Install dependencies
+        run: uv sync --extra test
+
+      - name: Run all package unit tests
+        run: |
+          uv run pytest grader/tests recommender/tests price_estimator/tests \
+            --no-cov \
+            -m "not integration and not monitoring" \
+            -v
+
+  integration:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - name: Install Python 3.12
+        run: uv python install 3.12
+
+      - name: Install dependencies
+        run: uv sync --extra test
+
+      - name: Run grader integration smoke tests
+        run: uv run pytest grader/tests/smoke_test.py --no-cov -m integration -v

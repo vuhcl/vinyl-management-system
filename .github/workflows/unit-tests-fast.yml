@@ -1,0 +1,75 @@
+# Fast unit tests for workspace packages (no monitoring extra, no coverage).
+# Replaces the former price-estimator-tests.yml three-file subset.
+name: Unit tests (fast)
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  grader:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - name: Install Python 3.12
+        run: uv python install 3.12
+
+      - name: Install dependencies
+        run: uv sync --extra test
+
+      - name: Run grader unit tests
+        run: uv run pytest grader/tests --no-cov -m "not integration" -v
+
+  price-estimator:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - name: Install Python 3.12
+        run: uv python install 3.12
+
+      - name: Install dependencies
+        run: uv sync --extra test
+
+      - name: Run price estimator unit tests
+        run: uv run pytest price_estimator/tests --no-cov -m "not monitoring" -v
+
+  recommender:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      OPENBLAS_NUM_THREADS: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - name: Install Python 3.12
+        run: uv python install 3.12
+
+      - name: Install dependencies
+        run: uv sync --extra test
+
+      - name: Run recommender unit tests
+        run: uv run pytest recommender/tests --no-cov -m "not monitoring" -v

@@ -68,6 +68,19 @@ uv sync
 
 Prefer **`uv run python ...`** for scripts and **`uv run python -m price_estimator.src.training.train_vinyliq`** for training so workspace dependencies resolve.
 
+### Bootstrap (gitignored data)
+
+SQLite DBs (`*.sqlite`) and trained weights under **`price_estimator/artifacts/`** are **not** in git. Minimum path to train and serve locally:
+
+1. **Catalog:** `ingest_discogs_dump.py` → `data/feature_store.sqlite` (or `build_feature_store.py` from an external export).
+2. **Marketplace labels:** `collect_marketplace_stats.py` → `data/cache/marketplace_stats.sqlite` (Discogs token in `.env`).
+3. **Sale history (for `sale_floor_blend`):** `collect_sale_history_botasaurus.py` → `data/cache/sale_history.sqlite`.
+4. **Quality gate:** `audit_training_db_joins.py --format-audit --check` (defaults: FS∩MP/MP ≥ 0.90, FS∩MP∩SH/FS∩MP ≥ 0.50 when SH present, format fields ≤ 1% empty on FS∩MP).
+5. **Train:** `uv run python -m price_estimator.src.training.train_vinyliq` → `artifacts/vinyliq/`.
+6. **Serve:** `uvicorn price_estimator.src.api.main:app` (uses local `vinyliq.paths.model_dir` unless `VINYLIQ_MLFLOW_MODEL_URI` is set).
+
+**Demo / CI without multi-GB DBs:** `seed_demo_data.py`, GKE deploy with MLflow URI, or pull weights via `VINYLIQ_MLFLOW_MODEL_URI` per **Serve API** below.
+
 ---
 
 ## Full pipeline (commands in order)
