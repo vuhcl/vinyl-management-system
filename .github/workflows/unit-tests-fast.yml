@@ -1,4 +1,5 @@
-# Fast unit tests for workspace packages (no monitoring extra, no coverage).
+# Fast unit tests for workspace packages (excludes monitoring marker; no coverage).
+# Installs the monitoring extra so pytest can import *monitoring* modules at collection time.
 # Replaces the former price-estimator-tests.yml three-file subset.
 name: Unit tests (fast)
 
@@ -27,7 +28,7 @@ jobs:
         run: uv python install 3.12
 
       - name: Install dependencies
-        run: uv sync --extra test
+        run: uv sync --extra test --extra monitoring
 
       - name: Run grader unit tests
         run: uv run pytest grader/tests --no-cov -m "not integration" -v
@@ -47,7 +48,7 @@ jobs:
         run: uv python install 3.12
 
       - name: Install dependencies
-        run: uv sync --extra test
+        run: uv sync --extra test --extra monitoring
 
       - name: Run price estimator unit tests
         run: uv run pytest price_estimator/tests --no-cov -m "not monitoring" -v
@@ -69,7 +70,7 @@ jobs:
         run: uv python install 3.12
 
       - name: Install dependencies
-        run: uv sync --extra test
+        run: uv sync --extra test --extra monitoring
 
       - name: Run recommender unit tests
         run: uv run pytest recommender/tests --no-cov -m "not monitoring" -v
