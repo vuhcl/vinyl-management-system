@@ -40,7 +40,7 @@ from grader.src.mlflow_tracking import (
     mlflow_enabled,
     mlflow_pipeline_step_run_ctx,
 )
-from grader.src.project_env import load_project_dotenv
+from shared.project_env import load_project_dotenv
 
 # ---------------------------------------------------------------------------
 # Logging

@@ -11,7 +11,7 @@ When Discogs token or AOTY path is not set, falls back to CSV files in
 data_dir.
 
 Optional **precomputed** Discogs release → AOTY album id JSON (see
-``scripts/build_discogs_aoty_release_map.py``): set
+``scripts/build_discogs_release_to_aoty_artifact.py``): set
 ``discogs["release_to_aoty_map_path"]`` and either use
 ``discogs["skip_live_discogs_aoty_mapping"]=true`` to avoid live HTTP
 matching, or rely on automatic fallback when live matching raises.
