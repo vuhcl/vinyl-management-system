@@ -61,14 +61,6 @@ export async function readListingPriceFingerprintExtensionOrder(
 }
 
 /**
- * @deprecated Prefer **`readListingPriceFingerprintExtensionOrder`** for SW sync — **`:visible`** can track the wrong **`input`**.
- */
-export function visibleSellerPriceInput(page: Page): Locator {
-  const s = defaultSellerSelectors();
-  return page.locator(s.priceInputs).filter({ visible: true }).first();
-}
-
-/**
  * Stable string for asserting the visible price **changed** (commas/decimals tolerated).
  */
 export function listingPriceInputCompareKey(raw: string): string {

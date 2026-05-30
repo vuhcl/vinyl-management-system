@@ -41,18 +41,3 @@ def recall_at_k(predicted: np.ndarray, relevant: set, k: int) -> float:
     if len(relevant) == 0:
         return 0.0
     return len(predicted & relevant) / len(relevant)
-
-
-def evaluate_ranking(
-    predicted: np.ndarray,
-    relevant: set,
-    k: int = 10,
-) -> dict[str, float]:
-    """Return dict with ndcg@k, map@k, recall@k. predicted = ordered item ids/indices."""
-    pred_list = np.asarray(predicted)[:k]
-    relevances = np.array([1 if p in relevant else 0 for p in pred_list])
-    return {
-        f"ndcg@{k}": ndcg_at_k(relevances, k),
-        f"map@{k}": ap_at_k(predicted, relevant, k),
-        f"recall@{k}": recall_at_k(predicted, relevant, k),
-    }
