@@ -149,6 +149,15 @@ uv run pytest grader/tests/test_label_audit_backend.py grader/tests/test_label_a
 
 ---
 
+## Optional analysis (post-audit)
+
+After the queue workflow above, these CLIs are optional (not required for the runbook):
+
+- ``uv run python -m grader.src.eval.label_audit_analysis`` — correction-rate plots by source
+- ``uv run python -m grader.src.eval.label_audit_compare_metrics`` — before/after macro-F1 compare JSON
+
+---
+
 ## See also
 
 - [`../../README.md`](../../README.md) — LLM label-audit workflow overview and evaluation loop.
