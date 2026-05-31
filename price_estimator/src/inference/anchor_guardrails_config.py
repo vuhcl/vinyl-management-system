@@ -12,8 +12,6 @@ class AnchorGuardrailsConfig:
     min_listing_to_nm_rung_ratio: float = 0.12
     min_listing_to_max_rung_ratio: float = 0.08
     inflated_max_rung_to_reference: float = 2.5
-    inflated_max_rung_to_sale_reference: float = 2.5
-    max_ladder_to_reference: float = 5.0
     mint_outlier_multiple_of_nm: float = 1.15
     ladder_rung_winsorize_multiple_of_nm: float = 0.0
 
@@ -33,10 +31,6 @@ def anchor_guardrails_config_from_raw(raw: dict[str, Any] | None) -> AnchorGuard
         inflated_max_rung_to_reference=float(
             raw.get("inflated_max_rung_to_reference", 2.5)
         ),
-        inflated_max_rung_to_sale_reference=float(
-            raw.get("inflated_max_rung_to_sale_reference", 2.5)
-        ),
-        max_ladder_to_reference=float(raw.get("max_ladder_to_reference", 5.0)),
         mint_outlier_multiple_of_nm=float(
             raw.get("mint_outlier_multiple_of_nm", 1.15)
         ),
@@ -44,3 +38,18 @@ def anchor_guardrails_config_from_raw(raw: dict[str, Any] | None) -> AnchorGuard
             raw.get("ladder_rung_winsorize_multiple_of_nm", 0.0)
         ),
     )
+
+
+def anchor_guardrails_config_from_vinyliq(v: dict[str, Any] | None) -> AnchorGuardrailsConfig:
+    """Read ``vinyliq.anchor_guardrails`` with fallback to ``vinyliq.inference.anchor_guardrails``."""
+    if not isinstance(v, dict):
+        return AnchorGuardrailsConfig()
+    raw = v.get("anchor_guardrails")
+    if isinstance(raw, dict):
+        return anchor_guardrails_config_from_raw(raw)
+    inf = v.get("inference")
+    if isinstance(inf, dict):
+        nested = inf.get("anchor_guardrails")
+        if isinstance(nested, dict):
+            return anchor_guardrails_config_from_raw(nested)
+    return AnchorGuardrailsConfig()

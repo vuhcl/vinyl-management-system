@@ -93,17 +93,11 @@ def build_inference_service_from_merged_config(
 
     from .anchor_guardrails_config import (
         AnchorGuardrailsConfig,
-        anchor_guardrails_config_from_raw,
+        anchor_guardrails_config_from_vinyliq,
     )
-    from ..training.sale_floor_blend_config import (
-        sale_floor_blend_config_from_raw,
-        sale_floor_blend_config_with_inference_overrides,
-    )
+    from ..training.sale_floor_blend_config import sale_floor_blend_config_from_raw
 
-    ag_raw = inf.get("anchor_guardrails")
-    ag_cfg = anchor_guardrails_config_from_raw(
-        ag_raw if isinstance(ag_raw, dict) else None
-    )
+    ag_cfg = anchor_guardrails_config_from_vinyliq(v)
     env_ag = (os.environ.get("VINYLIQ_ANCHOR_GUARDRAILS") or "").strip().lower()
     if env_ag in ("1", "true", "yes"):
         ag_cfg = AnchorGuardrailsConfig(
@@ -112,8 +106,6 @@ def build_inference_service_from_merged_config(
             min_listing_to_nm_rung_ratio=ag_cfg.min_listing_to_nm_rung_ratio,
             min_listing_to_max_rung_ratio=ag_cfg.min_listing_to_max_rung_ratio,
             inflated_max_rung_to_reference=ag_cfg.inflated_max_rung_to_reference,
-            inflated_max_rung_to_sale_reference=ag_cfg.inflated_max_rung_to_sale_reference,
-            max_ladder_to_reference=ag_cfg.max_ladder_to_reference,
             mint_outlier_multiple_of_nm=ag_cfg.mint_outlier_multiple_of_nm,
             ladder_rung_winsorize_multiple_of_nm=ag_cfg.ladder_rung_winsorize_multiple_of_nm,
         )
@@ -124,8 +116,6 @@ def build_inference_service_from_merged_config(
             min_listing_to_nm_rung_ratio=ag_cfg.min_listing_to_nm_rung_ratio,
             min_listing_to_max_rung_ratio=ag_cfg.min_listing_to_max_rung_ratio,
             inflated_max_rung_to_reference=ag_cfg.inflated_max_rung_to_reference,
-            inflated_max_rung_to_sale_reference=ag_cfg.inflated_max_rung_to_sale_reference,
-            max_ladder_to_reference=ag_cfg.max_ladder_to_reference,
             mint_outlier_multiple_of_nm=ag_cfg.mint_outlier_multiple_of_nm,
             ladder_rung_winsorize_multiple_of_nm=ag_cfg.ladder_rung_winsorize_multiple_of_nm,
         )
@@ -135,12 +125,6 @@ def build_inference_service_from_merged_config(
         sf_raw if isinstance(sf_raw, dict) else {},
         nm_grade_key=nm_grade_key,
     )
-    if isinstance(ag_raw, dict):
-        inf_blend = ag_raw.get("inference_blend")
-        blend_cfg = sale_floor_blend_config_with_inference_overrides(
-            blend_cfg,
-            inf_blend if isinstance(inf_blend, dict) else None,
-        )
 
     dsn_key = paths.get("postgres_dsn_env")
     if dsn_key:
