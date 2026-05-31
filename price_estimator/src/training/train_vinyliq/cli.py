@@ -128,6 +128,7 @@ def main(args: argparse.Namespace | None = None) -> int:
         training_target_kind=target_kind,
         residual_z_clip_abs=z_clip,
         sale_history_db=sh_arg,
+        vinyliq_cfg=v,
     )
     if ensemble_cfg is not None:
         y_nm_ct = int(

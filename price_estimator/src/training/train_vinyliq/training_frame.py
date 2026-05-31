@@ -34,6 +34,9 @@ from price_estimator.src.storage.sqlite_util import open_sqlite
 
 from ..label_synthesis import training_label_config_from_vinyliq
 from ..sale_floor_enums import SaleConditionPolicy, TrainingLabelMode
+from price_estimator.src.inference.anchor_guardrails_config import (
+    anchor_guardrails_config_from_vinyliq,
+)
 from ..sale_floor_targets import (
     sale_floor_blend_bundle,
     sale_floor_blend_sf_cfg_for_policy,
@@ -140,8 +143,11 @@ def load_training_frame(
     residual_z_clip_abs: float | None = None,
     sale_history_db: Path | None = None,
     catalog_encoders_override: dict[str, Any] | None = None,
+    vinyliq_cfg: dict[str, object] | None = None,
 ) -> TrainingFrameLoad:
-    tl = training_label or training_label_config_from_vinyliq({})
+    tl = training_label or training_label_config_from_vinyliq(
+        vinyliq_cfg if isinstance(vinyliq_cfg, dict) else {}
+    )
     mode_l = str(tl.get("mode", TrainingLabelMode.SALE_FLOOR_BLEND)).strip().lower()
     if mode_l not in (TrainingLabelMode.SALE_FLOOR_BLEND, TrainingLabelMode.SALE_FLOOR):
         raise ValueError(
@@ -210,6 +216,9 @@ def load_training_frame(
     sf_cfg = tl.get("sale_floor_blend") if isinstance(tl.get("sale_floor_blend"), dict) else {}
     sf_nm = sale_floor_blend_sf_cfg_for_policy(sf_cfg, SaleConditionPolicy.NM_SUBSTRINGS_ONLY)
     sf_ord = sale_floor_blend_sf_cfg_for_policy(sf_cfg, SaleConditionPolicy.ORDINAL_CASCADE)
+    ag_cfg = anchor_guardrails_config_from_vinyliq(
+        vinyliq_cfg if isinstance(vinyliq_cfg, dict) else None
+    )
     primary_pol = str(sf_cfg.get("sale_condition_policy", "nm_substrings_only")).strip().lower()
     if primary_pol not in ("nm_substrings_only", "ordinal_cascade"):
         primary_pol = "nm_substrings_only"
@@ -233,6 +242,7 @@ def load_training_frame(
             sf_cfg=sf_nm,
             nm_grade_key=ps_grade,
             release_year=release_year,
+            ag_cfg=ag_cfg,
         )
         out_ord = sale_floor_blend_bundle(
             rd_d,
@@ -241,6 +251,7 @@ def load_training_frame(
             sf_cfg=sf_ord,
             nm_grade_key=ps_grade,
             release_year=release_year,
+            ag_cfg=ag_cfg,
         )
         yn, mn, fn = out_nm
         yo, mo, fo = out_ord
