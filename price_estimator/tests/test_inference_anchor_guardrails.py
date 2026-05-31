@@ -92,8 +92,19 @@ def test_sale_stats_blend_apply_12830828(ag_cfg) -> None:
     assert sale_stats_blend_apply(stats, ag_cfg, nm_grade_key="Near Mint (NM or M-)")
 
 
-def test_sale_stats_blend_off_456663(ag_cfg) -> None:
-    stats = _stats_456663()
+def test_sale_stats_blend_off_when_ladder_not_inflated(ag_cfg) -> None:
+    stats = {
+        "release_lowest_price": 100.0,
+        "num_for_sale": 12,
+        "price_suggestions_json": json.dumps(
+            {
+                "Near Mint (NM or M-)": {"value": 500.0, "currency": "USD"},
+                "Very Good Plus (VG+)": {"value": 400.0, "currency": "USD"},
+            }
+        ),
+        "sale_stats_median_usd": 450.0,
+        "sale_stats_average_usd": 460.0,
+    }
     assert not sale_stats_blend_apply(stats, ag_cfg, nm_grade_key="Near Mint (NM or M-)")
 
 
