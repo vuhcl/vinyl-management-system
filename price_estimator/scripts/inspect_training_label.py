@@ -11,6 +11,9 @@ from pathlib import Path
 
 import yaml
 
+from price_estimator.src.inference.anchor_guardrails_config import (
+    anchor_guardrails_config_from_vinyliq,
+)
 from price_estimator.src.storage.marketplace_db import price_suggestion_values_by_grade
 from price_estimator.src.training.label_synthesis import training_label_config_from_vinyliq
 from price_estimator.src.training.sale_floor_inference import max_price_suggestion_ladder_usd
@@ -45,6 +48,7 @@ def main() -> int:
     pol = str(sf.get("sale_condition_policy", "nm_substrings_only"))
     sf_cfg = sale_floor_blend_sf_cfg_for_policy(sf, pol)
     ps_grade = str(tl.get("price_suggestion_grade") or "Near Mint (NM or M-)")
+    ag_cfg = anchor_guardrails_config_from_vinyliq(cfg)
 
     paths = cfg.get("paths") or {}
     mp = root / str(paths.get("marketplace_db", "data/cache/marketplace_stats.sqlite"))
@@ -96,6 +100,7 @@ def main() -> int:
         sf_cfg=sf_cfg,
         nm_grade_key=ps_grade,
         release_year=yr,
+        ag_cfg=ag_cfg,
     )
 
     z = math.log1p(y) - math.log1p(m) if y and m and y > 0 and m > 0 else None
