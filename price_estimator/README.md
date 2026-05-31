@@ -52,7 +52,7 @@ Commands below assume the **shell cwd** is the **monorepo root** and imports wor
 - **`vinyliq.training_label`**: e.g. **`sale_floor_blend`** / **`sale_floor`**; blend modes need **`paths.sale_history_db`** populated.
 - **`vinyliq.training_target`**: default **`residual_log_median`**; optional **`residual_z_clip_abs`**.
 - **`vinyliq.tuning`**: **`enabled`**, **`n_trials_per_family`**, **`model_families`**, **`search_spaces`**, **`constraints`**, **`cv_folds`**, **`cv_stratify`**, **`selection_metric`** (and related blocks in [`configs/base.yaml`](configs/base.yaml)).
-- **`vinyliq.ensemble`**: two-head / blend options — **`ensemble.enabled` requires `tuning.enabled: true`** (ensemble uses champion hyperparameters from the tuning loop; training errors otherwise).
+- **`vinyliq.inference.anchor_guardrails`** (or top-level **`vinyliq.anchor_guardrails`**): PS ladder trim + log-blend toward a reference floor at inference; the same gates apply to training **`m_anchor`** when **`enabled: true`** (reference from sale_history quartiles, not live overlay).
 - **MLflow**: **`MLFLOW_TRACKING_URI`** in `.env`; fallbacks and **`mlflow.log_artifacts`** live under the same YAML / top-level keys as today.
 
 ---
@@ -314,7 +314,7 @@ Defaults write feature + marketplace SQLite under **`price_estimator/data/`**. U
 
 ## Training semantics (targets and leakage)
 
-- **Default (`vinyliq.training_target.kind: residual_log_median`)** — The model predicts **`z = log1p(y_label) - log1p(anchor)`**; **`y_label`** comes from **`training_label`** (e.g. **`sale_floor_blend`** when **`sale_history.sqlite`** is configured). The **anchor** prefers **`release_lowest_price`**, then marketplace **`lowest_price`** / **`median_price`**. Training **features** omit same-snapshot listing-dollar scalars; community counts come from **`marketplace_stats`** only. At inference / pyfunc, the service adds **`log1p(anchor_live)`** back, then condition adjustment and **`expm1`**.
+- **Default (`vinyliq.training_target.kind: residual_log_median`)** — The model predicts **`z = log1p(y_label) - log1p(m_anchor)`**; **`y_label`** comes from **`training_label`** (e.g. **`sale_floor_blend`** when **`sale_history.sqlite`** is configured). **`m_anchor`** is the PS-ladder residual anchor (max rung when sale history exists, else NM rung / listing floor). When **`anchor_guardrails.enabled`**, training applies the same trim + log-blend nudge as inference, using **`max(median, mean, credible listing)`** from all USD sales before **`t_ref`** (not the sold nowcast **`s`**, which feeds **`y_label` only). Training **features** omit same-snapshot listing-dollar scalars; community counts come from **`marketplace_stats`** only. At inference, the service reconstructs USD from the live ladder anchor (dual-path average when **`use_price_suggestion_condition_anchor`**), then condition adjustment and **`expm1`**.
 - **`price_suggestion`** targets are **Discogs suggested** prices, not observed sales — pseudo-labels; **`price_suggestion_fallback_lowest: true`** when ladders are often empty.
 - **Legacy `dollar_log1p`** — direct **`log1p(price)`** with marketplace scalars in **X** at train time; prefer **residual** to avoid train/serve skew.
 - **Why residual** — avoids fitting the label from the same snapshot’s median/lowest in **X**.

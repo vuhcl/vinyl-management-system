@@ -1,11 +1,22 @@
 """Log-blend, diagnostics bundle, and public training helpers."""
 from __future__ import annotations
 
+import copy
 import math
 from datetime import datetime
 from typing import Any
 
 import numpy as np
+
+from price_estimator.src.inference.anchor_guardrails_config import AnchorGuardrailsConfig
+from price_estimator.src.sale_floor.anchor_guardrails import (
+    blend_path_anchor_usd,
+    prepare_stats_for_serving,
+    sale_stats_blend_apply,
+)
+from price_estimator.src.sale_floor.reference_floor import reference_floor_training_usd
+from price_estimator.src.storage.marketplace_db import marketplace_inference_stats_from_row
+from price_estimator.src.training.label_synthesis import parse_price_suggestion_value
 
 from .sale_floor_blend_config import (
     SaleFloorBlendConfig,
@@ -45,6 +56,7 @@ def _sale_floor_blend_compute(
     sf_cfg: dict[str, Any],
     nm_grade_key: str,
     release_year: float | None = None,
+    ag_cfg: AnchorGuardrailsConfig | None = None,
 ) -> tuple[float | None, float | None, dict[str, float], dict[str, Any]]:
     """
     Core sale-floor blend; returns ``(y_label, m_anchor, x_flags, diagnostics)``.
@@ -175,6 +187,46 @@ def _sale_floor_blend_compute(
     if m is None:
         m = y_f
     m_f = float(m)
+    m_anchor_raw_usd = float(m_f)
+
+    if ag_cfg is not None and ag_cfg.enabled:
+        ref_train, ref_diag = reference_floor_training_usd(
+            mp_row,
+            sale_rows,
+            fetch_status,
+            nm_grade_key=nm_grade_key,
+            ag_cfg=ag_cfg,
+        )
+        stats = marketplace_inference_stats_from_row(mp_row)
+        stats_work = copy.deepcopy(dict(stats))
+        prepare_stats_for_serving(stats_work, ag_cfg, nm_grade_key=nm_grade_key)
+        ps_rung = parse_price_suggestion_value(
+            stats_work.get("price_suggestions_json"),
+            nm_grade_key,
+        )
+        if ps_rung is not None and ps_rung > 0:
+            m_anchor_raw_usd = float(ps_rung)
+        if ref_train is not None and sale_stats_blend_apply(
+            stats_work,
+            ag_cfg,
+            nm_grade_key=nm_grade_key,
+            reference_floor_usd_override=ref_train,
+        ):
+            m_f = blend_path_anchor_usd(
+                m_anchor_raw_usd,
+                stats_work,
+                ag_cfg,
+                cfg,
+                nm_grade_key=nm_grade_key,
+                reference_floor_usd_override=ref_train,
+            )
+        diag.update(ref_diag)
+        diag["m_anchor_raw_usd"] = float(m_anchor_raw_usd)
+        diag["m_anchor_blended_usd"] = float(m_f)
+        diag["anchor_guardrail_applied"] = bool(
+            abs(float(m_f) - float(m_anchor_raw_usd)) > 1e-6
+        )
+
     if cfg.label_cap_enabled:
         y_final = _cap_final_y_label(y_f, m_f, p_max_obs, cfg=cfg)
     else:
@@ -198,6 +250,7 @@ def sale_floor_label_diagnostics(
     sf_cfg: dict[str, Any],
     nm_grade_key: str,
     release_year: float | None = None,
+    ag_cfg: AnchorGuardrailsConfig | None = None,
 ) -> tuple[float | None, float | None, dict[str, float], dict[str, Any]]:
     """
     Training-time sale-floor bundle plus a **diagnostic** dict for label QA.
@@ -213,6 +266,7 @@ def sale_floor_label_diagnostics(
         sf_cfg=sf_cfg,
         nm_grade_key=nm_grade_key,
         release_year=release_year,
+        ag_cfg=ag_cfg,
     )
 
 
@@ -224,6 +278,7 @@ def sale_floor_blend_bundle(
     sf_cfg: dict[str, Any],
     nm_grade_key: str,
     release_year: float | None = None,
+    ag_cfg: AnchorGuardrailsConfig | None = None,
 ) -> tuple[float | None, float | None, dict[str, float]]:
     """
     Returns ``(y_label, m_anchor, x_flags)``.
@@ -237,6 +292,7 @@ def sale_floor_blend_bundle(
         sf_cfg=sf_cfg,
         nm_grade_key=nm_grade_key,
         release_year=release_year,
+        ag_cfg=ag_cfg,
     )
     return y, m, flags
 
