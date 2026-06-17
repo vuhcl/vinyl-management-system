@@ -12,7 +12,6 @@ from price_estimator.src.inference.anchor_guardrails_config import AnchorGuardra
 from price_estimator.src.sale_floor.anchor_guardrails import (
     blend_path_anchor_usd,
     prepare_stats_for_serving,
-    sale_stats_blend_apply,
 )
 from price_estimator.src.sale_floor.reference_floor import reference_floor_training_usd
 from price_estimator.src.storage.marketplace_db import marketplace_inference_stats_from_row
@@ -199,6 +198,15 @@ def _sale_floor_blend_compute(
         )
         stats = marketplace_inference_stats_from_row(mp_row)
         stats_work = copy.deepcopy(dict(stats))
+        for k in (
+            "sale_stats_low_usd",
+            "sale_stats_median_usd",
+            "sale_stats_average_usd",
+            "sale_stats_high_usd",
+            "n_sales",
+        ):
+            if ref_diag.get(k) is not None:
+                stats_work[k] = ref_diag[k]
         prepare_stats_for_serving(stats_work, ag_cfg, nm_grade_key=nm_grade_key)
         ps_rung = parse_price_suggestion_value(
             stats_work.get("price_suggestions_json"),
@@ -206,12 +214,7 @@ def _sale_floor_blend_compute(
         )
         if ps_rung is not None and ps_rung > 0:
             m_anchor_raw_usd = float(ps_rung)
-        if ref_train is not None and sale_stats_blend_apply(
-            stats_work,
-            ag_cfg,
-            nm_grade_key=nm_grade_key,
-            reference_floor_usd_override=ref_train,
-        ):
+        if ref_train is not None:
             m_f = blend_path_anchor_usd(
                 m_anchor_raw_usd,
                 stats_work,

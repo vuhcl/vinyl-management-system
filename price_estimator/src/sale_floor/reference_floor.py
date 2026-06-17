@@ -15,6 +15,11 @@ from price_estimator.src.sale_floor.anchor_guardrails import (
     reference_floor_usd,
     sale_stats_blend_apply,
 )
+from price_estimator.src.sale_floor.ratio_guardrails import (
+    compute_ratio_sale_ladder,
+    diagnostics_to_dict,
+    listing_credible_vs_sale_low,
+)
 from price_estimator.src.storage.marketplace_db import marketplace_inference_stats_from_row
 from price_estimator.src.training.sale_floor_inference import max_price_suggestion_ladder_usd
 from price_estimator.src.training.sale_floor_row_parsing import (
@@ -71,11 +76,23 @@ def _credible_listing_usd(
     cfg: AnchorGuardrailsConfig,
     *,
     nm_grade_key: str,
+    hist_stats: dict[str, float | None] | None = None,
 ) -> float | None:
     listing = _positive(stats.get("release_lowest_price"))
     if listing is None:
         return None
-    if not listing_credible_for_caps(stats, cfg, nm_grade_key=nm_grade_key):
+    check_stats = dict(stats)
+    if hist_stats is not None:
+        for key in (
+            "sale_stats_low_usd",
+            "sale_stats_high_usd",
+            "sale_stats_median_usd",
+            "sale_stats_average_usd",
+        ):
+            val = hist_stats.get(key)
+            if val is not None:
+                check_stats[key] = val
+    if not listing_credible_for_caps(check_stats, cfg, nm_grade_key=nm_grade_key):
         return None
     return float(listing)
 
@@ -94,7 +111,9 @@ def reference_floor_training_usd(
     Aggregates all USD sales before ``t_ref`` (not NM-filtered). Sold nowcast ``s`` is excluded.
     """
     stats = marketplace_inference_stats_from_row(mp_row)
-    listing = _credible_listing_usd(stats, ag_cfg, nm_grade_key=nm_grade_key)
+    listing = _credible_listing_usd(
+        stats, ag_cfg, nm_grade_key=nm_grade_key, hist_stats=None
+    )
 
     sh_ok = (
         fetch_status is not None
@@ -112,6 +131,11 @@ def reference_floor_training_usd(
     }
     if t_ref is not None and sh_ok and sale_rows:
         hist_stats = sale_stats_from_history(sale_rows, t_ref)
+
+    if listing is None:
+        listing = _credible_listing_usd(
+            stats, ag_cfg, nm_grade_key=nm_grade_key, hist_stats=hist_stats
+        )
 
     candidates: list[float] = []
     med = hist_stats.get("sale_stats_median_usd")
@@ -156,14 +180,20 @@ def gate_outcomes_for_ref(
         nm_grade_key=nm_grade_key,
         reference_floor_usd_override=ref,
     )
-    blend_apply = sale_stats_blend_apply(
-        stats,
-        cfg,
-        nm_grade_key=nm_grade_key,
-        reference_floor_usd_override=ref,
-    )
+    nm_for_ratio = nm if nm is not None and nm > 0 else mx
+    ratio_diag = None
+    blend_strength = 0.0
+    if guardrails_active and nm_for_ratio is not None and nm_for_ratio > 0:
+        ratio_diag = compute_ratio_sale_ladder(
+            stats,
+            cfg,
+            grade_rung_usd=float(nm_for_ratio),
+            reference_floor_usd_override=ref,
+        )
+        blend_strength = float(ratio_diag.blend_strength)
+    blend_apply = blend_strength > 0.0
 
-    return {
+    out: dict[str, Any] = {
         "reference_floor_usd": ref,
         "mx_usd": mx,
         "nm_rung_usd": nm,
@@ -172,7 +202,12 @@ def gate_outcomes_for_ref(
         "guardrails_active": guardrails_active,
         "is_inflated_ladder": inflated,
         "sale_stats_blend_apply": blend_apply,
+        "blend_strength": blend_strength,
         "listing_credible": listing_credible_for_caps(
             stats, cfg, nm_grade_key=nm_grade_key
         ),
+        "listing_credible_vs_sale_low": listing_credible_vs_sale_low(stats, cfg),
     }
+    if ratio_diag is not None:
+        out.update(diagnostics_to_dict(ratio_diag))
+    return out
