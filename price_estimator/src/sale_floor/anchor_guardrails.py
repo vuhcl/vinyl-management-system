@@ -6,7 +6,14 @@ import math
 from typing import Any
 
 from price_estimator.src.inference.anchor_guardrails_config import AnchorGuardrailsConfig
-from price_estimator.src.sale_floor.blend import sale_floor_blend_y_for_anchor
+from price_estimator.src.sale_floor.blend import (
+    blend_weight_w_eff_for_anchor,
+    sale_floor_blend_y_for_anchor,
+)
+from price_estimator.src.sale_floor.ratio_guardrails import (
+    blend_strength_for_grade,
+    listing_credible_vs_sale_low,
+)
 from price_estimator.src.storage.marketplace_db import (
     price_suggestions_ladder_from_json,
 )
@@ -28,18 +35,11 @@ def listing_credible_for_caps(
     *,
     nm_grade_key: str,
 ) -> bool:
+    sale_low = _positive(stats.get("sale_stats_low_usd"))
+    if sale_low is not None:
+        return listing_credible_vs_sale_low(stats, cfg)
     lo = _positive(stats.get("release_lowest_price"))
-    if lo is None or lo < float(cfg.min_listing_usd):
-        return False
-    mx = max_price_suggestion_ladder_usd(stats)
-    nm = _parse_ps_grade(stats.get("price_suggestions_json"), nm_grade_key)
-    if mx is not None and mx > 0:
-        if float(lo) < float(mx) * float(cfg.min_listing_to_max_rung_ratio):
-            return False
-    if nm is not None and nm > 0:
-        if float(lo) < float(nm) * float(cfg.min_listing_to_nm_rung_ratio):
-            return False
-    return True
+    return lo is not None and lo >= float(cfg.min_listing_usd)
 
 
 def reference_floor_usd(
@@ -153,7 +153,9 @@ def sale_stats_blend_apply(
     *,
     nm_grade_key: str,
     reference_floor_usd_override: float | None = None,
+    grade_rung_usd: float | None = None,
 ) -> bool:
+    """Deprecated alias: returns ``blend_strength > 0`` for the grade rung (NM default)."""
     if not guardrails_active(
         stats,
         cfg,
@@ -161,12 +163,23 @@ def sale_stats_blend_apply(
         reference_floor_usd_override=reference_floor_usd_override,
     ):
         return False
-    return is_inflated_ladder(
+    rung = grade_rung_usd
+    if rung is None:
+        rung = nm_rung_usd(stats, nm_grade_key)
+    if rung is None or rung <= 0:
+        return is_inflated_ladder(
+            stats,
+            cfg,
+            nm_grade_key=nm_grade_key,
+            reference_floor_usd_override=reference_floor_usd_override,
+        )
+    strength, _diag = blend_strength_for_grade(
         stats,
         cfg,
-        nm_grade_key=nm_grade_key,
+        grade_rung_usd=float(rung),
         reference_floor_usd_override=reference_floor_usd_override,
     )
+    return strength > 0.0
 
 
 def trim_price_suggestions_json(
@@ -262,12 +275,13 @@ def blend_path_anchor_usd(
     rung = float(grade_rung_usd)
     if rung <= 0 or not math.isfinite(rung):
         return rung
-    if not sale_stats_blend_apply(
+    strength, _diag = blend_strength_for_grade(
         stats,
         cfg,
-        nm_grade_key=nm_grade_key,
+        grade_rung_usd=rung,
         reference_floor_usd_override=reference_floor_usd_override,
-    ):
+    )
+    if strength <= 0.0:
         return rung
     ref = reference_floor_usd(
         stats,
@@ -275,11 +289,25 @@ def blend_path_anchor_usd(
         nm_grade_key=nm_grade_key,
         reference_floor_usd_override=reference_floor_usd_override,
     )
-    if ref is None:
+    if ref is None or ref <= 0:
         return rung
-    blended = sale_floor_blend_y_for_anchor(ref, rung, "A", cfg=blend_cfg)
+    w_anchor = blend_weight_w_eff_for_anchor(
+        reference_usd=float(ref),
+        rung_usd=rung,
+        tier="A",
+        cfg=blend_cfg,
+    )
+    w_eff = float(w_anchor) * float(strength)
+    if w_eff <= 0.0:
+        return rung
+    blended = float(
+        math.exp(w_eff * math.log(float(ref)) + (1.0 - w_eff) * math.log(rung))
+    )
     if warnings is not None:
         _append_warning_once(warnings, "anchor_guardrail_applied")
-    if blended is not None and blended > 0 and math.isfinite(float(blended)):
-        return float(blended)
+    if blended > 0 and math.isfinite(blended):
+        return blended
+    fallback = sale_floor_blend_y_for_anchor(ref, rung, "A", cfg=blend_cfg)
+    if fallback is not None and fallback > 0 and math.isfinite(float(fallback)):
+        return float(fallback)
     return rung
