@@ -14,6 +14,11 @@ class AnchorGuardrailsConfig:
     inflated_max_rung_to_reference: float = 2.5
     mint_outlier_multiple_of_nm: float = 1.15
     ladder_rung_winsorize_multiple_of_nm: float = 0.0
+    ratio_blend_enabled: bool = True
+    ratio_blend_tolerance: float = 0.0
+    ratio_blend_full_strength: float = 0.35
+    ratio_outlier_low_threshold: float = 3.0
+    min_n_sales_for_ratio: int = 2
 
 
 def anchor_guardrails_config_from_raw(raw: dict[str, Any] | None) -> AnchorGuardrailsConfig:
@@ -37,6 +42,13 @@ def anchor_guardrails_config_from_raw(raw: dict[str, Any] | None) -> AnchorGuard
         ladder_rung_winsorize_multiple_of_nm=float(
             raw.get("ladder_rung_winsorize_multiple_of_nm", 0.0)
         ),
+        ratio_blend_enabled=bool(raw.get("ratio_blend_enabled", True)),
+        ratio_blend_tolerance=float(raw.get("ratio_blend_tolerance", 0.0)),
+        ratio_blend_full_strength=float(raw.get("ratio_blend_full_strength", 0.35)),
+        ratio_outlier_low_threshold=float(
+            raw.get("ratio_outlier_low_threshold", 3.0)
+        ),
+        min_n_sales_for_ratio=int(raw.get("min_n_sales_for_ratio", 2)),
     )
 
 

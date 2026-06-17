@@ -133,8 +133,19 @@ def _audit_row(
     gates_inf = gate_outcomes_for_ref(
         ref_inf, stats, ag_cfg, nm_grade_key=nm_grade_key
     )
+    stats_train = copy.deepcopy(stats)
+    for key in (
+        "sale_stats_low_usd",
+        "sale_stats_median_usd",
+        "sale_stats_average_usd",
+        "sale_stats_high_usd",
+        "n_sales",
+    ):
+        val = train_diag.get(key)
+        if val is not None:
+            stats_train[key] = val
     gates_train = gate_outcomes_for_ref(
-        ref_train, stats, ag_cfg, nm_grade_key=nm_grade_key
+        ref_train, stats_train, ag_cfg, nm_grade_key=nm_grade_key
     )
     trim = _trim_would_change(stats, ag_cfg, nm_grade_key=nm_grade_key)
     has_overlay = any(
@@ -157,11 +168,12 @@ def _bucket_key(row: dict[str, Any], source: str) -> str:
     g = row[f"{source}_gates"]
     if not g.get("guardrails_active"):
         return "no_reference"
-    if not g.get("is_inflated_ladder"):
-        return "normal"
-    if g.get("sale_stats_blend_apply"):
+    strength = float(g.get("blend_strength") or 0.0)
+    if strength > 0.0 or g.get("sale_stats_blend_apply"):
         return "blend_on"
-    return "inflated_no_blend"
+    if g.get("is_inflated_ladder"):
+        return "inflated_no_blend"
+    return "normal"
 
 
 def main() -> int:
@@ -321,6 +333,14 @@ def main() -> int:
             "sale_stats_blend_apply": sum(
                 1 for r in audited if r[prefix]["sale_stats_blend_apply"]
             ),
+            "blend_strength_positive": sum(
+                1
+                for r in audited
+                if float(r[prefix].get("blend_strength") or 0.0) > 0.0
+            ),
+            "ratio_blend_fallback": sum(
+                1 for r in audited if r[prefix].get("ratio_blend_fallback")
+            ),
             "trim_would_change": sum(1 for r in audited if r["trim_would_change"]),
         }
 
@@ -360,6 +380,13 @@ def main() -> int:
                     "reference_floor_usd": r[f"reference_floor_{source}_usd"],
                     "mx_usd": r[f"{source}_gates"].get("mx_usd"),
                     "nm_rung_usd": r[f"{source}_gates"].get("nm_rung_usd"),
+                    "blend_strength": r[f"{source}_gates"].get("blend_strength"),
+                    "R_sale": r[f"{source}_gates"].get("R_sale"),
+                    "R_ladder": r[f"{source}_gates"].get("R_ladder"),
+                    "blend_direction": r[f"{source}_gates"].get("blend_direction"),
+                    "ratio_blend_fallback": r[f"{source}_gates"].get(
+                        "ratio_blend_fallback"
+                    ),
                 }
                 for r in ranked
             ]
@@ -391,15 +418,21 @@ def main() -> int:
             for ex in rows:
                 ratio = ex.get("ratio_mx_ref")
                 ratio_s = f"{ratio:.3f}" if ratio is not None else "n/a"
+                strength = ex.get("blend_strength")
+                strength_s = f"{strength:.2f}" if strength is not None else "n/a"
                 print(
                     f"  {ex['release_id']}: mx/ref={ratio_s} "
-                    f"ref={ex['reference_floor_usd']} mx={ex['mx_usd']} nm={ex['nm_rung_usd']}"
+                    f"ref={ex['reference_floor_usd']} mx={ex['mx_usd']} "
+                    f"nm={ex['nm_rung_usd']} strength={strength_s} "
+                    f"R_sale={ex.get('R_sale')} R_ladder={ex.get('R_ladder')} "
+                    f"dir={ex.get('blend_direction')}"
                 )
         print("\n--- Gate policy note ---")
         print(
-            "Blend applies whenever the ladder is inflated "
-            f"(mx/ref > {ag_cfg.inflated_max_rung_to_reference} or mint outlier); "
-            "no upper mx/ref cap skips blend."
+            "Ratio blend: continuous strength from R_ladder vs R_sale "
+            f"(full at excess ~{ag_cfg.ratio_blend_full_strength}); "
+            f"legacy fallback uses inflated_max_rung_to_reference="
+            f"{ag_cfg.inflated_max_rung_to_reference} when avg missing."
         )
         if not has_sale_stats_cols or overlay_populated == 0:
             print(

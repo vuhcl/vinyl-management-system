@@ -117,7 +117,7 @@ def test_blend_path_anchor_nm_12830828(ag_cfg, blend_cfg) -> None:
         blend_cfg,
         nm_grade_key="Near Mint (NM or M-)",
     )
-    assert out == pytest.approx(944.0, rel=0.03)
+    assert out == pytest.approx(941.0, abs=5.0)
 
 
 def test_blend_path_anchor_vg_plus_12830828(ag_cfg, blend_cfg) -> None:

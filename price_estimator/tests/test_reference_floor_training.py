@@ -49,7 +49,25 @@ def test_gate_outcomes_blend_when_inflated(ag_cfg) -> None:
     out = gate_outcomes_for_ref(ref, stats, ag_cfg, nm_grade_key="Near Mint (NM or M-)")
     assert out["is_inflated_ladder"] is True
     assert out["sale_stats_blend_apply"] is True
+    assert out["blend_strength"] == pytest.approx(1.0, abs=0.1)
     assert out["ratio_mx_ref"] == pytest.approx(1900.0 / 662.91, rel=0.01)
+
+
+def test_listing_excluded_when_below_sale_low_in_gates(ag_cfg) -> None:
+    stats = {
+        "release_lowest_price": 75.0,
+        "price_suggestions_json": json.dumps(
+            {"Near Mint (NM or M-)": {"value": 4133.0, "currency": "USD"}}
+        ),
+        "sale_stats_low_usd": 91.0,
+        "sale_stats_median_usd": 449.99,
+        "sale_stats_average_usd": 801.30,
+        "sale_stats_high_usd": 4126.70,
+    }
+    ref = 801.30
+    out = gate_outcomes_for_ref(ref, stats, ag_cfg, nm_grade_key="Near Mint (NM or M-)")
+    assert out["listing_credible_vs_sale_low"] is False
+    assert out["blend_strength"] == pytest.approx(0.0, abs=1e-6)
 
 
 def test_gate_outcomes_blend_even_when_mx_ref_very_high(ag_cfg) -> None:
