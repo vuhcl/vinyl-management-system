@@ -33,6 +33,11 @@ vinyliq:
       inflated_max_rung_to_reference: 2.5
       mint_outlier_multiple_of_nm: 1.15
       ladder_rung_winsorize_multiple_of_nm: 0
+      ratio_blend_enabled: true
+      ratio_blend_tolerance: 0
+      ratio_blend_full_strength: 0.35
+      ratio_outlier_low_threshold: 3.0
+      min_n_sales_for_ratio: 2
   # Which env var the API reads for the personal token (see repo .env.template).
   discogs_token_env: "DISCOGS_TOKEN"
   # null = auto from labeled count (cap ~ n/25, max 3000; keep all if ≤500 uniques)
