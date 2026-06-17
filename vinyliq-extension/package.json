@@ -1,0 +1,16 @@
+{
+  "name": "vinyliq-extension",
+  "version": "0.3.7",
+  "private": true,
+  "description": "VinylIQ Chrome extension — DOM contract tests",
+  "type": "module",
+  "scripts": {
+    "test": "node --test test/*.test.js"
+  },
+  "devDependencies": {
+    "jsdom": "^26.1.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
