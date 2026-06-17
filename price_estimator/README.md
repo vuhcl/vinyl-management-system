@@ -52,7 +52,7 @@ Commands below assume the **shell cwd** is the **monorepo root** and imports wor
 - **`vinyliq.training_label`**: e.g. **`sale_floor_blend`** / **`sale_floor`**; blend modes need **`paths.sale_history_db`** populated.
 - **`vinyliq.training_target`**: default **`residual_log_median`**; optional **`residual_z_clip_abs`**.
 - **`vinyliq.tuning`**: **`enabled`**, **`n_trials_per_family`**, **`model_families`**, **`search_spaces`**, **`constraints`**, **`cv_folds`**, **`cv_stratify`**, **`selection_metric`** (and related blocks in [`configs/base.yaml`](configs/base.yaml)).
-- **`vinyliq.inference.anchor_guardrails`** (or top-level **`vinyliq.anchor_guardrails`**): PS ladder trim + log-blend toward a reference floor at inference; the same gates apply to training **`m_anchor`** when **`enabled: true`** (reference from sale_history quartiles, not live overlay).
+- **`vinyliq.inference.anchor_guardrails`** (or top-level **`vinyliq.anchor_guardrails`**): PS ladder trim + **ratio-based** log-blend strength toward `max(median, avg, credible listing)` at inference; training **`m_anchor`** uses the same helpers when **`enabled: true`** (quartiles from `sale_history`, not live overlay). Continuous **`blend_strength`** compares `R_ladder = rung/reference_ref` vs `R_sale = spread_floor × skew`; set **`ratio_blend_enabled: false`** to restore the legacy 2.5× binary gate.
 - **MLflow**: **`MLFLOW_TRACKING_URI`** in `.env`; fallbacks and **`mlflow.log_artifacts`** live under the same YAML / top-level keys as today.
 
 ---
