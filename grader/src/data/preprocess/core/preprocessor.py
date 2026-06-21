@@ -1,4 +1,4 @@
-"""Preprocessor configuration and constructor."""
+"""Composed :class:`Preprocessor` for the vinyl condition grader."""
 
 from __future__ import annotations
 
@@ -12,11 +12,14 @@ from grader.src.config_io import load_yaml_mapping
 from grader.src.guidelines_identity import guidelines_version_from_mapping
 
 from ..listing_promo import load_promo_noise_patterns
+from .cleaning import _PreprocessorCleaning
+from .pipeline_steps import _PreprocessorSteps
+from .reports import _PreprocessorReports
 
 logger = logging.getLogger(__name__)
 
 
-class PreprocessorInitMixin:
+class _PreprocessorInit:
     def __init__(
         self,
         config_path: str,
@@ -331,3 +334,38 @@ class PreprocessorInitMixin:
 
         # Stats (``process_record`` may run outside ``run()`` — e.g. unit tests).
         self._stats = self._fresh_pipeline_stats()
+
+
+class Preprocessor(
+    _PreprocessorInit,
+    _PreprocessorCleaning,
+    _PreprocessorSteps,
+    _PreprocessorReports,
+):
+    """
+    Text preprocessing pipeline for vinyl condition grader.
+
+    Config keys read from grader.yaml:
+        preprocessing.lowercase
+        preprocessing.normalize_whitespace
+        preprocessing.strip_stray_numeric_tokens
+        preprocessing.promo_noise_patterns
+        preprocessing.abbreviation_map
+        preprocessing.min_text_length_discogs
+        data.splits.train / val / test
+        data.splits.random_seed
+        paths.processed
+        paths.splits
+        mlflow.tracking_uri
+        mlflow.experiment_name
+
+    Config keys read from grading_guidelines.yaml:
+        grades.Mint.hard_signals          — for unverified media detection
+        grades.Generic.hard_signals*      — for Generic sleeve detection
+            (aggregated across legacy ``hard_signals`` plus the
+            strict/cosignal variants introduced in §13/§13b; see
+            :func:`_collect_hard_signals`)
+        grades[*].*signal* lists
+            — protected terms for cleaning / gating (all keys whose names
+              contain ``signal``)
+    """

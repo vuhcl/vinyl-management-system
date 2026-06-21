@@ -1,5 +1,5 @@
-"""Internal preprocessor implementation (mixins + composed class)."""
+"""Internal preprocessor implementation (phase-grouped modules)."""
 
-from .model import Preprocessor
+from .preprocessor import Preprocessor
 
 __all__ = ["Preprocessor"]
