@@ -6,7 +6,7 @@ import argparse
 import json
 import logging
 
-from .model import Pipeline
+from .pipeline import Pipeline
 
 logger = logging.getLogger(__name__)
 

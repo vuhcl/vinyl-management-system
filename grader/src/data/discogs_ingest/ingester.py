@@ -19,14 +19,14 @@ from .constants import (
     _DEFAULT_PRESERVATION_KEYWORDS,
     _INVENTORY_WEB_MAX_PAGE_SIZE,
 )
-from .ingester_fetch import DiscogsIngesterFetchMixin
-from .ingester_parse import DiscogsIngesterParseMixin
+from .fetch import _DiscogsFetch
+from .parse import _DiscogsParse
 from .rate_limit import RateLimiter
 
 logger = logging.getLogger(__name__)
 
 
-class DiscogsIngester(DiscogsIngesterFetchMixin, DiscogsIngesterParseMixin):
+class DiscogsIngester(_DiscogsFetch, _DiscogsParse):
     """
     Fetches Discogs marketplace vinyl listings and normalizes
     them to the unified training data schema.

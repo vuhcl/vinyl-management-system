@@ -13,7 +13,7 @@ from .constants import SPLITS, TARGETS
 logger = logging.getLogger(__name__)
 
 
-class BaselineArtifactsMixin:
+class _BaselineArtifacts:
     """Persist heads/calibrators and reload for evaluation-only workflows."""
 
     artifacts_dir: Path

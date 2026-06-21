@@ -1,4 +1,4 @@
-"""Concrete `BaselineModel` class composed from feature/train/infer/... mixins."""
+"""Concrete `BaselineModel` class composed from feature/train/infer/... bases."""
 
 from __future__ import annotations
 
@@ -12,23 +12,19 @@ from sklearn.linear_model import LogisticRegression
 from grader.src.config_io import load_yaml_mapping
 from grader.src.mlflow_tracking import configure_mlflow_from_config, mlflow_enabled
 
-from .artifacts import BaselineArtifactsMixin
+from .artifacts import _BaselineArtifacts
 from .constants import TARGETS
-from .evaluation import BaselineEvaluationMixin
-from .features import BaselineFeaturesMixin
-from .inference import BaselineInferenceMixin
+from .features import _BaselineFeatures
+from .inference import _BaselineInference
 from .isotonic import _IsotonicCalibrator
-from .orchestrate import BaselineOrchestrationMixin
-from .train import BaselineTrainMixin
+from .train import _BaselineTrain
 
 
 class BaselineModel(
-    BaselineFeaturesMixin,
-    BaselineTrainMixin,
-    BaselineInferenceMixin,
-    BaselineEvaluationMixin,
-    BaselineArtifactsMixin,
-    BaselineOrchestrationMixin,
+    _BaselineFeatures,
+    _BaselineTrain,
+    _BaselineInference,
+    _BaselineArtifacts,
 ):
     """
     Two-head logistic regression classifier for vinyl condition grading.

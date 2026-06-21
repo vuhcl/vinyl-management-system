@@ -15,7 +15,7 @@ from .normalize import normalize_seller_comment_text
 logger = logging.getLogger(__name__)
 
 
-class DiscogsIngesterParseMixin:
+class _DiscogsParse:
     def normalize_grade(self, raw_condition: str) -> Optional[str]:
         """
         Map a raw Discogs condition string to a canonical grade.

@@ -17,7 +17,7 @@ from .constants import (
 logger = logging.getLogger(__name__)
 
 
-class RuleEngineOverrideMixin:
+class _RuleEngineOverrides:
     """Hard/soft override evaluation and diagnostics."""
 
     guidelines: dict

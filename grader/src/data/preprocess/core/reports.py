@@ -4,14 +4,13 @@ from __future__ import annotations
 
 import logging
 from collections import Counter
-from pathlib import Path
 
 import mlflow
 
 logger = logging.getLogger(__name__)
 
 
-class PreprocessorReportsMixin:
+class _PreprocessorReports:
     @staticmethod
     def _label_distribution(
         records: list[dict],
@@ -227,4 +226,3 @@ class PreprocessorReportsMixin:
         with open(path, "w", encoding="utf-8") as f:
             f.write("\n".join(lines))
         logger.info("Wrote %s", path)
-

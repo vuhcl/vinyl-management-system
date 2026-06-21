@@ -13,7 +13,7 @@ from .constants import SPLITS, TARGETS
 logger = logging.getLogger(__name__)
 
 
-class BaselineFeaturesMixin:
+class _BaselineFeatures:
     """Load matrices, encoders, and rubric ordering for baseline heads."""
 
     config: dict
