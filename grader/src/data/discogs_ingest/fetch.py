@@ -16,7 +16,7 @@ from .constants import DEFAULT_DISCOGS_FORMAT_FILTER
 logger = logging.getLogger(__name__)
 
 
-class DiscogsIngesterFetchMixin:
+class _DiscogsFetch:
     def _get(self, url: str, params: dict) -> dict:
         """
         Rate-limited GET request with basic retry on transient errors.
