@@ -14,7 +14,7 @@ from grader.src.models.transformer import TransformerTrainer
 logger = logging.getLogger(__name__)
 
 
-class PipelineInferenceMixin:
+class _PipelineInference:
     """Single/batch prediction and baseline/transformer dispatch."""
 
     config_path: str

@@ -27,6 +27,6 @@ Usage:
     python -m grader.src.pipeline predict --file texts.txt
 """
 
-from .model import Pipeline
+from .pipeline import Pipeline
 
 __all__ = ["Pipeline"]
