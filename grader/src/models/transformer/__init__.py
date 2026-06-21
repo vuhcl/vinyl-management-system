@@ -31,7 +31,7 @@ Usage:
 from .dataset import VinylGraderDataset
 from .device import get_device
 from .hparams import merge_transformer_hparams, resolve_model_artifact_dir
-from .trainer_core import TransformerTrainer
+from .trainer import TransformerTrainer
 from .two_head import TwoHeadClassifier
 
 __all__ = [

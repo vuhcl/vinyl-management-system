@@ -4,7 +4,7 @@ import logging
 
 from grader.src.config_io import load_yaml_mapping
 
-from .trainer_core import TransformerTrainer
+from .trainer import TransformerTrainer
 
 
 def main() -> None:
