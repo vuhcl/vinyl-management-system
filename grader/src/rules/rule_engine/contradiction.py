@@ -9,7 +9,7 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 
-class RuleEngineContradictionMixin:
+class _RuleEngineContradiction:
     """Contradiction compilation and signal detection helpers."""
 
     guidelines: dict

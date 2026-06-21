@@ -13,7 +13,7 @@ from .constants import MEDIA, SLEEVE
 logger = logging.getLogger(__name__)
 
 
-class RuleEngineApplicationMixin:
+class _RuleEngineApplication:
     """End-to-end prediction application and batch stats."""
 
     def _collapse_excellent_to_near_mint(self, result: GraderPrediction) -> None:
