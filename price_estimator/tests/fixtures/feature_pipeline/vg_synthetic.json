@@ -1,0 +1,35 @@
+{
+  "id": "vg_synthetic",
+  "residual_mode": true,
+  "release_id": "r-synthetic-1",
+  "media_condition": "Very Good (VG)",
+  "sleeve_condition": "Good (G)",
+  "stats": {
+    "release_lowest_price": 40.0,
+    "num_for_sale": 7,
+    "community_want": 10,
+    "community_have": 100,
+    "release_num_for_sale": 7,
+    "blocked_from_sale": 0
+  },
+  "catalog": {
+    "genre": "rock",
+    "country": "us",
+    "year": 1975,
+    "decade": 1970,
+    "is_original_pressing": 1,
+    "label_tier": 2.0,
+    "is_colored_vinyl": 0,
+    "is_picture_disc": 0,
+    "is_promo": 0,
+    "formats_json": "[\"Vinyl\", \"LP\"]",
+    "format_desc": ""
+  },
+  "indices": {
+    "genre_index": 3.0,
+    "country_index": 2.0,
+    "primary_artist_index": 5.0,
+    "primary_label_index": 1.0
+  },
+  "vector_sha16": "ba12ccf91ddcf76c"
+}
