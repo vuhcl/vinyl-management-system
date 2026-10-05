@@ -42,5 +42,5 @@ jobs:
 
       - name: Run grader monitoring tests
         run: |
-          uv run pytest grader/tests/test_monitoring_nlp.py \
+          uv run pytest grader/tests/test_monitoring_nlp.py grader/tests/test_retrain_gate.py \
             -m monitoring --no-cov -v
