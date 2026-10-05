@@ -1,0 +1,22 @@
+# Thresholds for the condition-classifier retrain gate and cohort drift check.
+version: 1
+
+retrain_gate:
+  gate_split: test            # fixed held-out split; never used for training or early stopping
+  min_mean_macro_f1_gain: 0.005   # mean of sleeve/media macro-F1 delta must be at least this
+  max_target_regression: 0.010    # no single target may drop by more than this
+  bootstrap_n: 1000
+  bootstrap_seed: 42
+  require_ci_lower_gt_zero: false # report the 95% CI either way; set true to make it a hard gate
+  report_splits: [test_thin]      # reported, not gating
+
+cohort_drift:
+  reference_split: test       # in-distribution held-out rows
+  current_split: test_thin    # low-detail listings (out-of-distribution cohort)
+  categorical:
+    top_k: 15
+    max_psi_topk: 0.10
+    min_chi2_pvalue: 0.05
+  numeric:
+    max_psi: 0.10
+    min_ks_pvalue: 0.05
