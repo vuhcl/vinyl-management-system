@@ -19,7 +19,7 @@ Quick orientation for coding agents. **Backlog and priorities live in [`.notes/t
 | vinyl-core | `core/` | Config load, auth, ingest jobs |
 | vinyl-recommender | `recommender/` | Hybrid recommender |
 | vinyl-grader | `grader/` | Condition grader + optional serving |
-| vinyl-price-estimator | `price_estimator/` | VinylIQ training + price API |
+| vinyl-price-estimator | `price_estimator/` | VinylIQ training + price API — see [price_estimator/AGENTS.md](price_estimator/AGENTS.md) |
 | vinyl-web | `web/` | FastAPI dashboard + ML proxy routes |
 
 Run commands from **repo root** with `uv run` unless a README says `PYTHONPATH=.`.
