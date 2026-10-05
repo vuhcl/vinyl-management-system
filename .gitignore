@@ -60,6 +60,9 @@ artifacts/*
 .env.local
 *.local.yaml
 
+# Node (Chrome extension / demo Playwright local installs)
+node_modules/
+
 # IDE
 .idea/
 .vscode/
