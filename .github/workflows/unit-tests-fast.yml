@@ -76,3 +76,25 @@ jobs:
 
       - name: Run recommender unit tests
         run: uv run pytest recommender/tests --no-cov -m "not monitoring" -v
+
+  web:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - name: Install Python 3.12
+        run: uv python install 3.12
+
+      - name: Install dependencies
+        run: uv sync --extra test
+
+      # Explicit path: web/tests is not in root testpaths (avoids multi-app registry).
+      # One instrumented app per job.
+      - name: Run web metrics tests
+        run: uv run pytest web/tests --no-cov -v

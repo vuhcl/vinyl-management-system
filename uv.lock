@@ -5179,6 +5179,7 @@ source = { editable = "web" }
 dependencies = [
     { name = "fastapi" },
     { name = "httpx" },
+    { name = "prometheus-fastapi-instrumentator" },
     { name = "python-multipart" },
     { name = "pyyaml" },
     { name = "requests" },
@@ -5194,6 +5195,7 @@ dependencies = [
 requires-dist = [
     { name = "fastapi", specifier = ">=0.115.0" },
     { name = "httpx", specifier = ">=0.27.0" },
+    { name = "prometheus-fastapi-instrumentator", specifier = ">=7.0.0" },
     { name = "python-multipart", specifier = ">=0.0.9" },
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "requests", specifier = ">=2.28.0" },

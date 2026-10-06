@@ -47,6 +47,9 @@ jobs:
       - name: Run price API metrics tests (own process)
         run: uv run pytest price_estimator/tests/test_metrics_api.py --no-cov -v
 
+      - name: Run web metrics tests (own process)
+        run: uv run pytest web/tests/test_metrics.py --no-cov -v
+
   integration:
     runs-on: ubuntu-24.04
     timeout-minutes: 20

@@ -15,6 +15,7 @@ dependencies = [
     "vinyl-price-estimator",
     "fastapi>=0.115.0",
     "uvicorn[standard]>=0.32.0",
+    "prometheus-fastapi-instrumentator>=7.0.0",
     "python-multipart>=0.0.9",
     "pyyaml>=6.0",
     "requests>=2.28.0",
