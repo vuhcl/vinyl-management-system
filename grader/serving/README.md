@@ -160,7 +160,7 @@ to the grader:
   `<region>-docker.pkg.dev/<project>/vinyl-images/grader:demo`.
 - Routing: the GKE Gateway forwards `https://<host>/grader/*` to this
   Service after a `URLRewrite` filter strips the `/grader` prefix —
-  the routes here (`/`, `/health`, `/predict`) match unchanged. See
+  the routes here (`/`, `/health`, `/predict`, `/metrics`) match unchanged. See
   [`k8s/demo/httproute.yaml`](../../k8s/demo/httproute.yaml).
 - `MLFLOW_TRACKING_URI` and `MLFLOW_MODEL_URI` are injected via the
   `vinyl-mlflow` Secret (created imperatively from `.env` at
@@ -290,6 +290,7 @@ curl -s http://127.0.0.1:8080/predict \
 |--------|------|-------------|
 | `GET` | `/` | Service name and package version |
 | `GET` | `/health` | `200` with `{"status":"ok","model_loaded":true}` if the model loaded at startup; `503` if not |
+| `GET` | `/metrics` | Prometheus text: HTTP request counts and latency histograms (request-level, not separate model inference time). Single-worker uvicorn only (no `PROMETHEUS_MULTIPROC_DIR`). In k8s, `/health` probes dominate counters — do not read totals as user traffic. Scrape: `http://127.0.0.1:8080/metrics`. Behind the demo gateway this is also reachable as `/grader/metrics`. |
 
 ---
 

@@ -30,12 +30,19 @@ jobs:
       - name: Install dependencies
         run: uv sync --extra test --extra monitoring
 
+      # Instrumentator shares one Prometheus registry per process: do not collect
+      # metrics tests for multiple FastAPI apps together (silent miss, not an error).
       - name: Run all package unit tests
         run: |
           uv run pytest grader/tests recommender/tests price_estimator/tests \
+            --ignore=grader/tests/test_serving_metrics.py \
+            --ignore=price_estimator/tests/test_metrics_api.py \
             --no-cov \
             -m "not integration and not monitoring" \
             -v
+
+      - name: Run grader serving metrics tests (own process)
+        run: uv run pytest grader/tests/test_serving_metrics.py --no-cov -v
 
   integration:
     runs-on: ubuntu-24.04

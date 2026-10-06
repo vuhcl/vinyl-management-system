@@ -30,6 +30,7 @@ jobs:
       - name: Install dependencies
         run: uv sync --extra test --extra monitoring
 
+      # One instrumented app per job: metrics + health tests in the same process are OK.
       - name: Run grader unit tests
         run: uv run pytest grader/tests --no-cov -m "not integration" -v
 
