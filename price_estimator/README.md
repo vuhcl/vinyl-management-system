@@ -262,6 +262,8 @@ Host/port defaults also appear under **`api.*`** in YAML. Set **`VINYLIQ_API_KEY
 
 **`POST /estimate`** responses include **`num_for_sale`** and **`warnings`** (e.g. **`low_market_depth`** when **`num_for_sale < 3`**).
 
+**`GET /metrics`** — Prometheus text for HTTP request counts and latency histograms (request-level, not separate model inference time). Single-worker uvicorn only (no `PROMETHEUS_MULTIPROC_DIR`). In k8s, `/health` probes dominate counters — do not read totals as user traffic. Scrape: `http://127.0.0.1:8801/metrics`. Behind the demo gateway this is also reachable as `/price/metrics`.
+
 ---
 
 ## Tuning workflow (YAML-driven)

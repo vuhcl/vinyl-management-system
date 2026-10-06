@@ -14,6 +14,7 @@ from pathlib import Path
 
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import Response
+from prometheus_fastapi_instrumentator import Instrumentator
 
 from price_estimator.src.api.schemas import (
     CollectionValueRequest,
@@ -43,6 +44,12 @@ app = FastAPI(
     version="0.1.0",
     lifespan=lifespan,
 )
+
+Instrumentator(
+    should_group_status_codes=False,
+    should_ignore_untemplated=True,
+    excluded_handlers=[r"^/metrics$"],
+).instrument(app).expose(app, endpoint="/metrics", include_in_schema=False)
 
 _svc = None
 
