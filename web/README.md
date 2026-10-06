@@ -23,7 +23,7 @@ Or with a venv activated after `uv sync`:
 uvicorn web.app.main:app --reload
 ```
 
-Then open http://127.0.0.1:8000 . Use the **Login** page to paste your Discogs token, then **Ingest** to sync your collection/wantlist.
+Then open http://127.0.0.1:8000 (plain local uvicorn default). The [Dockerfile](Dockerfile) serves on **8080**. Use the **Login** page to paste your Discogs token, then **Ingest** to sync your collection/wantlist.
 
 ## API routes
 
@@ -41,6 +41,7 @@ Routers are mounted in `web/app/main.py` (`/auth`, `/ingest`, `/api`).
 | `GET` | `/api/recommendations` | Recommendations for logged-in user |
 | `POST` | `/api/condition` | Condition prediction from seller notes |
 | `GET` | `/api/price/{release_id}` | Price estimate (proxies to `PRICE_SERVICE_URL` if set, else in-process) |
+| `GET` | `/metrics` | Prometheus text: HTTP request counts and latency histograms (request-level). Single-worker uvicorn only. Not in k8s/demo — local/Docker only; do not expose publicly if you deploy it. Scrape: `http://127.0.0.1:8000/metrics` (local) or `:8080` (Docker). |
 
 OpenAPI: `/docs` when the app is running.
 

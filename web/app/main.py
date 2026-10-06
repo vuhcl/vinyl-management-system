@@ -6,6 +6,7 @@ from pathlib import Path
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
+from prometheus_fastapi_instrumentator import Instrumentator
 
 from web.app.routers import auth, ingest, ml
 
@@ -14,6 +15,13 @@ app = FastAPI(
     description="Discogs integration, data ingest, recommender, condition classifier, price estimator",
     version="0.1.0",
 )
+
+Instrumentator(
+    should_group_status_codes=False,
+    should_ignore_untemplated=True,
+    excluded_handlers=[r"^/metrics$"],
+).instrument(app).expose(app, endpoint="/metrics", include_in_schema=False)
+
 
 @app.middleware("http")
 async def session_username(request: Request, call_next):
